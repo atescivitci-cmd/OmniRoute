@@ -99,3 +99,29 @@ export function resolveProviderAvailability(
 
   return { state: "AVAILABLE" };
 }
+
+/**
+ * Human-readable one-line label for a `ProviderAvailability`, for the dashboard.
+ * Total over the union (the compiler enforces exhaustiveness), so a new state can
+ * never silently fall through to a blank badge.
+ */
+export function describeProviderAvailability(a: ProviderAvailability): string {
+  switch (a.state) {
+    case "AVAILABLE":
+      return "Available";
+    case "NO_CREDENTIAL":
+      return "No credential";
+    case "AUTH_EXPIRED":
+      return "Reauthentication required";
+    case "QUOTA_EXHAUSTED":
+      return a.nextEligibleRecheckAt
+        ? `Quota exhausted · rechecks ${a.nextEligibleRecheckAt}`
+        : "Quota exhausted";
+    case "DISABLED":
+      return "Disabled";
+    case "STALE_TERMINAL":
+      return `Stale lock (was ${a.previousState}) — re-verify`;
+    case "UNHEALTHY":
+      return a.retryable ? "Unhealthy (retryable)" : "Unhealthy";
+  }
+}

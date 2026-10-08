@@ -9,7 +9,10 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolveProviderAvailability } from "../../src/lib/providerAvailability.ts";
+import {
+  resolveProviderAvailability,
+  describeProviderAvailability,
+} from "../../src/lib/providerAvailability.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 9, 8, 12, 0, 0);
@@ -100,4 +103,27 @@ test("expired cooldown in the past does not make a clean connection unhealthy", 
     NOW
   );
   assert.equal(a.state, "AVAILABLE");
+});
+
+test("describeProviderAvailability: honest human label for every state", () => {
+  assert.equal(describeProviderAvailability({ state: "AVAILABLE" }), "Available");
+  assert.equal(describeProviderAvailability({ state: "NO_CREDENTIAL" }), "No credential");
+  assert.equal(
+    describeProviderAvailability({ state: "AUTH_EXPIRED", action: "REAUTHENTICATE" }),
+    "Reauthentication required"
+  );
+  assert.match(
+    describeProviderAvailability({ state: "QUOTA_EXHAUSTED", nextEligibleRecheckAt: iso(NOW) }),
+    /Quota exhausted · rechecks /
+  );
+  assert.equal(describeProviderAvailability({ state: "QUOTA_EXHAUSTED" }), "Quota exhausted");
+  assert.equal(describeProviderAvailability({ state: "DISABLED" }), "Disabled");
+  assert.match(
+    describeProviderAvailability({ state: "STALE_TERMINAL", previousState: "credits_exhausted" }),
+    /Stale lock \(was credits_exhausted\)/
+  );
+  assert.equal(
+    describeProviderAvailability({ state: "UNHEALTHY", retryable: true }),
+    "Unhealthy (retryable)"
+  );
 });
