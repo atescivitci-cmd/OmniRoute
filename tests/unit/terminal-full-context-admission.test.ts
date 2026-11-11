@@ -1,0 +1,45 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
+const dir=fs.mkdtempSync(path.join(os.tmpdir(),'terminal-context-admission-'));process.env.DATA_DIR=dir;
+const core=await import('../../src/lib/db/core.ts');
+const {saveModelsDevCapabilities}=await import('../../src/lib/modelsDevSync.ts');
+const {resolveAutoStrategyOrder}=await import('../../open-sse/services/combo/resolveAutoStrategy.ts');
+const {estimateFullInputTokens,requestedOutputReserve}=await import('../../open-sse/services/fullContextAdmission.ts');
+const {estimateTokens,getTokenLimit}=await import('../../open-sse/services/contextManager.ts');
+const cap=(n:number)=>({tool_call:true,reasoning:true,attachment:true,structured_output:true,temperature:null,modalities_input:'["text","image"]',modalities_output:'["text"]',knowledge_cutoff:null,release_date:null,last_updated:null,status:null,family:null,open_weights:null,limit_context:n,limit_input:null,limit_output:null,interleaved_field:null});
+const target=(model:string)=>({kind:'model',stepId:model,executionKey:model,modelStr:'openai/'+model,provider:'openai',providerId:null,connectionId:null,weight:1,label:null});
+const candidate=(t:any)=>({...t,model:t.modelStr.slice(7),quotaRemaining:100,quotaTotal:100,circuitBreakerState:'CLOSED',costPer1MTokens:0,p95LatencyMs:100,latencyStdDev:1,errorRate:0});
+const log={info(){},warn(){},error(){},debug(){}};
+async function run(body:any,models=['small','large'],continuity=true,failOpen=false){let admitted:string[]=[];const targets=models.map(target);const result=await resolveAutoStrategyOrder({orderedTargets:targets as any,body,combo:{id:'test',name:continuity?'ac-terminal-continuity':'ordinary-compression',config:{}} as any,settings:null,config:{compatFilterFailOpen:failOpen},relayOptions:null,resilienceSettings:{quotaPreflight:{enabled:false}} as any,log,expandAutoCandidatePool:async x=>x,buildAutoCandidates:async ts=>{admitted=ts.map(t=>t.modelStr);return ts.map(candidate) as any;}});return {result,admitted};}
+test.beforeEach(()=>saveModelsDevCapabilities({openai:{small:cap(1000),large:cap(10000)}}));
+test('complete input counts messages, system, instructions and tools',()=>{const b={messages:[{role:'user',content:'hi'}],system:'S'.repeat(4000),instructions:'I'.repeat(400),tools:[{name:'t',description:'T'.repeat(400)}]};assert.equal(estimateFullInputTokens(b),estimateTokens(b.messages)+estimateTokens(b.system)+estimateTokens(b.instructions)+estimateTokens(b.tools));});
+test('continuity removes undersized route and all fallback appearances without touching request',async()=>{const b={messages:[{role:'user',content:'x'.repeat(8000)}],max_tokens:100};const before=JSON.stringify(b);const {result,admitted}=await run(b);assert.deepEqual(admitted,['openai/large']);assert.ok('orderedTargets'in result);assert.ok(result.orderedTargets.every(t=>t.modelStr==='openai/large'));assert.equal(JSON.stringify(b),before);});
+test('system and tool payloads cannot hide behind small message estimate',async()=>{const b={messages:[{role:'user',content:'hi'}],system:'s'.repeat(4000),tools:[{name:'read',description:'t'.repeat(1000),input_schema:{type:'object'}}],max_tokens:100};const {admitted}=await run(b);assert.deepEqual(admitted,['openai/large']);});
+test('requested output reserve excludes otherwise input-fitting target',async()=>{const b={messages:[{role:'user',content:'x'.repeat(1600)}],max_tokens:700};const {admitted}=await run(b);assert.deepEqual(admitted,['openai/large']);});
+test('all too small fails before candidate building even with generic fail-open enabled',async()=>{const {result,admitted}=await run({messages:[{role:'user',content:'x'.repeat(8000)}],max_tokens:100},['small'],true,true);assert.deepEqual(admitted,[]);assert.ok('earlyResponse'in result);assert.equal(result.earlyResponse.status,400);assert.equal((await result.earlyResponse.json()).error.code,'context_length_exceeded');});
+test('ordinary compression path still retains undersized route alongside fitting route',async()=>{const {admitted}=await run({messages:[{role:'user',content:'x'.repeat(8000)}],max_tokens:100},['small','large'],false);assert.deepEqual(admitted,['openai/small','openai/large']);});
+test('reserve agrees with explicit model output cap and rejects invalid controls',()=>{assert.equal(requestedOutputReserve({max_tokens:32000},4096),4096);assert.equal(requestedOutputReserve({max_tokens:-1,max_output_tokens:NaN}),1);assert.equal(requestedOutputReserve({max_tokens:10,max_completion_tokens:20}),20);});
+test('unknown metadata uses concrete final default, not unlimited eligibility',async()=>{const limit=getTokenLimit('openai','unknown-terminal-test');const {result,admitted}=await run({messages:[{role:'user',content:'x'.repeat(limit*4+100)}],max_tokens:1},['unknown-terminal-test']);assert.deepEqual(admitted,[]);assert.ok('earlyResponse'in result);});
+test('exact hosted Mistral capacity reaches selector and final guard with all capabilities',async()=>{
+ const {getModelContextLimitForModelString}=await import('../../open-sse/services/combo/comboStructure.ts');
+ const {getResolvedModelCapabilities,getExplicitModelOutputCap}=await import('../../src/lib/modelCapabilities.ts');
+ const model='mistralai/mistral-large-4-1t-a52b',full='nvidia/'+model;
+ const caps=getResolvedModelCapabilities(full);
+ assert.equal(getModelContextLimitForModelString(full),1_000_000);
+ assert.equal(getTokenLimit('nvidia',model),1_000_000);
+ assert.equal(getExplicitModelOutputCap({provider:'nvidia',model}),262144);
+ assert.equal(caps.supportsTools,true);assert.equal(caps.supportsVision,true);assert.equal(caps.supportsThinking,true);
+ assert.equal(getModelContextLimitForModelString('nvidia/mistralai/unverified-neighbor'),null);
+});
+test('exact hosted GLM context and capabilities reach both admission boundaries',async()=>{
+ const {getModelContextLimitForModelString}=await import('../../open-sse/services/combo/comboStructure.ts');
+ const {getResolvedModelCapabilities}=await import('../../src/lib/modelCapabilities.ts');
+ const model='z-ai/glm-5.3-flash',full='nvidia/'+model;
+ assert.equal(getModelContextLimitForModelString(full),1_048_576);
+ assert.equal(getTokenLimit('nvidia',model),1_048_576);
+ const caps=getResolvedModelCapabilities(full);
+ assert.equal(caps.supportsTools,true);assert.equal(caps.supportsVision,true);assert.equal(caps.supportsThinking,true);
+ assert.equal(getModelContextLimitForModelString('nvidia/z-ai/glm-unverified-neighbor'),null);
+});
+test.after(()=>{core.resetDbInstance();fs.rmSync(dir,{recursive:true,force:true});});

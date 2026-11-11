@@ -1,0 +1,1 @@
+- **fix(claude):** sanitize unsigned thinking history before replay to Anthropic while preserving the required precursor for an open enabled/adaptive tool-use cycle. Signed thinking blocks remain untouched; the tool result is preserved.

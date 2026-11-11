@@ -1,0 +1,128 @@
+name: Nightly LLM Security
+on:
+  schedule:
+    - cron: "53 5 * * *"
+  workflow_dispatch:
+
+# Hosted runners use CPU inference; avoid the optional ONNX CUDA download.
+env:
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+  npm_config_foreground_scripts: "true"
+
+permissions:
+  contents: read
+
+jobs:
+  provider-gate:
+    name: Check optional provider credentials
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.gate.outputs.available }}
+    steps:
+      - id: gate
+        env:
+          PROVIDER_KEY: ${{ secrets.PROMPTFOO_PROVIDER_KEY }}
+        run: |
+          if [ -n "$PROVIDER_KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Provider-backed garak probes NOT RUN: provider credential absent." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  promptfoo-guard:
+    name: Injection guard — production bundle and negative control
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with: { node-version: "24", cache: npm }
+      - uses: ./.github/actions/npm-ci-retry
+      - run: node scripts/ci/test-npm-ci-retry.mjs
+      - name: Check optional build dependency is installed
+        run: node -e "console.log(require.resolve('@huggingface/transformers'))"
+      - name: Build CLI bundle
+        env:
+          JWT_SECRET: ci-build-secret-with-sufficient-length-for-validation
+          OMNIROUTE_BUILD_BACKEND_ONLY: "1"
+          OMNIROUTE_USE_TURBOPACK: "0"
+        run: npm run build:cli
+      - name: Validate guard and prove warn mode fails the same assertions
+        run: bash scripts/ci/validate-injection-guard.sh
+      - name: Upload security evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: injection-guard-evidence
+          path: security-evidence/
+          if-no-files-found: warn
+
+  garak:
+    name: Provider-backed garak probes
+    needs: provider-gate
+    if: needs.provider-gate.outputs.available == 'true'
+    timeout-minutes: 35
+    runs-on: ubuntu-latest
+    # NOTE: the `secrets` context is NOT available in a job-level `if:` — referencing
+    # it there makes GitHub reject the file on push (startup_failure on every push).
+    # Map the secret into a job-level env and gate each step on a presence check, so
+    # the job stays green and simply skips the probes when the secret is absent.
+    env:
+      PROMPTFOO_PROVIDER_KEY: ${{ secrets.PROMPTFOO_PROVIDER_KEY }}
+    steps:
+      - name: Gate on provider secret
+        id: gate
+        run: |
+          if [ -n "$PROMPTFOO_PROVIDER_KEY" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::PROMPTFOO_PROVIDER_KEY not set — skipping garak probes (advisory)."
+          fi
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+        if: steps.gate.outputs.run == 'true'
+      - uses: actions/setup-node@v7
+        if: steps.gate.outputs.run == 'true'
+        with: { node-version: "24", cache: npm }
+      - run: npm ci
+        if: steps.gate.outputs.run == 'true'
+      - name: Build CLI bundle
+        if: steps.gate.outputs.run == 'true'
+        env:
+          JWT_SECRET: ci-build-secret-with-sufficient-length-for-validation
+          OMNIROUTE_BUILD_BACKEND_ONLY: "1"
+          OMNIROUTE_USE_TURBOPACK: "0"
+        run: npm run build:cli
+      - name: Start OmniRoute
+        if: steps.gate.outputs.run == 'true'
+        env:
+          JWT_SECRET: ci-build-secret-with-sufficient-length-for-validation
+          PORT: "20128"
+        run: |
+          node dist/server.js > server.log 2>&1 &
+          echo $! > server.pid
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:20128/api/monitoring/health >/dev/null; then echo up; break; fi
+            sleep 2
+          done
+          kill -0 "$(cat server.pid)"
+          curl --fail --max-time 10 http://localhost:20128/api/monitoring/health
+      - uses: actions/setup-python@v7
+        if: steps.gate.outputs.run == 'true'
+        with: { python-version: "3.12" }
+      - run: pip install garak
+        if: steps.gate.outputs.run == 'true'
+      - name: garak limited probes
+        if: steps.gate.outputs.run == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.PROMPTFOO_PROVIDER_KEY }}
+          OPENAI_BASE_URL: http://localhost:20128/v1
+        run: garak --model_type openai --model_name gpt-4o-mini --probes promptinject,dan,leakreplay --report_prefix garak-omniroute
+      - name: Stop server
+        if: always() && steps.gate.outputs.run == 'true'
+        run: kill "$(cat server.pid)" || true
