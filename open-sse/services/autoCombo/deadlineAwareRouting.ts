@@ -12,12 +12,15 @@ import type { RankedFitFirstCandidate } from "./fitFirstPolicy.ts";
 const WINDOW_MS = 7 * 86400_000,
   MAX_ROWS = 256,
   MAX_BYTES = 128 * 1024,
-  MAX_ARTIFACTS = 24,
+  MAX_ARTIFACTS = 128,
   READ_BATCH_SIZE = 8,
   RECENT_MISS_MS = 30 * 60_000,
   RECENT_FAST_MS = 60 * 60_000,
   READ_BUDGET_MS = 100;
 let activeReads = 0;
+// Artifacts are immutable by checksum. Retain verified reads, including ones
+// finishing after a caller's I/O budget, so the next decision can use them.
+const verifiedArtifacts = new Map<string, unknown>();
 const record = (v: unknown): v is Record<string, any> =>
   !!v && typeof v === "object" && !Array.isArray(v);
 const key = (provider: string, model: string, connection: string) =>
@@ -282,7 +285,16 @@ export function qualifyDeadlineObservation(
   if (!complete(response, row)) return null;
   return m.observedAt < m.deadlineAt ? "timely" : "late";
 }
-async function boundedArtifact(row: DeadlineCallRow, until: number): Promise<unknown | null> {
+export async function readDeadlineArtifact(row: DeadlineCallRow, until: number): Promise<unknown | null> {
+  const identity = JSON.stringify([
+    row.id, row.artifact_relpath, row.artifact_size_bytes, row.artifact_sha256,
+  ]);
+  if (verifiedArtifacts.has(identity)) {
+    const artifact = verifiedArtifacts.get(identity);
+    verifiedArtifacts.delete(identity);
+    verifiedArtifacts.set(identity, artifact);
+    return artifact;
+  }
   const remaining = until - performance.now();
   if (remaining <= 0 || activeReads >= MAX_ARTIFACTS) return null;
   activeReads++;
@@ -290,6 +302,14 @@ async function boundedArtifact(row: DeadlineCallRow, until: number): Promise<unk
   try {
     return await Promise.race([
       readBoundedCallArtifact(row, MAX_BYTES)
+        .then((artifact) => {
+          if (artifact !== null) {
+            verifiedArtifacts.set(identity, artifact);
+            while (verifiedArtifacts.size > MAX_ROWS)
+              verifiedArtifacts.delete(verifiedArtifacts.keys().next().value!);
+          }
+          return artifact;
+        })
         .catch(() => null)
         .finally(() => {
           activeReads--;
@@ -408,7 +428,7 @@ export async function applyDeadlineAwareRouting(
     seen = new Set<string>();
   const samples = await readDeadlineArtifactBatches(
     fairRows,
-    (row) => boundedArtifact(row, until),
+    (row) => readDeadlineArtifact(row, until),
     () => performance.now() < until
   );
   for (const { row, artifact } of samples) {

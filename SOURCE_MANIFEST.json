@@ -1,7 +1,7 @@
 {
-  "build_stamp": "b1f73d08+union-e5fc9914e22b",
-  "sourceTreeSHA256": "e5fc9914e22b71808cf59c94295d9385095913695c84534933efa107a364a9c7",
-  "baseline_stamp": "b1f73d08+union-d2bfef16411f",
+  "build_stamp": "b1f73d08+union-863fd51af07c",
+  "sourceTreeSHA256": "863fd51af07c551f5008ed985ea45481148375c3093347f1c7d6d514b043cf07",
+  "baseline_stamp": "b1f73d08+union-e5fc9914e22b",
   "files": [
     {
       "path": ".dockerignore",
@@ -15089,7 +15089,7 @@
     },
     {
       "path": "open-sse/services/autoCombo/deadlineAwareRouting.ts",
-      "sha256": "7c1d70975e67fd4749db289aaac4f65180f4eb6cf9efe628627ecd04c4773eaa",
+      "sha256": "cd764c8ad58672fe26edce96e7de6b5b3c461684acd9be52d7df9761c274b9ac",
       "bytes": 16390,
       "mode": "0o644"
     },
@@ -49961,7 +49961,7 @@
     },
     {
       "path": "tests/unit/deadline-aware-fit-routing-20261106.test.ts",
-      "sha256": "642a5043bf65199d260aeac65d2ccfd0148e80db5d95c16a48602f817564fd94",
+      "sha256": "53dc0ab11f6520c6778d13a5df368fb81cfe9af011c525ea72bc40b0e62c3e9a",
       "bytes": 12262,
       "mode": "0o644"
     },
@@ -63978,7 +63978,7 @@
   ],
   "isolated_only": true,
   "new_branch": false,
-  "stage": "/Users/atescivitci/cammy/_artifacts/omniroute-busola-504-staging.g760oQ/router",
+  "stage": "/Users/atescivitci/cammy/_artifacts/omniroute-busola-followup-20261111/router",
   "sourceEntries": 10662,
   "owned_paths": [
     "open-sse/services/autoCombo/deadlineAwareRouting.ts",

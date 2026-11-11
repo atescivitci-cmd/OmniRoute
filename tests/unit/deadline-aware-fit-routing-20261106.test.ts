@@ -324,3 +324,54 @@ test("two recent fast completions after a miss restore a route without excluding
   reorderByDeadlineEvidence(rows.reverse(), evidence, "last");
   assert.deepEqual(rows.map((row) => row.candidate.model), ["lower-quota", "unknown", "recovered"]);
 });
+
+test("mixed request classes do not exhaust artifact coverage at the former 24-row limit", async () => {
+  const rows = Array.from({ length: 64 }, (_, index) => index);
+  const samples = await readDeadlineArtifactBatches(rows, async (row) => row, () => true);
+  assert.equal(samples.length, rows.length);
+  assert.ok(samples.some(({ row }) => row === 48));
+});
+
+test("a verified read completing after the I/O deadline is reusable by the next decision", async (t) => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const { setTimeout: pause } = await import("node:timers/promises");
+  const { randomUUID } = await import("node:crypto");
+  const { writeCallArtifact, CALL_LOGS_DIR } = await import("../../src/lib/usage/callLogArtifacts.ts");
+  const { readDeadlineArtifact } = await import("../../open-sse/services/autoCombo/deadlineAwareRouting.ts");
+  const id = "cache-" + randomUUID(), timestamp = new Date().toISOString();
+  const artifact = {
+    schemaVersion: 5,
+    summary: { id, timestamp, method: "POST", path: "/v1/chat/completions", status: 200 },
+    requestBody: {}, responseBody: { value: "verified fixture" }, error: null,
+  } as Parameters<typeof writeCallArtifact>[0];
+  const saved = writeCallArtifact(artifact)!;
+  assert.ok(saved);
+  const filename = path.join(CALL_LOGS_DIR!, saved.relPath);
+  const row = {
+    id, timestamp, artifact_relpath: saved.relPath,
+    artifact_size_bytes: saved.sizeBytes, artifact_sha256: saved.sha256,
+  } as Parameters<typeof readDeadlineArtifact>[0];
+  const originalOpen = fs.promises.open.bind(fs.promises);
+  let opens = 0;
+  let finished: () => void;
+  const closed = new Promise<void>((resolve) => { finished = resolve; });
+  const mock = t.mock.method(fs.promises, "open", async (...args: Parameters<typeof originalOpen>) => {
+    const handle = await originalOpen(...args);
+    if (String(args[0]) === filename) {
+      opens++;
+      const close = handle.close.bind(handle);
+      handle.close = async () => { await close(); finished(); };
+      await pause(80);
+    }
+    return handle;
+  });
+  t.after(() => { mock.mock.restore(); fs.rmSync(filename, { force: true }); });
+  assert.equal(await readDeadlineArtifact(row, performance.now() + 10), null);
+  await closed;
+  await pause(0);
+  fs.unlinkSync(filename);
+  assert.deepEqual(await readDeadlineArtifact(row, performance.now() + 100), artifact);
+  assert.equal(opens, 1);
+  assert.equal(await readDeadlineArtifact({ ...row, artifact_sha256: "00000000" }, performance.now() + 100), null);
+});
