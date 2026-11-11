@@ -370,3 +370,37 @@ test("advisory complexity updates both level and weight used by actual task scor
     Math.max(0, Math.min(1, scoreModelForTask(c.modelStr, expectedTask, new Set()) / 100))
   );
 });
+
+test("a model measured as mostly failing does not keep the full health factor", () => {
+  // The health check reads the real clock, so this evidence is stamped with it.
+  const live = (count: number): any => ({
+    health: {
+      source: "usage_24h",
+      sampleCount: count,
+      windowHours: 24,
+      evaluatedAt: new Date().toISOString(),
+      latestObservationAt: null,
+    },
+  });
+  const result = rankFitFirstFreeCandidates({
+    candidates: [
+      candidate("new-provider", "failing", { errorRate: 0.98, provenance: live(115) }),
+      candidate("new-provider", "working", { errorRate: 0.02, provenance: live(115) }),
+      candidate("new-provider", "few-samples", { errorRate: 0.6, provenance: live(12) }),
+      candidate("new-provider", "untried"),
+    ],
+    body,
+    zeroAdditionalCostProviders: ["new-provider"],
+  });
+  const health = Object.fromEntries(
+    result.ranked.map((entry) => [entry.candidate.model, entry.factors.health])
+  );
+  assert.ok(health.failing < 0.1, `failing model kept health ${health.failing}`);
+  assert.equal(health.working, 1);
+  assert.equal(health["few-samples"], 1, "too few samples to call a model failing");
+  assert.equal(health.untried, 0.5);
+  assert.ok(
+    health.failing < health.untried,
+    "a proven-failing model must rank below an untried one"
+  );
+});

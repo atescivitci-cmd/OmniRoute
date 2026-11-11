@@ -720,6 +720,9 @@ function neutralTieBreaker(fingerprint: string, candidate: FitFirstCandidate): s
     .digest("hex");
 }
 
+// confidence = n / (n + 20), so 0.5 means at least 20 observed samples.
+const CONFIDENT_FAILURE_MIN_CONFIDENCE = 0.5;
+
 function weightProfile(level: ReturnType<typeof classifyTask>["level"]) {
   // Preserve each profile's existing operational weight budget. Reliability
   // receives four parts to speed's one, so a speed-only advantage cannot
@@ -863,13 +866,24 @@ export function rankFitFirstFreeCandidates(args: {
       const modelStr = candidateModelString(candidate);
       const fitness = getTaskFitnessWithSource(modelStr, taskDecision.taskType);
       const complexityFit = clamp01(scoreModelForTask(modelStr, task, required) / 100);
+      const operational = evidence.get(candidate)!;
+      // Recent samples earned the full health factor whether the calls succeeded or
+      // failed. Under the heavy/critical profile reliability weighs 0.05, so a model
+      // with a measured 2% success rate still outscored one that had never been tried
+      // (health 1 vs 0.5) and kept winning. A model observed often enough (>= 20
+      // samples) and failing most of the time gets its reliability as health instead.
+      const confidentlyFailing =
+        operational.reason === "observed" &&
+        operational.confidence >= CONFIDENT_FAILURE_MIN_CONFIDENCE &&
+        operational.score < 0.5;
       const health =
         candidate.circuitBreakerState === "CLOSED" &&
         healthEvidenceHasRecentSamples(candidate.provenance)
-          ? 1
+          ? confidentlyFailing
+            ? operational.score
+            : 1
           : 0.5;
       const quota = quotaRankingFactor(candidate);
-      const operational = evidence.get(candidate)!;
       const reliability = operational.score;
       const latencyFit = validLatency(candidate)
         ? clamp01(1 - candidate.p95LatencyMs / maxLatency)
