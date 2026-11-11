@@ -34,6 +34,7 @@ export type DeadlineCounts = {
   recentMissElapsedMs?: number;
   slowestTimelyMs?: number;
   recentFast?: number;
+  consecutiveRecentFast?: number;
 };
 type Ranked = {
   candidate: {
@@ -80,9 +81,12 @@ export function reorderByDeadlineEvidence<T extends Ranked>(
     const countsFor = (entry: T) => evidence.get(
       key(entry.candidate.provider, entry.candidate.model, entry.candidate.connectionId ?? "")
     );
+    // Fresh matching completions after a miss are stronger evidence of current
+    // responsiveness than an older censored sample. Keep the miss in telemetry.
+    const recovered = (entry: T) => (countsFor(entry)?.consecutiveRecentFast ?? 0) >= 2;
     const provenTimely = (entry: T) => {
       const e = countsFor(entry);
-      return !!e && e.timely >= 2 && e.late === 0;
+      return !!e && e.timely >= 2 && (e.late === 0 || recovered(entry));
     };
     const provenFast = (entry: T) =>
       provenTimely(entry) && (countsFor(entry)?.recentFast ?? 0) >= 2;
@@ -118,7 +122,7 @@ export function reorderByDeadlineEvidence<T extends Ranked>(
     };
     const atRisk = (entry: T) => {
       const e = countsFor(entry);
-      return !!e && e.late > 0 &&
+      return !!e && e.late > 0 && !recovered(entry) &&
         (repeatMisses.has(entry) || recentSlowdown(entry) || e.timely === 0 ||
           (hasProvenAlternative && e.late >= 2 && e.late >= e.timely));
     };
@@ -421,6 +425,8 @@ export async function applyDeadlineAwareRouting(
     const dispatch = (artifact as { requestBody: { _omniroute: { nativeDispatch: {
       elapsedMs: number; observedAt: number;
     } } } }).requestBody._omniroute.nativeDispatch;
+    const newerSamplesAllFast =
+      (count.consecutiveRecentFast ?? 0) === count.timely + count.late;
     if (result === "timely") {
       count.timely++;
       if (
@@ -428,6 +434,8 @@ export async function applyDeadlineAwareRouting(
         dispatch.elapsedMs <= policy.deadlineMs * 0.75
       ) {
         count.recentFast = (count.recentFast ?? 0) + 1;
+        if (newerSamplesAllFast)
+          count.consecutiveRecentFast = (count.consecutiveRecentFast ?? 0) + 1;
       }
       count.slowestTimelyMs = Math.max(count.slowestTimelyMs ?? 0, dispatch.elapsedMs);
     } else {

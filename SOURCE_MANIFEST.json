@@ -1,7 +1,7 @@
 {
-  "build_stamp": "b1f73d08+union-d2bfef16411f",
-  "sourceTreeSHA256": "d2bfef16411ffde5f0e0f2ceea527de70d657364b06c8f32b21323f273a13fe5",
-  "baseline_stamp": "b1f73d08+union-3d6f76388d8d",
+  "build_stamp": "b1f73d08+union-e5fc9914e22b",
+  "sourceTreeSHA256": "e5fc9914e22b71808cf59c94295d9385095913695c84534933efa107a364a9c7",
+  "baseline_stamp": "b1f73d08+union-d2bfef16411f",
   "files": [
     {
       "path": ".dockerignore",
@@ -15089,7 +15089,7 @@
     },
     {
       "path": "open-sse/services/autoCombo/deadlineAwareRouting.ts",
-      "sha256": "d6b14d38b47d21631cd08e082a8ff3d5d9b234934694144deafde9e1aa417b9d",
+      "sha256": "7c1d70975e67fd4749db289aaac4f65180f4eb6cf9efe628627ecd04c4773eaa",
       "bytes": 16390,
       "mode": "0o644"
     },
@@ -49961,7 +49961,7 @@
     },
     {
       "path": "tests/unit/deadline-aware-fit-routing-20261106.test.ts",
-      "sha256": "ab01710e2bf15aa8716cd67f60caaf092ceb8c41e5ebc49768073879445e3bbd",
+      "sha256": "642a5043bf65199d260aeac65d2ccfd0148e80db5d95c16a48602f817564fd94",
       "bytes": 12262,
       "mode": "0o644"
     },
@@ -63978,23 +63978,11 @@
   ],
   "isolated_only": true,
   "new_branch": false,
-  "stage": "/Users/atescivitci/Library/CloudStorage/OneDrive-Personal/ChatGBT/2026-10-31/task/autonomous-implementation-20261031/staging/router-durability-followup-3d6f-20261108/router",
+  "stage": "/Users/atescivitci/cammy/_artifacts/omniroute-busola-504-staging.g760oQ/router",
   "sourceEntries": 10662,
   "owned_paths": [
-    "open-sse/handlers/chatCore.ts",
-    "open-sse/services/accountFallback.ts",
-    "open-sse/services/autoCombo/fitFirstPolicy.ts",
-    "open-sse/services/combo.ts",
-    "open-sse/services/combo/types.ts",
-    "open-sse/services/modelEligibilityResponse.ts",
-    "src/lib/db/nativeRouteMissQuarantine.ts",
-    "src/lib/usage/usageHistory/helpers.ts",
-    "src/sse/handlers/chat.ts",
-    "src/sse/services/auth.ts",
-    "tests/unit/fixtures/native-route-miss-reopen-20261108.ts",
-    "tests/unit/routing-success-latency-20261108.test.ts",
-    "tests/unit/services/route-miss-quarantine-20261108.test.ts",
-    "tests/unit/services/terminal-policy-native-rejection.test.ts"
+    "open-sse/services/autoCombo/deadlineAwareRouting.ts",
+    "tests/unit/deadline-aware-fit-routing-20261106.test.ts"
   ],
   "source_review": {
     "primary": "2dc28e1a35b513ba77cf377f0b3f582ed377391f3b3cb249f8a207eeecc8e705",

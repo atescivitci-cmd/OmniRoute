@@ -310,3 +310,17 @@ test("deadline evidence reads one bounded batch concurrently and retains complet
   assert.deepEqual(samples, [0, 1, 2, 3, 4, 6, 7].map(row => ({ row, artifact: row })));
   assert.equal(resolvers.length, 8);
 });
+
+test("two recent fast completions after a miss restore a route without excluding peers", () => {
+  const rows = [candidate("unknown"), candidate("recovered"), candidate("lower-quota", 90)];
+  const evidence = new Map([
+    [key("recovered"), {
+      timely: 2, late: 1, censored: 1, recentFast: 2, consecutiveRecentFast: 2,
+    }],
+  ]);
+  reorderByDeadlineEvidence(rows, evidence, "last");
+  assert.deepEqual(rows.map((row) => row.candidate.model), ["recovered", "unknown", "lower-quota"]);
+  evidence.get(key("recovered"))!.consecutiveRecentFast = 1;
+  reorderByDeadlineEvidence(rows.reverse(), evidence, "last");
+  assert.deepEqual(rows.map((row) => row.candidate.model), ["lower-quota", "unknown", "recovered"]);
+});
