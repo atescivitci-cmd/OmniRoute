@@ -28,18 +28,16 @@ export interface QuotaTextFallback {
 // for the 5-hour subscription quota. Without a dedicated branch the request
 // falls through to the generic 429 retry path (~5s base cooldown).
 
-export function isSubscriptionQuotaText(lower: string, provider?: string | null): boolean {
+export function isSubscriptionQuotaText(lower: string, _provider?: string | null): boolean {
   return (
     lower.includes("usage limit reached") ||
     lower.includes("usage limit has been") ||
     lower.includes("claude pro usage limit") ||
     lower.includes("you've reached your usage limit") ||
-    lower.includes("you have reached your usage limit") ||
-    // Native Claude OAuth uses this otherwise-generic 429 wording for an
-    // exhausted subscription window. Keep it provider-scoped: other upstreams
-    // can use the same phrase for a short RPM throttle.
-    (provider === "claude" &&
-      lower.includes("this request would exceed your account's rate limit"))
+    lower.includes("you have reached your usage limit")
+    // Generic account rate-limit text does not identify a subscription window.
+    // Leave it to the bounded 429 backoff path (and upstream retry hints), even
+    // for native Claude. Explicit quota text and measured quota stay authoritative.
   );
 }
 

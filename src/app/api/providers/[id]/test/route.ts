@@ -23,7 +23,10 @@ import { providerAllowsOptionalApiKey } from "@/shared/constants/providers";
 import { removeConnectionHealth } from "@omniroute/open-sse/services/apiKeyRotator.ts";
 import { classifyAmbiguousOrAuthError, type ClassifyFailureArgs } from "./mistralAmbiguousAuth";
 import { OAUTH_TEST_CONFIG } from "./oauthTestConfig";
-import { shouldSkipAutomatedCredentialProbe } from "@/lib/credentialHealth/terminalPolicy";
+import {
+  shouldSkipAutomatedCredentialProbe,
+  canRecoverExpiredAuthAfterRefresh,
+} from "@/lib/credentialHealth/terminalPolicy";
 
 // Bound the OAuth probe so a hung upstream can't block the connection-test queue
 // forever (#1449). Mirrors the 30s timeout the API-key path uses via validateProviderApiKey.
@@ -757,16 +760,22 @@ export async function testSingleConnection(
   }
 
   let retainedConnectionStatus: string | null = null;
+  const credentialOnlyProbe =
+    connection.authType !== "apikey" && OAUTH_TEST_CONFIG[provider]?.checkExpiry === true;
 
-  if (result.valid && options.automated) {
+  if (result.valid && (options.automated || credentialOnlyProbe)) {
     // A generic background probe is weaker evidence than a real model request.
     // Clear state only if no request-path writer changed the row while the probe
     // was in flight; otherwise retain the newer failure (for example a 402).
-    const cleared = await clearConnectionErrorIfUnchanged(connectionId, {
-      testStatus: connection.testStatus,
-      lastErrorAt: connection.lastErrorAt,
-      rateLimitedUntil: connection.rateLimitedUntil,
-    });
+    // Mere token presence cannot prove model/quota recovery. A verified refresh
+    // may recover an expired auth-only row, guarded against concurrent failures.
+    const cleared =
+      (!credentialOnlyProbe || canRecoverExpiredAuthAfterRefresh(connection, result)) &&
+      (await clearConnectionErrorIfUnchanged(connectionId, {
+        testStatus: connection.testStatus,
+        lastErrorAt: connection.lastErrorAt,
+        rateLimitedUntil: connection.rateLimitedUntil,
+      }));
 
     const safeUpdate: Record<string, any> = { lastTested: now };
     if (result.refreshed && result.newTokens) {
@@ -778,7 +787,7 @@ export async function testSingleConnection(
         ).toISOString();
       }
     }
-    if (cleared && updateData.providerSpecificData) {
+    if (cleared && !credentialOnlyProbe && updateData.providerSpecificData) {
       safeUpdate.providerSpecificData = updateData.providerSpecificData;
     }
     await updateProviderConnection(connectionId, safeUpdate);
@@ -789,11 +798,13 @@ export async function testSingleConnection(
       } catch {}
     } else {
       const latest = await getCachedProviderConnectionById(connectionId);
-      retainedConnectionStatus = String(latest?.testStatus || "state_changed");
+      const latestStatus = String(latest?.testStatus || "state_changed");
+      retainedConnectionStatus =
+        credentialOnlyProbe && ["active", "success"].includes(latestStatus) ? null : latestStatus;
     }
   } else {
-    // A manual test is an explicit recovery action and retains its historical
-    // ability to reactivate the connection after proving it usable.
+    // A manual test with an upstream probe retains its historical ability to
+    // reactivate the connection. Credential-only results take the safe path above.
     await updateProviderConnection(connectionId, updateData);
     if (result.valid) {
       try {
@@ -844,7 +855,11 @@ export async function testSingleConnection(
   return {
     valid: result.valid,
     error: result.error,
-    warning: result.warning || null,
+    warning:
+      result.warning ||
+      (credentialOnlyProbe && result.valid
+        ? "Local credential checks passed; model availability and quota were not tested."
+        : null),
     refreshed: result.refreshed || false,
     diagnosis,
     latencyMs,

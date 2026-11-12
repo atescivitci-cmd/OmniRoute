@@ -28,8 +28,10 @@ export function supportsClaudeServerSafeguards(provider: string, targetFormat: s
 
 /**
  * Native Messages carries system text at the top level, not as a chat role.
- * Lift only a contiguous, fully representable initial text-only system prefix.
- * Empty/directive records end the prefix and remain untouched, regardless of role.
+ * Lift fully representable text-only system records, including after ordinary
+ * content-bearing user/assistant turns (Claude Code appends deferred tool catalogs).
+ * Empty/directive/unknown records remain ordering barriers; do not hoist across
+ * their potentially position-dependent semantics.
  * Unknown content or message-level semantics leave the entire body unchanged;
  * this narrow protocol adaptation is not a general validator or content filter.
  */
@@ -39,7 +41,7 @@ export function normalizeClaudeSafeguardsInitialSystem(body: UnknownRecord): Unk
 
   const messages = normalized.messages;
   const lifted: UnknownRecord[] = [];
-  let prefixLength = 0;
+  const retained: unknown[] = [];
   const isRecord = (value: unknown): value is UnknownRecord =>
     value !== null && typeof value === "object" && !Array.isArray(value);
   const textBlocks = (content: unknown): UnknownRecord[] | null => {
@@ -57,25 +59,78 @@ export function normalizeClaudeSafeguardsInitialSystem(body: UnknownRecord): Unk
       : null;
   };
 
-  for (const message of messages) {
-    if (!isRecord(message) || message.role !== "system") break;
-    const content = message.content;
-    if (content === undefined || content === "" || (Array.isArray(content) && content.length === 0))
+  // Do not move system text across opaque future directives or malformed blocks.
+  // These checks recognize ordinary history; they never prune or rewrite it.
+  const ordinaryContent = (content: unknown): boolean => {
+    if (typeof content === "string") return content.length > 0;
+    if (!Array.isArray(content) || content.length === 0) return false;
+    return content.every((block) => {
+      if (!isRecord(block)) return false;
+      switch (block.type) {
+        case "text":
+          return typeof block.text === "string" && block.text.length > 0;
+        case "image":
+        case "document":
+          return isRecord(block.source);
+        case "thinking":
+          return typeof block.thinking === "string" && typeof block.signature === "string";
+        case "redacted_thinking":
+          return typeof block.data === "string";
+        case "tool_use":
+          return (
+            typeof block.id === "string" && typeof block.name === "string" && isRecord(block.input)
+          );
+        case "tool_result":
+          return (
+            typeof block.tool_use_id === "string" &&
+            (block.content === undefined ||
+              typeof block.content === "string" ||
+              Array.isArray(block.content))
+          );
+        default:
+          return false;
+      }
+    });
+  };
+
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index];
+    if (!isRecord(message)) {
+      retained.push(...messages.slice(index));
       break;
+    }
+    const content = message.content;
+    const emptyContent =
+      content === undefined || content === "" || (Array.isArray(content) && content.length === 0);
+    if (message.role !== "system") {
+      retained.push(message);
+      const ordinaryTurn =
+        (message.role === "user" || message.role === "assistant") &&
+        ordinaryContent(content) &&
+        Object.keys(message).every((key) => key === "role" || key === "content");
+      if (!ordinaryTurn) {
+        retained.push(...messages.slice(index + 1));
+        break;
+      }
+      continue;
+    }
+    if (emptyContent) {
+      retained.push(...messages.slice(index));
+      break;
+    }
     // Removing this message would lose semantics that cannot be represented by system text.
     if (Object.keys(message).some((key) => key !== "role" && key !== "content")) return normalized;
     const blocks = textBlocks(content);
     if (!blocks || blocks.length === 0) return normalized;
     lifted.push(...blocks);
-    prefixLength++;
   }
-  if (prefixLength === 0) return normalized;
+  if (lifted.length === 0) return normalized;
 
   const existing = normalized.system;
   const existingBlocks = existing === undefined ? [] : textBlocks(existing);
   if (!existingBlocks) return normalized;
   normalized.system = [...existingBlocks, ...lifted];
-  normalized.messages = messages.slice(prefixLength);
+  normalized.messages = retained;
   return normalized;
 }
 

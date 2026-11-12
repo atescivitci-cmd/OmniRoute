@@ -623,10 +623,32 @@ export async function resolveAutoStrategyOrder(
             ).response,
           };
         }
+        // The diagnostic serializer caps model detail. Keep each distinct reason
+        // visible before repeated exclusions from a large provider catalog.
+        const firstExclusions = new Map<string, (typeof fitFirstDecision.excluded)[number]>();
+        for (const entry of fitFirstDecision.excluded) {
+          if (!firstExclusions.has(entry.reason)) firstExclusions.set(entry.reason, entry);
+        }
+        const representatives = new Set(firstExclusions.values());
         return {
-          earlyResponse: unavailableResponse(
+          // Availability is boolean here. Preserve 503 rather than inventing a
+          // provider 429, cooldown duration or recovery promise. Expose only the
+          // existing sanitized candidate identifiers and enumerated exclusions.
+          earlyResponse: errorResponseWithComboDiagnostics(
             503,
-            "No verified zero-additional-cost model is currently eligible for this request"
+            incompatible
+              ? "No verified zero-additional-cost model is currently eligible: some targets cannot preserve required request features; the remaining targets are unavailable or excluded. See candidate diagnostics."
+              : "No verified zero-additional-cost model is currently eligible for this request. See candidate diagnostics.",
+            {
+              poolSize: routableCandidates.length,
+              attempted: 0,
+              excluded: [
+                ...representatives,
+                ...fitFirstDecision.excluded.filter((entry) => !representatives.has(entry)),
+              ],
+              attemptOrder: [],
+              terminalReason: "no_eligible_zero_cost_model",
+            }
           ),
         };
       }
