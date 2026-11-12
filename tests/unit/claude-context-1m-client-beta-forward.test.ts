@@ -72,3 +72,17 @@ test("context-1m is never forced when the client did not negotiate it", () => {
 test("tool-search forwarding keeps working (regression #3974)", () => {
   assert.ok(FORWARDABLE_CLIENT_BETAS.includes("tool-search-tool-2025-10-19"));
 });
+
+test("Opus does not get context-1m forced when the client negotiated betas without it", () => {
+  const clientBeta = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14";
+  const flags = selectBetaFlags(fullAgentBody("claude-opus-4-6"), null, clientBeta);
+  assert.ok(!flags.split(",").includes(CONTEXT_1M), "context-1m was forced on a 128K client");
+});
+
+test("Opus keeps context-1m for an opaque client and for a client that asked for it", () => {
+  assert.ok(selectBetaFlags(fullAgentBody("claude-opus-4-6")).split(",").includes(CONTEXT_1M));
+  const asked = `claude-code-20250219,oauth-2025-04-20,${CONTEXT_1M}`;
+  assert.ok(
+    selectBetaFlags(fullAgentBody("claude-opus-4-6"), null, asked).split(",").includes(CONTEXT_1M)
+  );
+});

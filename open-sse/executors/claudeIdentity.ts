@@ -375,7 +375,14 @@ export function selectBetaFlags(
   const isHeavyAgent = isFullAgent && isHeavyAgentModel(effectiveModel);
   const isOpusAgent =
     isFullAgent && matchesModelPrefix(effectiveModel, CONTEXT_1M_BETA_MODEL_PREFIXES);
-  const isContext1m = isFullAgent && isContext1mModel(effectiveModel);
+  // A client that negotiated its own anthropic-beta and did NOT ask for context-1m
+  // (Claude Code without a `[1m]` model, e.g. capped at 128K) must not have it forced
+  // on Opus: on accounts without long-context credits Anthropic answers
+  // "429 Usage credits are required for long context requests". Same rule as the
+  // thinking/heavy betas above (#3415). Opaque clients (no header) are unchanged, and a
+  // client that did negotiate it still gets it.
+  const allowContext1m = clientBetaSet === null || clientBetaSet.has("context-1m-2025-08-07");
+  const isContext1m = isFullAgent && isContext1mModel(effectiveModel) && allowContext1m;
 
   const flags: string[] = [];
   if (isFullAgent) flags.push("claude-code-20250219");
