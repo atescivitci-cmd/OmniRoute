@@ -24,12 +24,22 @@ test("GitHub native preflight omits only a proven inert fresh-turn context hint"
   assert.deepEqual(input, before);
 });
 
-test("GitHub native preflight refuses active context edits rather than sending a known400", () => {
+test("GitHub native preflight omits history-trim edits rather than sending a known400", () => {
   const executor = new GithubExecutor();
   const input = {
     ...body(),
     context_management: { edits: [{ type: "clear_tool_uses_20250919" }] },
   };
+  const before = structuredClone(input);
+  const output = executor.transformRequest("claude-sonnet-5", input, true, {});
+  assert.equal(Object.hasOwn(output, "context_management"), false);
+  assert.deepEqual(output.messages, input.messages);
+  assert.deepEqual(input, before);
+});
+
+test("GitHub native preflight refuses an unknown context edit without rewriting", () => {
+  const executor = new GithubExecutor();
+  const input = { ...body(), context_management: { edits: [{ type: "future_edit_20990101" }] } };
   const before = structuredClone(input);
   assert.throws(
     () => executor.transformRequest("claude-sonnet-5", input, true, {}),
@@ -38,7 +48,7 @@ test("GitHub native preflight refuses active context edits rather than sending a
   assert.deepEqual(input, before);
 });
 
-test("GitHub native preflight refuses inert hint omission on signed continuation", () => {
+test("GitHub native preflight omits the hint on a signed continuation and keeps the history", () => {
   const executor = new GithubExecutor();
   const input = {
     ...body(),
@@ -50,10 +60,9 @@ test("GitHub native preflight refuses inert hint omission on signed continuation
       { role: "user", content: "Continue." },
     ],
   };
-  assert.throws(
-    () => executor.transformRequest("claude-sonnet-5", input, true, {}),
-    hasCode("request_context_management_unavailable")
-  );
+  const output = executor.transformRequest("claude-sonnet-5", input, true, {});
+  assert.equal(Object.hasOwn(output, "context_management"), false);
+  assert.deepEqual(output.messages, input.messages);
 });
 
 test("GitHub native preflight refuses excess declared tools without truncating them", () => {

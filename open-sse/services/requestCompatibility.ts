@@ -76,6 +76,24 @@ function isExactInactiveContextHint(value: unknown): boolean {
   );
 }
 
+/**
+ * Server-side history trimming only. A target without it receives the full,
+ * unedited history, so no instruction or content is lost by leaving it out.
+ * Any other edit kind, key or shape is unknown and still refuses.
+ */
+function isHistoryTrimOnly(value: unknown): boolean {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["edits"])) return false;
+  if (!Array.isArray(value.edits) || value.edits.length === 0 || value.edits.length > 8) {
+    return false;
+  }
+  return value.edits.every(
+    (edit) =>
+      isRecord(edit) &&
+      typeof edit.type === "string" &&
+      /^clear_(thinking|tool_uses)_\d{8}$/.test(edit.type)
+  );
+}
+
 /** A text block may retain an ordinary cache hint, but cannot hide opaque blocks. */
 function isTextContent(value: unknown): boolean {
   if (typeof value === "string") return true;
@@ -194,18 +212,18 @@ export function probeRequestCompatibility(
       return refusal("request_required_control_unsupported");
     }
 
-    let omitInactiveHint = false;
+    const adaptations: string[] = [];
     if (hasDefined(body, "context_management") && target.contextManagement !== "native") {
-      if (!isExactInactiveContextHint(body.context_management) || !hasFreshTextInput(body)) {
+      if (isExactInactiveContextHint(body.context_management) && hasFreshTextInput(body)) {
+        adaptations.push("omit_inactive_context_management");
+      } else if (isHistoryTrimOnly(body.context_management)) {
+        adaptations.push("omit_history_trim_context_management");
+      } else {
         return refusal("request_context_management_unavailable");
       }
-      omitInactiveHint = true;
     }
 
-    return {
-      ok: true,
-      adaptations: omitInactiveHint ? ["omit_inactive_context_management"] : [],
-    };
+    return { ok: true, adaptations };
   } catch {
     // Malformed/exotic values cannot qualify an adaptation. Never copy their prose.
     return refusal("request_required_control_unsupported");
@@ -220,7 +238,7 @@ export function assessRequestCompatibility(
   if (probe.ok === false) return probe;
   try {
     const next = structuredClone(body);
-    if (probe.adaptations.includes("omit_inactive_context_management"))
+    if (probe.adaptations.some((name) => name.endsWith("_context_management")))
       delete next.context_management;
     return { ok: true, body: next, adaptations: probe.adaptations };
   } catch {
