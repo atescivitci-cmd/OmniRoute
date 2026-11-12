@@ -28,6 +28,18 @@ const fresh = () => ({
   context_management: hint(),
   metadata: { user_id: "synthetic-session" },
 });
+// History-trimming hints are dropped for a target without native support: the
+// target receives the unedited history and every other field is preserved.
+const omitTrim = (body: Record<string, unknown>) => {
+  const before = structuredClone(body);
+  const plan = assessRequestCompatibility(body, target());
+  assert.equal(plan.ok, true);
+  if (!plan.ok) return;
+  assert.deepEqual(plan.adaptations, ["omit_history_trim_context_management"]);
+  const { context_management: _dropped, ...rest } = before;
+  assert.deepEqual(plan.body, rest);
+  assert.deepEqual(body, before);
+};
 const refuseContext = (body: Record<string, unknown>) => {
   assert.deepEqual(assessRequestCompatibility(body, target()), {
     ok: false,
@@ -90,8 +102,18 @@ for (const [name, value] of [
   ["active edit", { edits: [{ type: "clear_tool_uses_20250919" }] }],
   ["different keep", { edits: [{ type: "clear_thinking_20251015", keep: "last" }] }],
   ["extra edit key", { edits: [{ type: "clear_thinking_20251015", keep: "all", extra: true }] }],
-  ["extra context key", { ...hint(), additional: true }],
   ["two edits", { edits: [...hint().edits, ...hint().edits] }],
+] as const) {
+  test("non-native target omits history-trim " + name + " and preserves the rest", () => {
+    omitTrim({ ...fresh(), context_management: value });
+  });
+}
+
+for (const [name, value] of [
+  ["unknown edit kind", { edits: [{ type: "future_edit_20990101" }] }],
+  ["mixed known and unknown edits", { edits: [...hint().edits, { type: "compact_20990101" }] }],
+  ["non-record edit", { edits: ["clear_thinking_20251015"] }],
+  ["extra context key", { ...hint(), additional: true }],
   ["empty edits", { edits: [] }],
   ["null control", null],
   ["malformed control", "clear thinking"],
@@ -104,7 +126,7 @@ for (const [name, value] of [
   });
 }
 
-test("assistant history or multiple user turns cannot qualify as a fresh request", () => {
+test("assistant history or multiple user turns drop only the history-trim hint", () => {
   for (const messages of [
     [
       { role: "user", content: "old" },
@@ -118,10 +140,10 @@ test("assistant history or multiple user turns cannot qualify as a fresh request
     [{ role: "assistant", content: "prefill" }],
     [],
   ])
-    refuseContext({ ...fresh(), messages });
+    omitTrim({ ...fresh(), messages });
 });
 
-test("tool/image/thinking/signed/provider-bound blocks prohibit inert-hint omission", () => {
+test("tool/image/thinking/signed/provider-bound blocks survive history-trim omission", () => {
   for (const content of [
     [{ type: "image", source: { type: "base64", data: "synthetic" } }],
     [{ type: "image_url", image_url: { url: "https://invalid.example/synthetic.png" } }],
@@ -131,25 +153,25 @@ test("tool/image/thinking/signed/provider-bound blocks prohibit inert-hint omiss
     [{ type: "tool_result", tool_use_id: "t1", content: "synthetic" }],
     [{ type: "text", text: "hello", signature: "opaque" }],
   ])
-    refuseContext({ ...fresh(), messages: [{ role: "user", content }] });
+    omitTrim({ ...fresh(), messages: [{ role: "user", content }] });
 });
 
-test("unknown content blocks and alternate dialects do not gain a fresh exemption", () => {
-  refuseContext({
+test("unknown content blocks and alternate dialects survive history-trim omission", () => {
+  omitTrim({
     ...fresh(),
     messages: [{ role: "user", content: [{ type: "future_block", text: "hello" }] }],
   });
-  refuseContext({ ...fresh(), input: "alternate representation" });
-  refuseContext({ ...fresh(), contents: [{ role: "user", parts: [{ text: "hello" }] }] });
+  omitTrim({ ...fresh(), input: "alternate representation" });
+  omitTrim({ ...fresh(), contents: [{ role: "user", parts: [{ text: "hello" }] }] });
 });
 
-test("system content must also be text-only for the inert exemption", () => {
-  refuseContext({ ...fresh(), system: [{ type: "image", source: {} }] });
+test("non-text system content survives history-trim omission", () => {
+  omitTrim({ ...fresh(), system: [{ type: "image", source: {} }] });
   const body = { ...fresh(), system: [{ type: "text", text: "Preserve these instructions." }] };
   assert.equal(assessRequestCompatibility(body, target()).ok, true);
 });
 
-test("continuation selectors and tool declarations prevent fresh-hint omission", () => {
+test("continuation selectors and tool declarations survive history-trim omission", () => {
   for (const field of [
     "previous_response_id",
     "conversation",
@@ -158,10 +180,10 @@ test("continuation selectors and tool declarations prevent fresh-hint omission",
     "thread_id",
     "response_id",
   ]) {
-    refuseContext({ ...fresh(), [field]: "opaque" });
+    omitTrim({ ...fresh(), [field]: "opaque" });
   }
-  refuseContext({ ...fresh(), tools: [{ name: "read", input_schema: {} }] });
-  refuseContext({ ...fresh(), tool_choice: { type: "none" } });
+  omitTrim({ ...fresh(), tools: [{ name: "read", input_schema: {} }] });
+  omitTrim({ ...fresh(), tool_choice: { type: "none" } });
 });
 
 test("known tool limit refuses rather than truncating input definitions", () => {
@@ -360,10 +382,13 @@ test("probe and dispatch assessment agree on validated JSON eligibility without 
   const body = fresh();
   assert.equal(probeRequestCompatibility(body, target()).ok, true);
   body.messages.push({ role: "user", content: [{ type: "text", text: "second turn" }] });
-  assert.equal(probeRequestCompatibility(body, target()).ok, false);
+  assert.deepEqual(probeRequestCompatibility(body, target()), {
+    ok: true,
+    adaptations: ["omit_history_trim_context_management"],
+  });
 });
 
-test("history refusal short-circuits without visiting large or opaque message bodies", () => {
+test("history-trim omission decides without visiting large or opaque message bodies", () => {
   const oldMessage = Object.defineProperty({ role: "assistant" }, "content", {
     get() {
       throw new Error("history must not be walked by ranking probe");
@@ -371,12 +396,12 @@ test("history refusal short-circuits without visiting large or opaque message bo
   });
   const body = { ...fresh(), messages: [oldMessage, { role: "user", content: "new" }] };
   assert.deepEqual(probeRequestCompatibility(body, target()), {
-    ok: false,
-    code: "request_context_management_unavailable",
+    ok: true,
+    adaptations: ["omit_history_trim_context_management"],
   });
 });
 
-test("top-level modality and opaque carriers cannot qualify as fresh text input", () => {
+test("top-level modality and opaque carriers survive history-trim omission", () => {
   for (const key of [
     "images",
     "attachments",
@@ -385,7 +410,7 @@ test("top-level modality and opaque carriers cannot qualify as fresh text input"
     "encrypted_content",
     "tool_calls",
   ]) {
-    refuseContext({ ...fresh(), [key]: "opaque" });
+    omitTrim({ ...fresh(), [key]: "opaque" });
   }
 });
 

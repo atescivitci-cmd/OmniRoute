@@ -34,7 +34,7 @@ const code = (expected: string) => (error: unknown) =>
 for (const [label, extra, expected] of [
   [
     "active context",
-    { context_management: { edits: [{ type: "clear_tool_uses_20250919" }] } },
+    { context_management: { edits: [{ type: "future_edit_20990101" }] } },
     "request_context_management_unavailable",
   ],
   [
@@ -204,7 +204,7 @@ test("payload overrides cannot reintroduce unsupported context edits", async () 
     override: [
       {
         models: [{ name: "claude-sonnet-4.6", protocol: "claude" }],
-        params: { context_management: { edits: [{ type: "clear_tool_uses_20250919" }] } },
+        params: { context_management: { edits: [{ type: "future_edit_20990101" }] } },
       },
     ],
   });
@@ -345,7 +345,7 @@ test("actual auto resolver filters incompatible target before model availability
   const seen: string[] = [];
   const body = {
     ...input(),
-    context_management: { edits: [{ type: "clear_tool_uses_20250919" }] },
+    context_management: { edits: [{ type: "future_edit_20990101" }] },
   };
   const result = await resolveAutoStrategyOrder({
     orderedTargets: targets,
@@ -389,4 +389,69 @@ test("actual auto resolver filters incompatible target before model availability
       ["claude"]
     );
   assert.deepEqual(seen, ["claude/claude-sonnet-4-6"]);
+});
+
+test("auto resolver routes a history-trim request to a non-native target when native is unavailable", async () => {
+  const targets = [
+    ["github", "claude-sonnet-5"],
+    ["claude", "claude-sonnet-4-6"],
+  ].map(([provider, model], i) => ({
+    kind: "model",
+    provider,
+    model,
+    modelStr: provider + "/" + model,
+    stepId: "s" + i,
+    executionKey: provider + ">" + model,
+    connectionId: null,
+    providerId: null,
+    weight: 1,
+    label: null,
+  }));
+  const seen: string[] = [];
+  const body = {
+    ...input(),
+    context_management: { edits: [{ type: "clear_tool_uses_20250919" }] },
+  };
+  const result = await resolveAutoStrategyOrder({
+    orderedTargets: targets,
+    body,
+    combo: {
+      id: "compat-fixture",
+      name: "compat-fixture",
+      strategy: "auto",
+      autoConfig: {
+        candidatePool: ["github", "claude"],
+        selectionPolicy: "fit-first-free",
+        zeroAdditionalCostProviders: ["github", "claude"],
+        explorationRate: 0,
+      },
+    },
+    settings: null,
+    config: {},
+    relayOptions: null,
+    resilienceSettings: { quotaPreflight: { enabled: false } },
+    log: { info() {}, warn() {}, error() {}, debug() {} },
+    buildAutoCandidates: async () =>
+      targets.map((t) => ({
+        ...t,
+        quotaRemaining: 100,
+        quotaTotal: 100,
+        circuitBreakerState: "CLOSED",
+        costPer1MTokens: 1,
+        p95LatencyMs: 100,
+        latencyStdDev: 10,
+        errorRate: 0,
+      })),
+    isModelAvailable: async (model) => {
+      seen.push(model);
+      return !model.startsWith("claude/");
+    },
+  } as never);
+  assert.ok("orderedTargets" in result);
+  if ("orderedTargets" in result)
+    assert.deepEqual(
+      result.orderedTargets.map((t) => t.provider),
+      ["github"]
+    );
+  assert.deepEqual(seen.sort(), ["claude/claude-sonnet-4-6", "github/claude-sonnet-5"]);
 });
