@@ -20,7 +20,7 @@ import {
 import {
   ACCOUNT_MODEL_INELIGIBLE_CODE,
   LOCAL_ACCOUNT_NEGATIVE_RESPONSES,
-  isCodexAccountModelUnsupported,
+  isCodexSelectionUnsupported,
 } from "../../src/lib/db/accountModelEligibilityPolicy";
 import {
   getNvidiaModelNegative,
@@ -3985,7 +3985,7 @@ export async function handleChatCore({
     };
     const nativeNvidiaRejection = isNativeNvidiaEntitlementRejection(nvidiaRejectionEvidence);
     if (nativeNvidiaRejection) upstreamErrorCode = NVIDIA_MODEL_NEGATIVE_CODE;
-    if (isCodexAccountModelUnsupported(provider, statusCode, currentModel, message))
+    if (isCodexSelectionUnsupported(provider, statusCode, currentModel, message))
       upstreamErrorCode = ACCOUNT_MODEL_INELIGIBLE_CODE;
 
     const signatureRecovery = routingAttemptToken
@@ -4252,7 +4252,7 @@ export async function handleChatCore({
     if (
       routingAttemptToken &&
       executor === getAccountNativeExecutor("codex") &&
-      isCodexAccountModelUnsupported(provider, statusCode, currentModel, message)
+      isCodexSelectionUnsupported(provider, statusCode, currentModel, message)
     ) {
       // The outer owner may advance after this exact pre-inference rejection.
       // Never derive this trusted marker from an upstream/client error code.

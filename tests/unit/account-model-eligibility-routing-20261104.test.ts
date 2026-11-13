@@ -54,6 +54,28 @@ test("complete observed account template binds the exact selected model without 
   ])
     assert.equal(policy.isCodexAccountModelUnsupported("codex", 400, model, msg), true);
 });
+test("an effort-suffixed selection may fail over when upstream names its base model", () => {
+  // Upstream reports the base model; the selected id carries the reasoning-effort suffix.
+  for (const suffix of ["none", "minimal", "low", "medium", "high", "xhigh", "max"])
+    assert.equal(
+      policy.isCodexSelectionUnsupported("codex", 400, `${model}-${suffix}`, detail()),
+      true
+    );
+  // Only a recognised effort suffix on the exact named base qualifies.
+  for (const selected of [
+    `${model}-turbo`,
+    `${model}-high-extra`,
+    `x${model}-high`,
+    `${other}-high`,
+  ])
+    assert.equal(policy.isCodexSelectionUnsupported("codex", 400, selected, detail()), false);
+  // Durable evidence stays exact: an alias is never stored as an account negative.
+  assert.equal(
+    policy.isCodexAccountModelUnsupported("codex", 400, `${model}-high`, detail()),
+    false
+  );
+  assert.equal(policy.isCodexSelectionUnsupported("codex", 400, model, detail()), true);
+});
 test("generic, partial, malformed, oversized, wrong provider/status/model are not durable evidence", () => {
   for (const [p, s, m, b] of [
     ["openai", 400, model, detail()],
@@ -322,16 +344,19 @@ test("actual chatCore fake-provider rejection persists exact negative and next c
     CodexExecutor.prototype.execute = original;
   }
 });
-async function invokeFixtureCore(body: Record<string, unknown>, token = null) {
+async function invokeFixtureCore(body: Record<string, unknown>, token = null, selected = model) {
   const { handleChatCore } = await import("../../open-sse/handlers/chatCore.ts");
   return handleChatCore({
     body: structuredClone(body),
-    modelInfo: { provider: "codex", model },
+    modelInfo: { provider: "codex", model: selected },
     credentials: {
       connectionId: "account-a",
       accessToken: "fixture-only",
       providerSpecificData: {},
-      accountModelEligibilityProof: proof(),
+      accountModelEligibilityProof:
+        selected === model
+          ? proof()
+          : store.captureAccountModelProof("codex", "account-a", selected, "r1"),
     },
     connectionId: "account-a",
     clientRawRequest: {
@@ -488,6 +513,60 @@ test("tools fallback requires trusted exact400 classifier, not forged incoming e
       assert.equal(calls, exact ? 2 : 1);
       assert.equal(next.ok, exact);
     }
+  } finally {
+    CodexExecutor.prototype.execute = original;
+  }
+});
+
+test("tools request fails over when upstream rejects the base of an effort-suffixed selection", async () => {
+  const { CodexExecutor } = await import("../../open-sse/executors/codex.ts");
+  const { createRoutingAttemptGuard } =
+    await import("../../open-sse/services/combo/routingAttemptSafety.ts");
+  const original = CodexExecutor.prototype.execute;
+  const alias = model + "-high";
+  const body = {
+    model: alias,
+    messages: [{ role: "user", content: "fixture-only" }],
+    tools: [
+      {
+        type: "function",
+        function: { name: "fixtureTool", parameters: { type: "object", properties: {} } },
+      },
+    ],
+    stream: false,
+  };
+  seed();
+  fallback.clearAllModelLockouts();
+  let calls = 0;
+  // Upstream names the base model, exactly as observed for effort-suffixed ids.
+  CodexExecutor.prototype.execute = async (args) => ({
+    response: Response.json({ detail: detail(model) }, { status: 400 }),
+    url: "https://fixture.invalid",
+    headers: {},
+    transformedBody: args.body,
+  });
+  try {
+    const guard = createRoutingAttemptGuard({ body, limit: 2 });
+    const dispatch = guard.wrap(async (b, m, target) => {
+      calls++;
+      if (calls > 1) return Response.json({ ok: true });
+      return (await invokeFixtureCore(b, target.routingAttemptToken, alias)).response;
+    });
+    const rejected = await dispatch(body, "codex/" + alias, {
+      kind: "model",
+      provider: "codex",
+      connectionId: "account-a",
+    });
+    assert.equal(rejected.status, 400);
+    const next = await dispatch(body, "codex/" + other, {
+      kind: "model",
+      provider: "codex",
+      connectionId: "account-b",
+    });
+    assert.equal(calls, 2);
+    assert.equal(next.ok, true);
+    // The alias is still never stored as durable account evidence.
+    assert.equal(store.getAccountModelNegative("codex", "account-a", alias), null);
   } finally {
     CodexExecutor.prototype.execute = original;
   }

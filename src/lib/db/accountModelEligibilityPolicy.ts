@@ -34,6 +34,34 @@ export function isCodexAccountModelUnsupported(
     );
   return !!match && match[0] === detail && match[1] === model;
 }
+const EFFORT_SUFFIXES = new Set([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+]);
+/**
+ * Per-request evidence only: upstream refused this dispatch before inference, so
+ * another target may be tried. Upstream names the base model while the selected id
+ * may carry a reasoning-effort suffix stripped before dispatch. This never
+ * qualifies durable account evidence; recordAccountModelNegative stays exact.
+ */
+export function isCodexSelectionUnsupported(
+  provider: unknown,
+  status: unknown,
+  model: unknown,
+  message: unknown
+): boolean {
+  if (isCodexAccountModelUnsupported(provider, status, model, message)) return true;
+  if (typeof model !== "string") return false;
+  const cut = model.lastIndexOf("-");
+  if (cut <= 0 || !EFFORT_SUFFIXES.has(model.slice(cut + 1))) return false;
+  return isCodexAccountModelUnsupported(provider, status, model.slice(0, cut), message);
+}
 export function hasAccountModelIdentityUpdate(
   data: Record<string, unknown>,
   previous: Record<string, unknown>,
