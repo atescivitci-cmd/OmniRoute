@@ -12,6 +12,9 @@ import {
 const nonDispatch = new WeakSet<Response>();
 const terminal = new WeakSet<Response>();
 const definiteRejection = new WeakSet<Response>();
+// A target refused BEFORE dispatch because the API key is over its USD limit. No provider saw
+// the request, so a sanitized body may move on to another target (see sanitizedSwitch below).
+const keyLimitRefusal = new WeakSet<Response>();
 const responseReplacements = new WeakMap<Response, Response>();
 const stopReasons = new WeakMap<Response, string>();
 export function markDefiniteRejection<T extends Response>(response: T): T {
@@ -20,6 +23,13 @@ export function markDefiniteRejection<T extends Response>(response: T): T {
 }
 export function isDefiniteRoutingRejection(response: Response): boolean {
   return definiteRejection.has(response);
+}
+export function markKeyLimitRefusal<T extends Response>(response: T): T {
+  keyLimitRefusal.add(response);
+  return response;
+}
+export function isKeyLimitRefusal(response: Response): boolean {
+  return keyLimitRefusal.has(response);
 }
 export function markKnownNonDispatch<T extends Response>(response: T): T {
   nonDispatch.add(response);
@@ -43,6 +53,7 @@ function copyRoutingResponseState<T extends Response>(source: Response, target: 
   if (nonDispatch.has(source)) nonDispatch.add(target);
   if (definiteRejection.has(source)) definiteRejection.add(target);
   if (terminal.has(source)) terminal.add(target);
+  if (keyLimitRefusal.has(source)) keyLimitRefusal.add(target);
   const reason = stopReasons.get(source);
   if (reason) stopReasons.set(target, reason);
   return target;
@@ -78,9 +89,14 @@ export function routingFailure(code: string, status = 502): Response {
   return response;
 }
 
-export type ReplayInput = { providerBound: boolean; hasTools: boolean };
+// hardBound: the request depends on provider-held state (stored responses, containers,
+// provider-run tools) that no body rewrite can carry to another provider. providerBound with
+// hardBound false means only signature-class artifacts (signed thinking, encrypted reasoning)
+// are present, which sanitizeForProviderSwitch strips.
+export type ReplayInput = { providerBound: boolean; hasTools: boolean; hardBound: boolean };
 export function inspectReplayInput(body: Record<string, unknown>): ReplayInput {
-  let providerBound = Boolean(body.previous_response_id || body.conversation || body.container);
+  let hardBound = Boolean(body.previous_response_id || body.conversation || body.container);
+  let providerBound = hardBound;
   let hasTools = Array.isArray(body.tools) && body.tools.length > 0;
   const seen = new WeakSet<object>();
   const visit = (value: unknown): void => {
@@ -107,8 +123,10 @@ export function inspectReplayInput(body: Record<string, unknown>): ReplayInput {
     if (
       typeof row.type === "string" &&
       /^(web_search|computer|code_interpreter|file_search|mcp)(?:_|$)/.test(row.type)
-    )
+    ) {
       providerBound = true;
+      hardBound = true;
+    }
     for (const [key, child] of Object.entries(row)) {
       if (["content", "input", "output", "result"].includes(key) && typeof child === "string")
         continue;
@@ -116,7 +134,7 @@ export function inspectReplayInput(body: Record<string, unknown>): ReplayInput {
     }
   };
   visit(body);
-  return { providerBound, hasTools };
+  return { providerBound, hasTools, hardBound };
 }
 
 export type RoutingAttemptToken = { enter(): void; entered(): boolean; refused(): boolean };
@@ -249,6 +267,13 @@ export function createRoutingAttemptGuard(options: {
   /** Internal only: nested stages share physical-attempt accounting, not response state. */
   sharedBudget?: AttemptBudget;
   hooks?: GuardHooks;
+  /**
+   * The caller sanitizes the body (sanitizeForProviderSwitch) before every dispatch that
+   * follows a key-limit refusal. Only then may a signature-bound history advance, and only
+   * past a refusal made before dispatch. Hard provider binding and every other failure keep
+   * the existing stop.
+   */
+  sanitizedSwitch?: boolean;
 }) {
   const budget = options.sharedBudget ?? {
     startedAt: Date.now(),
@@ -258,6 +283,7 @@ export function createRoutingAttemptGuard(options: {
     signal: options.signal,
   };
   const input = inspectReplayInput(options.body);
+  let sanitizedSwitch = options.sanitizedSwitch === true;
   const rejected = new Set<string>();
   let attempts = 0;
   let stopped: Response | null = null;
@@ -342,6 +368,11 @@ export function createRoutingAttemptGuard(options: {
           },
         },
       });
+    },
+    /** The combo has an explicit per-terminal session and will sanitize the body before any
+     * dispatch that follows a key-limit refusal. Called by the combo, never by wire input. */
+    enableSanitizedSwitch() {
+      sanitizedSwitch = true;
     },
     restrictTimeout(ms: number) {
       if (Number.isFinite(ms) && ms > 0)
@@ -482,12 +513,25 @@ export function createRoutingAttemptGuard(options: {
           // Cost/scope admission is a request policy refusal, never evidence that
           // a different target may execute. Keep this separate from eligibility.
           if (LOCAL_COST_ERROR_CODES.has(code ?? "")) return stop(result, "local_cost_admission");
-          if (input.providerBound) return stop(result, "provider_continuation_unqualified");
+          if (input.providerBound) {
+            const keyLimitAdvance =
+              sanitizedSwitch &&
+              !input.hardBound &&
+              keyLimitRefusal.has(result) &&
+              nonDispatch.has(result);
+            if (!keyLimitAdvance) return stop(result, "provider_continuation_unqualified");
+            rejected.add(key);
+            priorFailure = result;
+            return result;
+          }
           // A wire error code is not positive evidence of non-generation. The
           // native handler marks the one qualified NVIDIA rejection locally.
-          if ((typed?.provider === "nvidia" || (!typed?.provider && model.startsWith("nvidia/"))) &&
-              ([401,403,404,408,429].includes(result.status) || result.status >= 500) &&
-              !nonDispatch.has(result) && !definiteRejection.has(result))
+          if (
+            (typed?.provider === "nvidia" || (!typed?.provider && model.startsWith("nvidia/"))) &&
+            ([401, 403, 404, 408, 429].includes(result.status) || result.status >= 500) &&
+            !nonDispatch.has(result) &&
+            !definiteRejection.has(result)
+          )
             return stop(result, "no_safe_fallback");
           if (
             nonDispatch.has(result) ||

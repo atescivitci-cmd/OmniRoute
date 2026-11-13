@@ -184,3 +184,127 @@ test("callers that do not opt in (embeddings, music, ...) still get the hard 400
   const result = await policy.enforceApiKeyPolicy(req(created.key), "claude/claude-opus-4-8");
   assert.equal(result.rejection?.status, 400);
 });
+
+// ── Mid-conversation switch (signed thinking history) ────────────────────────────────────
+// A request whose history carries provider signatures may move to another provider only when
+// (1) the previous target refused it BEFORE dispatch because of the key's USD limit (so no
+// provider saw or acted on it), (2) the caller sanitizes the body for the switch, and
+// (3) the request is bound only by signature-class artifacts the sanitizer strips. Everything
+// else keeps the existing stop.
+const guardMod = await import("../../open-sse/services/combo/routingAttemptSafety.ts");
+const signedBody = () => ({
+  messages: [
+    { role: "user", content: "hi" },
+    {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "plan", signature: "SIG123" },
+        { type: "text", text: "hello" },
+      ],
+    },
+    { role: "user", content: "continue" },
+  ],
+});
+const refuseThenOk = async (target: string) => {
+  const [provider, model] = target.split("/");
+  const refusal = await fallThrough.keyLimitTargetRefusal(marker, provider, model, costOf);
+  return refusal ? refusal.response : Response.json({ ok: true });
+};
+
+test("key-limit refusal is recognizable and survives response replacement", async () => {
+  const refusal = await fallThrough.keyLimitTargetRefusal(marker, "claude", "opus", costOf);
+  assert.ok(refusal);
+  assert.equal(guardMod.isKeyLimitRefusal(refusal.response), true);
+  const replaced = guardMod.inheritRoutingResponseState(refusal.response, refusal.response.clone());
+  assert.equal(guardMod.isKeyLimitRefusal(replaced), true);
+  assert.equal(guardMod.isKeyLimitRefusal(Response.json({}, { status: 400 })), false);
+});
+
+test("signature-bound history switches after a key-limit refusal when the caller sanitizes", async () => {
+  const body = signedBody();
+  assert.equal(guardMod.inspectReplayInput(body).providerBound, true);
+  assert.equal(guardMod.inspectReplayInput(body).hardBound, false);
+  const tried: string[] = [];
+  const run = createRoutingAttemptGuard({ body, limit: 3, sanitizedSwitch: true }).wrap(
+    async (_b: unknown, target: string) => {
+      tried.push(target);
+      return refuseThenOk(target);
+    }
+  );
+  assert.equal((await run(body, "claude/claude-opus-4-8")).status, 400);
+  assert.equal((await run(body, "ollama-local/qwen3")).status, 200);
+  assert.deepEqual(tried, ["claude/claude-opus-4-8", "ollama-local/qwen3"]);
+});
+
+test("without the sanitizing opt-in a signed history still cannot switch", async () => {
+  const body = signedBody();
+  let sent = 0;
+  const run = createRoutingAttemptGuard({ body, limit: 3 }).wrap(
+    async (_b: unknown, target: string) => {
+      sent++;
+      return refuseThenOk(target);
+    }
+  );
+  await run(body, "claude/claude-opus-4-8");
+  await run(body, "ollama-local/qwen3");
+  assert.equal(sent, 1);
+});
+
+test("hard provider binding never switches, even for a key-limit refusal", async () => {
+  for (const hard of [
+    { previous_response_id: "resp_1" },
+    { conversation: "conv_1" },
+    { tools: [{ type: "web_search_preview" }] },
+  ]) {
+    const body = { ...signedBody(), ...hard };
+    assert.equal(guardMod.inspectReplayInput(body).hardBound, true);
+    let sent = 0;
+    const run = createRoutingAttemptGuard({ body, limit: 3, sanitizedSwitch: true }).wrap(
+      async (_b: unknown, target: string) => {
+        sent++;
+        return refuseThenOk(target);
+      }
+    );
+    await run(body, "claude/claude-opus-4-8");
+    await run(body, "ollama-local/qwen3");
+    assert.equal(sent, 1, JSON.stringify(hard));
+  }
+});
+
+test("only a key-limit refusal opens the exception, not other failures", async () => {
+  const body = signedBody();
+  for (const make of [
+    () => Response.json({ error: { code: "x" } }, { status: 500 }),
+    () => guardMod.markKnownNonDispatch(Response.json({ error: { code: "x" } }, { status: 400 })),
+  ]) {
+    let sent = 0;
+    const run = createRoutingAttemptGuard({ body, limit: 3, sanitizedSwitch: true }).wrap(
+      async () => {
+        sent++;
+        return make();
+      }
+    );
+    await run(body, "claude/claude-opus-4-8");
+    await run(body, "ollama-local/qwen3");
+    assert.equal(sent, 1);
+  }
+});
+
+test("switch body is stripped of signatures and thinking, text and roles survive", () => {
+  const out = fallThrough.sanitizeBodyAfterKeyLimit(signedBody()) as {
+    messages: Array<{ role: string; content: unknown }>;
+  };
+  const text = JSON.stringify(out);
+  assert.ok(!text.includes("SIG123") && !text.includes('"thinking"'), text);
+  assert.ok(text.includes("hello") && text.includes("continue"));
+  assert.deepEqual(
+    out.messages.map((m) => m.role),
+    ["user", "assistant", "user"]
+  );
+});
+
+test("the original body is not mutated by sanitizing", () => {
+  const body = signedBody();
+  fallThrough.sanitizeBodyAfterKeyLimit(body);
+  assert.ok(JSON.stringify(body).includes("SIG123"));
+});
