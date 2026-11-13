@@ -169,6 +169,72 @@ function hasFreshTextInput(body: JsonRecord): boolean {
   return true;
 }
 
+/** Sanitized, content-free description of why a target refused a request. */
+export interface RequestCompatibilityRefusalDiagnostics {
+  code: string;
+  provider: string;
+  model: string;
+  targetContextManagement: string;
+  maxTools: number | null;
+  toolCount: number | null;
+  toolTypes: string[];
+  unsupportedControls: string[];
+  unsupportedControlsPresent: string[];
+  contextManagement: { present: boolean; keys: string[]; editTypes: string[] };
+  bodyKeys: string[];
+}
+
+const SAFE_NAME = /^[a-z0-9_]{1,40}$/;
+const SAFE_EDIT_TYPE = /^[a-z][a-z0-9_]{0,63}$/;
+const DIAGNOSTIC_LIST_CAP = 40;
+
+/** Field/type NAMES only, from a closed character set; anything else collapses to "<other>". */
+function safeNames(values: unknown[], pattern = SAFE_NAME): string[] {
+  const out = new Set<string>();
+  for (const value of values) {
+    out.add(typeof value === "string" && pattern.test(value) ? value : "<other>");
+    if (out.size >= DIAGNOSTIC_LIST_CAP) break;
+  }
+  return [...out];
+}
+
+/**
+ * Describe a refusal for operator logs without copying any request content: never values,
+ * prompts, tool definitions or identifiers from the body — only field names, edit-type
+ * names, counts and the target's own server-owned profile. Never throws.
+ */
+export function describeRequestCompatibilityRefusal(
+  body: JsonRecord,
+  target: RequestCompatibilityTarget,
+  code: string
+): RequestCompatibilityRefusalDiagnostics {
+  const record = isRecord(body) ? body : {};
+  const tools = Array.isArray(record.tools) ? record.tools : null;
+  const unsupported = Array.isArray(target?.unsupportedControls) ? target.unsupportedControls : [];
+  const cm = record.context_management;
+  const edits = isRecord(cm) && Array.isArray(cm.edits) ? cm.edits : [];
+  return {
+    code: SAFE_NAME.test(code) ? code : "<other>",
+    provider: String(target?.provider ?? ""),
+    model: String(target?.model ?? ""),
+    targetContextManagement: String(target?.contextManagement ?? ""),
+    maxTools: typeof target?.maxTools === "number" ? target.maxTools : null,
+    toolCount: tools ? tools.length : null,
+    toolTypes: tools ? safeNames(tools.map((t) => (isRecord(t) ? t.type : undefined))) : [],
+    unsupportedControls: safeNames(unsupported),
+    unsupportedControlsPresent: safeNames(unsupported.filter((field) => hasDefined(record, field))),
+    contextManagement: {
+      present: hasDefined(record, "context_management"),
+      keys: isRecord(cm) ? safeNames(Object.keys(cm)) : [],
+      editTypes: safeNames(
+        edits.map((edit) => (isRecord(edit) ? edit.type : undefined)),
+        SAFE_EDIT_TYPE
+      ),
+    },
+    bodyKeys: safeNames(Object.keys(record)),
+  };
+}
+
 function refusal(code: RequestCompatibilityRefusalCode): RequestCompatibilityRefused {
   return { ok: false, code };
 }
