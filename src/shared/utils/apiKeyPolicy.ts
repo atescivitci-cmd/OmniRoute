@@ -427,7 +427,31 @@ type PolicyContext = {
   apiKey: string;
   apiKeyInfo: ApiKeyMetadata;
   modelStr: string | null;
+  /** KEY_LIMIT_FALLTHROUGH: set per request when the key is over its USD limit. */
+  usageLimitExceeded?: { message: string };
+  /** Only callers that skip metered targets themselves (chat) may opt in; all others reject. */
+  allowUsageLimitFallThrough?: boolean;
 };
+
+/** Per-request marker carried on the returned key info (never on cached key metadata). */
+export type ApiKeyPolicyInfo = ApiKeyMetadata & { usageLimitExceeded?: { message: string } };
+
+function isKeyLimitFallThroughEnabled(): boolean {
+  const value = String(process.env.KEY_LIMIT_FALLTHROUGH ?? "1")
+    .trim()
+    .toLowerCase();
+  return !["0", "false", "off", "no"].includes(value);
+}
+
+async function readRejectionMessage(rejection: Response): Promise<string> {
+  try {
+    const body = (await rejection.clone().json()) as { error?: { message?: unknown } };
+    if (typeof body?.error?.message === "string" && body.error.message) return body.error.message;
+  } catch {
+    // fall through to the generic text
+  }
+  return "This API key reached its USD usage quota.";
+}
 
 function validateKeyStatus(context: PolicyContext): Response | null {
   const { apiKeyInfo } = context;
@@ -461,6 +485,12 @@ async function validateKeyScheduleAndUsage(context: PolicyContext): Promise<Resp
       dailyUsageLimitUsd: apiKeyInfo.dailyUsageLimitUsd,
       weeklyUsageLimitUsd: apiKeyInfo.weeklyUsageLimitUsd,
     });
+    if (rejection && context.allowUsageLimitFallThrough === true) {
+      // Do not stop the request: let the router skip metered targets and use the next
+      // eligible one. KEY_LIMIT_FALLTHROUGH=0 restores the hard rejection.
+      context.usageLimitExceeded = { message: await readRejectionMessage(rejection) };
+      return null;
+    }
     return rejection;
   } catch (error) {
     log.error("API_POLICY", "API key USD usage limit check failed. Request blocked.", { error });
@@ -640,7 +670,8 @@ async function validateRateLimitAndThrottle(context: PolicyContext): Promise<Res
 
 export async function enforceApiKeyPolicy(
   request: Request,
-  modelStr: string | null
+  modelStr: string | null,
+  options: { usageLimitFallThrough?: boolean } = {}
 ): Promise<ApiKeyPolicyResult> {
   // A real bearer key wins; otherwise an authenticated dashboard playground may
   // test a specific key's policy by id (resolved server-side, secret never sent).
@@ -670,7 +701,14 @@ export async function enforceApiKeyPolicy(
     return { apiKey, apiKeyInfo: null, rejection: null };
   }
 
-  const context = { request, apiKey, apiKeyInfo, modelStr };
+  const context: PolicyContext = {
+    request,
+    apiKey,
+    apiKeyInfo,
+    modelStr,
+    allowUsageLimitFallThrough:
+      options.usageLimitFallThrough === true && isKeyLimitFallThroughEnabled(),
+  };
   const statusRejection = validateKeyStatus(context);
   if (statusRejection) return { apiKey, apiKeyInfo, rejection: statusRejection };
   const scheduleRejection = await validateKeyScheduleAndUsage(context);
@@ -690,5 +728,12 @@ export async function enforceApiKeyPolicy(
   const rateRejection = await validateRateLimitAndThrottle(context);
   if (rateRejection) return { apiKey, apiKeyInfo, rejection: rateRejection };
 
+  if (context.usageLimitExceeded) {
+    const carried: ApiKeyPolicyInfo = {
+      ...apiKeyInfo,
+      usageLimitExceeded: context.usageLimitExceeded,
+    };
+    return { apiKey, apiKeyInfo: carried, rejection: null };
+  }
   return { apiKey, apiKeyInfo, rejection: null };
 }

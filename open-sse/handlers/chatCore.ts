@@ -7,6 +7,11 @@ import {
 } from "../services/requestCompatibility.ts";
 import { resolveRequestCompatibilityTarget } from "../services/requestCompatibilityTarget.ts";
 import { requestCompatibilityErrorResult } from "../services/requestCompatibilityResponse.ts";
+import {
+  keyLimitTargetRefusal,
+  type KeyUsageLimitMarker,
+} from "../services/keyLimitFallThrough.ts";
+import { calculateCost } from "@/lib/usage/costCalculator";
 import { getExecutor as getAccountNativeExecutor } from "../executors/index.ts";
 import {
   markKnownNonDispatch,
@@ -837,6 +842,24 @@ export async function handleChatCore({
     customModelTargetFormat,
     providerSpecificData: credentials?.providerSpecificData,
   });
+  // KEY_LIMIT_FALLTHROUGH: a key over its USD limit skips targets that would add to its
+  // recorded spend (pre-dispatch refusal, safe for the router to advance past); free and
+  // local targets stay eligible.
+  {
+    const keyLimitRefusal = await keyLimitTargetRefusal(
+      (apiKeyInfo as { usageLimitExceeded?: KeyUsageLimitMarker } | null)?.usageLimitExceeded,
+      provider,
+      effectiveModel,
+      calculateCost
+    );
+    if (keyLimitRefusal) {
+      log?.warn?.(
+        "KEY_LIMIT",
+        `target skipped for over-limit key: provider=${provider} model=${effectiveModel}`
+      );
+      return keyLimitRefusal;
+    }
+  }
   const compatibilityTarget = resolveRequestCompatibilityTarget(
     body,
     provider,

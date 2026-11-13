@@ -531,7 +531,7 @@ export async function handleChat(
 
   // Pipeline: API key policy enforcement (model restrictions + budget limits)
   telemetry.startPhase("policy");
-  const policy = await enforceApiKeyPolicy(request, modelStr);
+  const policy = await enforceApiKeyPolicy(request, modelStr, { usageLimitFallThrough: true });
   if (policy.rejection) {
     log.warn(
       "POLICY",
