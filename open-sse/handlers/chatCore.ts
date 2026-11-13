@@ -1,5 +1,6 @@
 import { estimateFullInputTokens, retainsFullContext } from "../services/fullContextAdmission.ts";
 import {
+  describeRequestCompatibilityRefusal,
   probeRequestCompatibility,
   requireRequestCompatibility,
   RequestCompatibilityError,
@@ -844,6 +845,14 @@ export async function handleChatCore({
   );
   const compatibility = probeRequestCompatibility(body, compatibilityTarget);
   if (compatibility.ok === false) {
+    // COMPAT_REFUSAL_DIAGNOSTICS: name the refusing feature for operators. Field names,
+    // counts and the target profile only; never request content.
+    log?.warn?.(
+      "REQUEST_COMPATIBILITY",
+      `pre-dispatch refusal ${JSON.stringify(
+        describeRequestCompatibilityRefusal(body, compatibilityTarget, compatibility.code)
+      )}`
+    );
     return requestCompatibilityErrorResult(new RequestCompatibilityError(compatibility.code));
   }
   if (compatibility.adaptations.length > 0) {

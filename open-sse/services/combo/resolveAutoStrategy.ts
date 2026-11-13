@@ -615,6 +615,15 @@ export async function resolveAutoStrategyOrder(
       if (!winner) {
         const incompatible = availability.find((entry) => entry.reason.startsWith("request_"));
         if (incompatible && availability.every((entry) => entry.reason.startsWith("request_"))) {
+          // COMPAT_REFUSAL_DIAGNOSTICS: every candidate refused; log which reason each gave.
+          log.warn("COMBO", "fit-first: every candidate refused request features", {
+            combo: combo?.name,
+            candidates: routableCandidates.map((candidate, index) => ({
+              provider: candidate.provider,
+              model: candidate.model,
+              reason: availability[index].reason,
+            })),
+          });
           return {
             earlyResponse: requestCompatibilityErrorResult(
               new RequestCompatibilityError(
