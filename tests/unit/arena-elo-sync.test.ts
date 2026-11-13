@@ -40,6 +40,7 @@ const {
 } = await import("../../src/lib/arenaEloSync.ts");
 const { setFeatureFlagOverride, removeFeatureFlagOverride } =
   await import("../../src/lib/db/featureFlags.ts");
+const { replaceModelIntelligenceBySource } = await import("../../src/lib/db/modelIntelligence.ts");
 
 import type {
   ArenaLeaderboardData,
@@ -468,7 +469,7 @@ describe("fetchArenaLeaderboards()", () => {
     );
   });
 
-  it("succeeds when one category fails but another succeeds", async () => {
+  it("rejects a partial replacement when one required category fails", async () => {
     const textData = makeLeaderboardData(
       [makeModelEntry({ model: "text-model", score: 1200, votes: 5000, rank: 1 })],
       "text"
@@ -480,9 +481,10 @@ describe("fetchArenaLeaderboards()", () => {
       return new Response("Not found", { status: 404 });
     });
 
-    const result = await fetchArenaLeaderboards();
-    assert.ok(result.text);
-    assert.strictEqual(result.code, undefined);
+    await assert.rejects(
+      () => fetchArenaLeaderboards(),
+      /Incomplete Arena leaderboard replacement: missing code/
+    );
   });
 
   it("invalid JSON in response → throws when all responses are invalid", async () => {
@@ -622,7 +624,41 @@ describe("syncArenaElo()", () => {
     );
   });
 
-  it("calls deleteExpiredIntelligence before writing new entries", async () => {
+  it("failed partial fetch preserves the prior replacement, including expired rows", async () => {
+    testAdapter
+      .prepare(
+        "INSERT INTO model_intelligence (model, source, category, score, elo_raw, confidence, synced_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      )
+      .run(
+        "prior-model",
+        "arena_elo",
+        "default",
+        0.75,
+        1300,
+        "high",
+        "2025-01-01T00:00:00Z",
+        "2020-01-01T00:00:00Z"
+      );
+
+    const textData = makeLeaderboardData(
+      [makeModelEntry({ model: "new-model", score: 1400, votes: 5000, rank: 1 })],
+      "text"
+    );
+    mockFetch(async (url: string) => {
+      if (url.includes("name=text")) return jsonResponse(textData);
+      return new Response("missing", { status: 404 });
+    });
+
+    const result = await syncArenaElo();
+    assert.strictEqual(result.success, false);
+    assert.deepStrictEqual(
+      getAllEntries().map((entry) => entry.model),
+      ["prior-model"],
+      "no delete or partial write may occur before a full replacement is validated"
+    );
+  });
+
+  it("atomically replaces prior source rows after validating a full replacement", async () => {
     testAdapter
       .prepare(
         "INSERT INTO model_intelligence (model, source, category, score, elo_raw, confidence, synced_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
@@ -660,7 +696,13 @@ describe("syncArenaElo()", () => {
     assert.strictEqual(expiredEntry, undefined);
   });
 
-  it("handles empty leaderboard gracefully (0 entries, no DB write)", async () => {
+  it("rejects an empty replacement instead of clearing the prior source", async () => {
+    testAdapter
+      .prepare(
+        "INSERT INTO model_intelligence (model, source, category, score, elo_raw, confidence, synced_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      )
+      .run("prior-empty-guard", "arena_elo", "default", 0.5, 1000, "low", "2025-01-01", null);
+
     mockFetch(async (url: string) => {
       if (url.includes("name=text")) return jsonResponse(makeLeaderboardData([], "text"));
       if (url.includes("name=code")) return jsonResponse(makeLeaderboardData([], "code"));
@@ -669,9 +711,45 @@ describe("syncArenaElo()", () => {
 
     const result = await syncArenaElo();
 
-    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.success, false);
     assert.strictEqual(result.modelCount, 0);
-    assert.strictEqual(countArenaEloEntries(), 0);
+    assert.deepStrictEqual(
+      getAllEntries().map((entry) => entry.model),
+      ["prior-empty-guard"]
+    );
+  });
+
+  it("rolls back the source swap if any replacement insert fails", () => {
+    testAdapter
+      .prepare(
+        "INSERT INTO model_intelligence (model, source, category, score, elo_raw, confidence, synced_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      )
+      .run("prior-atomic", "arena_elo", "default", 0.5, 1000, "low", "2025-01-01", null);
+    testAdapter.exec(`
+      CREATE TRIGGER reject_synthetic_replacement
+      BEFORE INSERT ON model_intelligence
+      WHEN NEW.model = 'explode-model'
+      BEGIN SELECT RAISE(ABORT, 'synthetic replacement failure'); END;
+    `);
+
+    const base = {
+      source: "arena_elo",
+      category: "default",
+      score: 0.9,
+      eloRaw: 1400,
+      confidence: "high",
+      expiresAt: null,
+    };
+    assert.throws(() =>
+      replaceModelIntelligenceBySource("arena_elo", [
+        { ...base, model: "new-before-failure" },
+        { ...base, model: "explode-model" },
+      ])
+    );
+    assert.deepStrictEqual(
+      getAllEntries().map((entry) => entry.model),
+      ["prior-atomic"]
+    );
   });
 
   it("updates lastSyncTime after successful sync", async () => {
