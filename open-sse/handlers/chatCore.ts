@@ -3651,7 +3651,15 @@ export async function handleChatCore({
     }
   } catch (error) {
     trackPendingRequest(model, provider, connectionId, false);
-    if (error instanceof RequestCompatibilityError) return requestCompatibilityErrorResult(error);
+    if (error instanceof RequestCompatibilityError) {
+      // COMPAT_REFUSAL_DIAGNOSTICS: refusals raised after translation (tool limit on the
+      // translated body, protocol integrity) used to return 422 with no operator trace.
+      log?.warn?.(
+        "REQUEST_COMPATIBILITY",
+        `post-translation refusal ${JSON.stringify({ code: error.code, provider, model })}`
+      );
+      return requestCompatibilityErrorResult(error);
+    }
     if (error instanceof ZeroCostAdmissionError) return zeroCostErrorResult(error);
     if (isSemaphoreCapacityError(error)) {
       appendRequestLog({

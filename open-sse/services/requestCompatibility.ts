@@ -17,6 +17,11 @@ export interface RequestCompatibilityTarget {
   maxTools?: number | null;
   /** Existing, qualified target rules only. These are top-level field names. */
   unsupportedControls?: string[];
+  /**
+   * True when this target receives a translated (non-Responses) body, in which each
+   * Responses `namespace` tool group is expanded into standalone function tools.
+   */
+  expandsNamespaceTools?: boolean;
 }
 
 export type RequestCompatibilityRefusalCode =
@@ -177,6 +182,7 @@ export interface RequestCompatibilityRefusalDiagnostics {
   targetContextManagement: string;
   maxTools: number | null;
   toolCount: number | null;
+  dispatchedToolCount: number | null;
   toolTypes: string[];
   unsupportedControls: string[];
   unsupportedControlsPresent: string[];
@@ -220,6 +226,9 @@ export function describeRequestCompatibilityRefusal(
     targetContextManagement: String(target?.contextManagement ?? ""),
     maxTools: typeof target?.maxTools === "number" ? target.maxTools : null,
     toolCount: tools ? tools.length : null,
+    dispatchedToolCount: tools
+      ? countDispatchedTools(tools, target?.expandsNamespaceTools === true)
+      : null,
     toolTypes: tools ? safeNames(tools.map((t) => (isRecord(t) ? t.type : undefined))) : [],
     unsupportedControls: safeNames(unsupported),
     unsupportedControlsPresent: safeNames(unsupported.filter((field) => hasDefined(record, field))),
@@ -233,6 +242,25 @@ export function describeRequestCompatibilityRefusal(
     },
     bodyKeys: safeNames(Object.keys(record)),
   };
+}
+
+/**
+ * Number of tools the dispatcher will actually send. A Responses `namespace` tool groups
+ * sub-tools; targets without native namespaces receive each sub-tool as its own function
+ * (see the Responses request translator), so the limit must apply to the expanded count.
+ */
+export function countDispatchedTools(tools: unknown, expandsNamespaces: boolean): number {
+  if (!Array.isArray(tools)) return 0;
+  if (!expandsNamespaces) return tools.length;
+  let count = 0;
+  for (const tool of tools) {
+    if (isRecord(tool) && tool.type === "namespace") {
+      count += Array.isArray(tool.tools) ? tool.tools.length : 0;
+    } else {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 function refusal(code: RequestCompatibilityRefusalCode): RequestCompatibilityRefused {
@@ -270,7 +298,7 @@ export function probeRequestCompatibility(
     if (
       target.maxTools != null &&
       Array.isArray(body.tools) &&
-      body.tools.length > target.maxTools
+      countDispatchedTools(body.tools, target.expandsNamespaceTools === true) > target.maxTools
     ) {
       return refusal("request_tool_limit_exceeded");
     }

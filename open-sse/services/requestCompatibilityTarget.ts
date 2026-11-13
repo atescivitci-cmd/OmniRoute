@@ -1,7 +1,7 @@
 import { getModelTargetFormat } from "../config/providerModels.ts";
 import { getTargetFormat } from "./provider.ts";
 import { stripUnsupportedParams } from "../translator/paramSupport.ts";
-import { getKnownToolLimit } from "./toolLimitDetector.ts";
+import { getEffectiveToolLimit, getKnownToolLimit } from "./toolLimitDetector.ts";
 import type { RequestCompatibilityTarget } from "./requestCompatibility.ts";
 import { noThinkingIntent } from "./reasoningEffortCompatibility.ts";
 
@@ -56,6 +56,8 @@ export function resolveRequestCompatibilityTarget(
         unsupportedControls.push("output_format");
     }
   }
+  // Only a Responses-format target keeps `namespace` tool groups intact.
+  const expandsNamespaceTools = format !== "openai-responses";
   return {
     provider: canonical,
     model,
@@ -70,7 +72,26 @@ export function resolveRequestCompatibilityTarget(
     maxTools:
       canonical === "github"
         ? Math.min(getKnownToolLimit(canonical) ?? 128, 128)
-        : getKnownToolLimit(canonical),
+        : (getKnownToolLimit(canonical) ??
+          // The dispatcher applies its default cap to providers without a known limit.
+          // Mirror it only when expanded namespace tools make the translated body larger
+          // than the request looks; plain-tool requests keep their existing behaviour.
+          (expandsNamespaceTools && hasNamespaceTools(body)
+            ? getEffectiveToolLimit(canonical)
+            : null)),
     unsupportedControls,
+    expandsNamespaceTools,
   };
+}
+
+function hasNamespaceTools(body: Record<string, unknown>): boolean {
+  return (
+    Array.isArray(body?.tools) &&
+    body.tools.some(
+      (tool) =>
+        tool !== null &&
+        typeof tool === "object" &&
+        (tool as Record<string, unknown>).type === "namespace"
+    )
+  );
 }
