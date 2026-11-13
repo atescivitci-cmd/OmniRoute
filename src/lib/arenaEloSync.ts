@@ -14,9 +14,8 @@ import { isArenaEloSyncEnabled } from "@/shared/utils/featureFlags";
 
 import { backupDbFile } from "./db/backup";
 import {
-  bulkUpsertModelIntelligence,
-  deleteExpiredIntelligence,
   deleteModelIntelligenceBySource,
+  replaceModelIntelligenceBySource,
   type ModelIntelligenceEntry,
 } from "./db/modelIntelligence";
 
@@ -244,7 +243,9 @@ export async function fetchArenaLeaderboards(): Promise<ArenaLeaderboardMap> {
       }
       const text = await response.text();
       try {
-        result[category] = JSON.parse(text) as ArenaLeaderboardData;
+        const candidate = JSON.parse(text) as unknown;
+        validateLeaderboard(category, candidate);
+        result[category] = candidate;
       } catch {
         throw new Error(
           `Arena API returned invalid JSON for "${category}" (${text.slice(0, 100)}...)`
@@ -259,11 +260,47 @@ export async function fetchArenaLeaderboards(): Promise<ArenaLeaderboardMap> {
 
   await Promise.all(fetches);
 
-  if (Object.keys(result).length === 0) {
+  const missing = FETCH_CATEGORIES.filter((category) => !result[category]);
+  if (missing.length === FETCH_CATEGORIES.length) {
     throw new Error(`All Arena leaderboard fetches failed: ${errors.join("; ")}`);
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `Incomplete Arena leaderboard replacement: missing ${missing.join(", ")}; ${errors.join("; ")}`
+    );
   }
 
   return result;
+}
+
+function validateLeaderboard(
+  category: (typeof FETCH_CATEGORIES)[number],
+  candidate: unknown
+): asserts candidate is ArenaLeaderboardData {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    throw new Error(`Arena API returned invalid ${category} leaderboard`);
+  }
+  const data = candidate as Partial<ArenaLeaderboardData>;
+  if (
+    !data.meta ||
+    data.meta.leaderboard !== category ||
+    !Array.isArray(data.models) ||
+    data.meta.model_count !== data.models.length
+  ) {
+    throw new Error(`Arena API returned invalid ${category} leaderboard metadata`);
+  }
+  for (const model of data.models) {
+    if (
+      !model ||
+      typeof model.model !== "string" ||
+      model.model.trim().length === 0 ||
+      !Number.isFinite(model.rank) ||
+      !Number.isFinite(model.score) ||
+      !Number.isFinite(model.votes)
+    ) {
+      throw new Error(`Arena API returned invalid ${category} model entry`);
+    }
+  }
 }
 
 // ─── Core: Transform ─────────────────────────────────────
@@ -358,7 +395,7 @@ export function transformToModelIntelligence(
 /**
  * Fetch, transform, and store Arena ELO intelligence data.
  *
- * Pipeline: delete expired → fetch leaderboards → transform → bulk upsert.
+ * Pipeline: fetch full replacement → validate → transform → atomic source swap.
  * All errors are caught and logged — sync is never fatal.
  *
  * @param dryRun - If true, fetches and transforms but does not write to DB.
@@ -381,22 +418,15 @@ export async function syncArenaElo(dryRun = false): Promise<SyncResult> {
       firstSyncDone = true;
     }
 
-    // Clean up stale entries before writing new ones
-    if (!dryRun) {
-      try {
-        deleteExpiredIntelligence();
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn(`[ARENA_ELO_SYNC] Failed to delete expired intelligence: ${message}`);
-      }
-    }
-
     const leaderboards = await fetchArenaLeaderboards();
     const entries = transformToModelIntelligence(leaderboards);
+    if (entries.length === 0) {
+      throw new Error("Arena replacement produced no model intelligence entries");
+    }
 
-    if (!dryRun && entries.length > 0) {
+    if (!dryRun) {
       try {
-        bulkUpsertModelIntelligence(entries);
+        replaceModelIntelligenceBySource("arena_elo", entries);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.warn(`[ARENA_ELO_SYNC] Failed to bulk upsert intelligence: ${message}`);

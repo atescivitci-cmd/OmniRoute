@@ -188,6 +188,51 @@ export function bulkUpsertModelIntelligence(entries: Array<Omit<ModelIntelligenc
   return upsertAll();
 }
 
+/**
+ * Atomically replace every row owned by one intelligence source.
+ *
+ * The delete and all inserts share one transaction, so a constraint or write
+ * failure restores the previous source snapshot instead of leaving a partial
+ * or empty catalog.
+ */
+export function replaceModelIntelligenceBySource(
+  source: string,
+  entries: Array<Omit<ModelIntelligenceEntry, "syncedAt">>
+): number {
+  if (!source || entries.length === 0) {
+    throw new Error("MODEL_INTELLIGENCE_REPLACEMENT_EMPTY");
+  }
+  if (entries.some((entry) => entry.source !== source)) {
+    throw new Error("MODEL_INTELLIGENCE_REPLACEMENT_SOURCE_MISMATCH");
+  }
+
+  const db = getDbInstance();
+  const remove = db.prepare("DELETE FROM model_intelligence WHERE source = ?");
+  const insert = db.prepare(
+    `INSERT INTO model_intelligence
+       (model, source, category, score, elo_raw, confidence, synced_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?)`
+  );
+  const replace = db.transaction(() => {
+    remove.run(source);
+    let count = 0;
+    for (const entry of entries) {
+      insert.run(
+        entry.model,
+        entry.source,
+        entry.category,
+        entry.score,
+        entry.eloRaw ?? null,
+        entry.confidence ?? null,
+        entry.expiresAt ?? null
+      );
+      count++;
+    }
+    return count;
+  });
+  return replace();
+}
+
 export function getResolvedTaskFitness(model: string, category: string): number | null {
   const entry = getModelIntelligence(model, category);
   return entry ? entry.score : null;
