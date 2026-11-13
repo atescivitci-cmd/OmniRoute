@@ -505,7 +505,12 @@ export function createRoutingAttemptGuard(options: {
             return stop(result, "request_rejected");
           // A rejection status is affirmative nonexecution for ordinary text;
           // network errors and 5xx do not prove a tool operation did not execute.
-          if (input.hasTools) return stop(result, "tool_replay_unqualified");
+          // TOOL_RATE_LIMIT_FAILOVER_V1: a 429 is the provider declining admission
+          // before any generation, so no tool operation can have run and another
+          // target may be tried. Every other status here (408, 5xx) can follow
+          // partial execution and still stops a tool request.
+          if (input.hasTools && result.status !== 429)
+            return stop(result, "tool_replay_unqualified");
           if ([408, 429, 500, 502, 503, 504].includes(result.status)) {
             const hint = result.headers.get("retry-after");
             if (hint) {

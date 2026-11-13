@@ -357,3 +357,68 @@ test("auxiliary handoff retains target timeout and shared deadline", async () =>
   );
   assert.equal(sent, false);
 });
+
+// Tool-request rate limit: a 429 is the provider declining admission before any
+// generation, so no tool operation can have run. The next target may be tried.
+const toolBody = { ...body, tools: [{ type: "function", function: { name: "charge" } }] };
+const rateLimited = (headers: Record<string, string> = {}) =>
+  Response.json(
+    { error: { type: "rate_limit_error", message: "would exceed your account's rate limit" } },
+    { status: 429, headers }
+  );
+test("rate-limited tool request advances to the next target", async () => {
+  const seen: string[] = [];
+  const run = guard(toolBody).wrap(async (_b, model) => {
+    seen.push(model);
+    return model === "p/a" ? rateLimited() : ok();
+  });
+  assert.equal((await run(toolBody, "p/a")).status, 429);
+  const second = await run(toolBody, "q/b");
+  assert.deepEqual(seen, ["p/a", "q/b"]);
+  assert.equal(second.status, 200);
+});
+test("rate-limited tool target is not re-dispatched while its Retry-After holds", async () => {
+  let n = 0;
+  const run = guard(toolBody).wrap(async () => {
+    n++;
+    return rateLimited({ "Retry-After": "60" });
+  });
+  await run(toolBody, "p/a");
+  const again = await run(toolBody, "p/a");
+  assert.equal(n, 1);
+  assert.equal(again.status, 429);
+});
+test("tool request still stops on statuses that do not prove non-execution", async () => {
+  for (const status of [408, 500, 502, 503, 504]) {
+    let n = 0;
+    const run = guard(toolBody).wrap(async () => {
+      n++;
+      return err(status, "upstream_error");
+    });
+    await run(toolBody, "p/a");
+    await run(toolBody, "q/b");
+    assert.equal(n, 1, `status ${status} must not be replayed for a tool request`);
+  }
+});
+test("unqualified native-function 429 keeps its own stricter stop for tool requests", async () => {
+  let n = 0;
+  const run = guard(toolBody).wrap(async () => {
+    n++;
+    return rateLimited();
+  });
+  await run(toolBody, "nvidia/fixture-model");
+  await run(toolBody, "q/b");
+  assert.equal(n, 1);
+});
+test("provider-bound tool continuation is not moved by a rate limit", async () => {
+  const bound = { ...toolBody, previous_response_id: "resp_fixture" };
+  if (!inspectReplayInput(bound).providerBound) return;
+  let n = 0;
+  const run = guard(bound).wrap(async () => {
+    n++;
+    return rateLimited();
+  });
+  await run(bound, "p/a");
+  await run(bound, "q/b");
+  assert.equal(n, 1);
+});
