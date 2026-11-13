@@ -1,5 +1,6 @@
 import {
   createRoutingAttemptGuard,
+  isKeyLimitRefusal,
   routingGuardFor,
   isRoutingTerminal,
   routingFailure,
@@ -214,6 +215,7 @@ import {
   expandProviderWildcardsInCollection,
 } from "./combo/providerWildcard.ts";
 import { resolveShadowTargets, scheduleShadowRouting } from "./combo/shadowRouting.ts";
+import { sanitizeBodyAfterKeyLimit } from "./keyLimitFallThrough.ts";
 import { attemptCompatRejectedFallback } from "./combo/comboCompatFallback.ts";
 import {
   computeCompatRejectedTargets,
@@ -905,6 +907,16 @@ async function handleComboChatRemote({
       ? effectiveSessionId
       : null;
 
+  // KEY_LIMIT_SWITCH_V1: with an explicit per-terminal session the body is sanitized before
+  // any dispatch that follows a key-limit refusal, so the routing guard may let a
+  // signature-bound history move on from that refusal (and only that). See keyLimitFallThrough.ts.
+  let keyLimitRefused = false;
+  const keyLimitSwitchSanitizes =
+    continuitySessionId !== null &&
+    universalHandoffConfig.enabled &&
+    !(body as Record<string, unknown>)?.[SKIP_UNIVERSAL_HANDOFF_FLAG];
+  if (keyLimitSwitchSanitizes) routingAttemptGuard?.enableSanitizedSwitch();
+
   if (
     sameTerminalContinuityEnabled &&
     universalHandoffConfig.enabled &&
@@ -1455,6 +1467,12 @@ async function handleComboChatRemote({
             }
           }
 
+          if (keyLimitRefused && keyLimitSwitchSanitizes) {
+            attemptBody = sanitizeBodyAfterKeyLimit(
+              attemptBody as Record<string, unknown>
+            ) as typeof attemptBody;
+          }
+
           // Issue #3587: Reasoning models can spend the whole output budget on
           // reasoning. Only add headroom when the complete buffer fits inside the
           // model's known output cap; otherwise preserve the client's explicit limit.
@@ -1486,6 +1504,7 @@ async function handleComboChatRemote({
             failoverBeforeRetry: config.failoverBeforeRetry,
           });
 
+          if (!result.ok && isKeyLimitRefusal(result)) keyLimitRefused = true;
           if (!result.ok && isRoutingTerminal(result)) return { ok: false, response: result };
           signal?.throwIfAborted();
           // Success — validate response contract before returning. HTTP success is not answer quality.

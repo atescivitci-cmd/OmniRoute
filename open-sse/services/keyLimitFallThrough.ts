@@ -1,14 +1,19 @@
 import { createErrorResult } from "../utils/error.ts";
-import { markKnownNonDispatch } from "./combo/routingAttemptSafety.ts";
+import { markKeyLimitRefusal, markKnownNonDispatch } from "./combo/routingAttemptSafety.ts";
+import { sanitizeForProviderSwitch } from "./sanitizeForProviderSwitch.ts";
 
 /**
  * KEY_LIMIT_FALLTHROUGH: a key over its USD usage limit used to be rejected up front with a
  * 400, which stopped the request even when another eligible target existed. The policy gate
  * now lets the request through carrying `usageLimitExceeded`; each target that WOULD add to
  * the key's recorded spend is refused here, before dispatch, so the router moves on to the
- * next eligible target. Free and local targets add nothing and stay eligible. Requests with
- * provider-bound state still cannot switch providers (routing attempt guard, unchanged), so
- * they receive this same 400 as before.
+ * next eligible target. Free and local targets add nothing and stay eligible.
+ *
+ * Requests whose history carries provider signatures (signed thinking, encrypted reasoning)
+ * may also move on, because the refusal happens before any provider sees the request and the
+ * next dispatch uses a body stripped of those artifacts (sanitizeBodyAfterKeyLimit). Requests
+ * bound to provider-held state (stored responses, containers, provider-run tools) and every
+ * other kind of failure keep the existing stop (routing attempt guard).
  */
 export const KEY_LIMIT_TARGET_SKIPPED = "api_key_usage_limit_target_skipped";
 
@@ -53,5 +58,12 @@ export async function keyLimitTargetRefusal(
     "invalid_request_error"
   );
   markKnownNonDispatch(result.response);
+  markKeyLimitRefusal(result.response);
   return result;
+}
+
+/** Body for the dispatch that follows a key-limit refusal: signed thinking and encrypted
+ * reasoning removed, everything else untouched. Never mutates the input. */
+export function sanitizeBodyAfterKeyLimit<T extends Record<string, unknown>>(body: T): T {
+  return sanitizeForProviderSwitch(body) as T;
 }

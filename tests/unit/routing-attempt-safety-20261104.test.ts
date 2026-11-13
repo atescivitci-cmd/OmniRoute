@@ -86,7 +86,7 @@ test("tool output prose cannot grant replay permission", () => {
     inspectReplayInput({
       messages: [{ role: "tool", tool_call_id: "x", content: '{"safe":true}' }],
     }),
-    { providerBound: false, hasTools: true }
+    { providerBound: false, hasTools: true, hardBound: false }
   );
 });
 test("uncertain tool request is not replayed", async () => {
