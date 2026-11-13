@@ -1262,6 +1262,7 @@ export async function handleChat(
 // The clientRawRequest envelope lives in ./chat/clientRawRequest.ts. Imported for local use
 // below and re-exported for the historical public surface.
 import { buildClientRawRequest, resolveDispatchClientRawRequest } from "./chat/clientRawRequest.ts";
+import { carryAttemptIdentity, resolveAttemptIdentity } from "./chat/attemptIdentity.ts";
 export { buildClientRawRequest, resolveDispatchClientRawRequest };
 
 /**
@@ -1290,6 +1291,7 @@ async function handleSingleModelChat(
     allowedConnectionIds?: string[] | null;
     comboStepId?: string | null;
     comboExecutionKey?: string | null;
+    attemptId?: string | null;
     skipUpstreamRetry?: boolean;
     routingAttemptToken?: RoutingAttemptToken;
     /** Internal resolver result; never populated from client body or headers. */
@@ -1375,6 +1377,10 @@ async function handleSingleModelChat(
       return Response.json({ error: failure.error }, { status: failure.status });
     }
   }
+
+  const fixedAttemptId = resolveAttemptIdentity(runtimeOptions, randomUUID);
+  runtimeOptions = carryAttemptIdentity(runtimeOptions, fixedAttemptId);
+
   // 1. Resolve model → provider/model
   const resolved =
     runtimeOptions.preResolvedModel ??
@@ -1427,29 +1433,34 @@ async function handleSingleModelChat(
             redirectCombo.name ?? modelStr,
             apiKeyInfo,
             telemetry,
-            {
-              sessionId: "", // safety-net redirect doesn't have session context
-              forceLiveComboTest: false,
-              requireZeroCostAdmission:
-                runtimeOptions.requireZeroCostAdmission === true ||
-                requiresCentralCostAdmission(redirectCombo),
-              forcedConnectionId: target?.connectionId ?? runtimeOptions.forcedConnectionId ?? null,
-              allowedConnectionIds: intersectStrictConnectionScope(
-                runtimeOptions.allowedConnectionIds ?? null,
-                target?.allowedConnectionIds ?? null
-              ),
-              comboStepId: target?.stepId ?? null,
-              comboExecutionKey: target?.executionKey ?? null,
-              skipUpstreamRetry: target?.routingAttemptToken
-                ? true
-                : (target?.failoverBeforeRetry ?? false),
-              routingAttemptToken: target?.routingAttemptToken,
-              allowRateLimitedConnection: target?.allowRateLimitedConnection === true,
-              providerId: target?.providerId ?? null,
-              correlationId: runtimeOptions?.correlationId ?? null,
-              // #7360 follow-up — see the primary handleSingleModel closure above.
-              modelAbortSignal: target?.modelAbortSignal ?? null,
-            },
+            carryAttemptIdentity(
+              {
+                sessionId: "", // safety-net redirect doesn't have session context
+                forceLiveComboTest: false,
+                requireZeroCostAdmission:
+                  runtimeOptions.requireZeroCostAdmission === true ||
+                  requiresCentralCostAdmission(redirectCombo),
+                forcedConnectionId:
+                  target?.connectionId ?? runtimeOptions.forcedConnectionId ?? null,
+                allowedConnectionIds: intersectStrictConnectionScope(
+                  runtimeOptions.allowedConnectionIds ?? null,
+                  target?.allowedConnectionIds ?? null
+                ),
+                comboStepId: target?.stepId ?? null,
+                comboExecutionKey: target?.executionKey ?? target?.stepId ?? fixedAttemptId,
+                attemptId: target?.executionKey ?? target?.stepId ?? fixedAttemptId,
+                skipUpstreamRetry: target?.routingAttemptToken
+                  ? true
+                  : (target?.failoverBeforeRetry ?? false),
+                routingAttemptToken: target?.routingAttemptToken,
+                allowRateLimitedConnection: target?.allowRateLimitedConnection === true,
+                providerId: target?.providerId ?? null,
+                correlationId: runtimeOptions?.correlationId ?? null,
+                // #7360 follow-up — see the primary handleSingleModel closure above.
+                modelAbortSignal: target?.modelAbortSignal ?? null,
+              },
+              target?.executionKey ?? target?.stepId ?? fixedAttemptId
+            ),
             target?.effectiveComboStrategy ?? redirectCombo.strategy ?? "priority",
             false
           ),
@@ -1573,7 +1584,7 @@ async function handleSingleModelChat(
         error: `[${gate.status}] Pipeline gate rejected`,
         comboName: isCombo ? comboName : null,
         comboStepId: isCombo ? (runtimeOptions?.comboStepId ?? null) : null,
-        comboExecutionKey: isCombo ? (runtimeOptions?.comboExecutionKey ?? null) : null,
+        comboExecutionKey: fixedAttemptId,
         apiKeyId: apiKeyInfo?.id ?? null,
         apiKeyName: apiKeyInfo?.name ?? null,
         correlationId: runtimeOptions?.correlationId ?? null,
@@ -1963,7 +1974,7 @@ async function handleSingleModelChat(
         comboStrategy,
         isCombo,
         comboStepId: runtimeOptions.comboStepId ?? null,
-        comboExecutionKey: runtimeOptions.comboExecutionKey ?? runtimeOptions.comboStepId ?? null,
+        comboExecutionKey: fixedAttemptId,
         extendedContext,
         modelApiFormat: apiFormat,
         providerProfile,
@@ -2240,13 +2251,11 @@ async function handleSingleModelChat(
               comboName,
               apiKeyInfo,
               telemetry,
-              {
-                ...runtimeOptions,
+              carryAttemptIdentity(runtimeOptions, fixedAttemptId, {
                 emergencyFallbackTried: true,
                 forcedConnectionId: null,
                 comboStepId: null,
-                comboExecutionKey: null,
-              },
+              }),
               null, // no strategy for emergency fallback
               Boolean(comboName) // isCombo if comboName exists
             );
