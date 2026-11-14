@@ -2046,6 +2046,19 @@ async function handleSingleModelChat(
         return result.response;
       }
 
+      // The request-level owner must inspect the actual bounded upstream error.
+      // A nested account loop replaces this with an all-accounts/cooldown response,
+      // losing execution evidence and incorrectly exhausting safe free-text recovery.
+      // This does not grant fallback: the outer guard still rejects tools, bound
+      // state, partial output, uncertainty, and every cost admission refusal.
+      if (
+        runtimeOptions.routingAttemptToken &&
+        runtimeOptions.requireZeroCostAdmission === true &&
+        result.status === 503
+      ) {
+        return withSelectedConnectionHeader(result.response, credentials?.connectionId);
+      }
+
       // Missing Cloud Code project assignment is an account configuration error, not a
       // transient upstream/account failure. Preserve the executor's typed fail-closed 422;
       // marking the connection unavailable here would trigger cooldown redispatch and repeat
