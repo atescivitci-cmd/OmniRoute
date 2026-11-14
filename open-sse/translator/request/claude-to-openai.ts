@@ -40,6 +40,40 @@ function normalizeOpenAIReasoningEffort(effort: unknown): string | undefined {
   return normalized || undefined;
 }
 
+function invalidOutputFormat(message: string): Error & { statusCode: number; errorType: string } {
+  return Object.assign(new Error(message), {
+    statusCode: 400,
+    errorType: "invalid_request_error",
+  });
+}
+
+/** Validate the transport envelope, not the provider's JSON Schema dialect. */
+function convertClaudeOutputFormat(format: unknown): JsonRecord {
+  if (!format || typeof format !== "object" || Array.isArray(format)) {
+    throw invalidOutputFormat("output_config.format must be a JSON schema format object");
+  }
+  const record = format as JsonRecord;
+  if (record.type !== "json_schema") {
+    throw invalidOutputFormat("output_config.format.type must be json_schema");
+  }
+  if (Object.keys(record).some((key) => key !== "type" && key !== "schema")) {
+    throw invalidOutputFormat("output_config.format contains unsupported fields");
+  }
+  if (!record.schema || typeof record.schema !== "object" || Array.isArray(record.schema)) {
+    throw invalidOutputFormat("output_config.format.schema must be an object");
+  }
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: "response",
+      // Preserve optional properties and the complete schema verbatim. Anthropic's
+      // dialect is not OpenAI's strict subset; do not invent strict:true or rewrite
+      // required/nullable fields. Provider and application validation still apply.
+      schema: record.schema,
+    },
+  };
+}
+
 function isClaudeServerWebSearchTool(tool: unknown): tool is JsonRecord {
   if (!tool || typeof tool !== "object" || Array.isArray(tool)) return false;
   const record = tool as JsonRecord;
@@ -111,6 +145,14 @@ export function claudeToOpenAIRequest(model, body, stream, credentials: unknown 
     messages: [],
     stream: stream,
   };
+
+  if (
+    body.output_config !== null &&
+    typeof body.output_config === "object" &&
+    Object.prototype.hasOwnProperty.call(body.output_config, "format")
+  ) {
+    result.response_format = convertClaudeOutputFormat(body.output_config.format);
+  }
 
   // Max tokens
   if (body.max_tokens) {
