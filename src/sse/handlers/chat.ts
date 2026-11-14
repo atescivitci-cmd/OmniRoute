@@ -854,6 +854,7 @@ export async function handleChat(
     const comboSetupConfig = resolveComboSetupConfig(combo, settings);
     const comboTimeoutMs = Number(comboSetupConfig.comboTimeoutMs ?? 0);
     const routingAttemptGuard = createRoutingAttemptGuard({
+      allowStatelessZeroCost503: requiresCentralCostAdmission(combo),
       body,
       signal: request?.signal ?? null,
       limit: MAX_GLOBAL_ATTEMPTS,

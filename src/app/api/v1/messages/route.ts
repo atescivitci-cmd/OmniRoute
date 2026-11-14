@@ -1,3 +1,4 @@
+import { withExecutionBudget } from "@omniroute/open-sse/utils/requestExecutionBudget.ts";
 import { handleChat } from "@/sse/handlers/chat";
 import { initTranslators } from "@omniroute/open-sse/translator/index.ts";
 import { withInjectionGuard } from "@/middleware/promptInjectionGuard";
@@ -68,6 +69,7 @@ async function postHandler(request: any, context: any, preParsedBody: any = null
       // body unavailable / non-JSON — preserve handleChat's normal validation
     }
   }
+  if (body !== null) request = withExecutionBudget(request, body);
   if (body?.stream === true || accept.includes("text/event-stream")) {
     return await withEarlyStreamKeepalive(handleChat(request, null, body), {
       signal: request.signal,

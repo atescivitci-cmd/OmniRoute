@@ -161,9 +161,22 @@ function makeToken(signal?: AbortSignal | null): RoutingAttemptToken {
   };
 }
 
-async function boundedErrorCode(
-  response: Response
-): Promise<{ code: string | null; uncertain: boolean; reason: string | null } | null> {
+function hasGenerationEvidence(value: unknown, depth = 0): boolean {
+  if (depth > 12) return true;
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value).some(
+    ([key, child]) =>
+      ["usage", "content", "output", "choices", "generated_text"].includes(key) ||
+      hasGenerationEvidence(child, depth + 1)
+  );
+}
+
+async function boundedErrorCode(response: Response): Promise<{
+  code: string | null;
+  uncertain: boolean;
+  reason: string | null;
+  errorOnly?: boolean;
+} | null> {
   if (!response.headers.get("content-type")?.includes("application/json")) return null;
   const reader = response.clone().body?.getReader();
   if (!reader) return null;
@@ -191,6 +204,12 @@ async function boundedErrorCode(
         const detail = value?.error?.details;
         return {
           code: typeof value?.error?.code === "string" ? value.error.code : null,
+          errorOnly:
+            !!value?.error &&
+            typeof value.error === "object" &&
+            !Array.isArray(value.error) &&
+            Object.keys(value).every((key) => key === "error") &&
+            !hasGenerationEvidence(value.error),
           uncertain:
             detail?.execution_outcome === "uncertain" || detail?.execution_outcome === "unknown",
           reason: typeof detail?.reason === "string" ? detail.reason : null,
@@ -274,6 +293,8 @@ export function createRoutingAttemptGuard(options: {
    * the existing stop.
    */
   sanitizedSwitch?: boolean;
+  /** Server-only attestation: every next dispatch still requires strict free-cost admission. */
+  allowStatelessZeroCost503?: boolean;
 }) {
   const budget = options.sharedBudget ?? {
     startedAt: Date.now(),
@@ -530,7 +551,13 @@ export function createRoutingAttemptGuard(options: {
             (typed?.provider === "nvidia" || (!typed?.provider && model.startsWith("nvidia/"))) &&
             ([401, 403, 404, 408, 429].includes(result.status) || result.status >= 500) &&
             !nonDispatch.has(result) &&
-            !definiteRejection.has(result)
+            !definiteRejection.has(result) &&
+            !(
+              options.allowStatelessZeroCost503 === true &&
+              !input.hasTools &&
+              result.status === 503 &&
+              error?.errorOnly === true
+            )
           )
             return stop(result, "no_safe_fallback");
           if (

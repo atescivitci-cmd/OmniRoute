@@ -1,3 +1,4 @@
+import { resolveFitFirstFreeConfig } from "./autoCombo/fitFirstPolicy.ts";
 import {
   createRoutingAttemptGuard,
   isKeyLimitRefusal,
@@ -651,6 +652,9 @@ export async function handleComboChat(options: HandleComboChatOptions): Promise<
   const guard =
     routingGuardFor(options.handleSingleModel) ??
     createRoutingAttemptGuard({
+      allowStatelessZeroCost503:
+        resolveFitFirstFreeConfig(options.combo).enabled &&
+        resolveFitFirstFreeConfig(options.combo).localFallbackPolicy === "last",
       body: options.body,
       signal: options.signal,
       limit: MAX_GLOBAL_ATTEMPTS,
