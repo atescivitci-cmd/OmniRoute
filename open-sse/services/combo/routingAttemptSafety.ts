@@ -167,6 +167,7 @@ function hasGenerationEvidence(value: unknown, depth = 0): boolean {
   return Object.entries(value).some(
     ([key, child]) =>
       ["usage", "content", "output", "choices", "generated_text"].includes(key) ||
+      (key === "execution_outcome" && ["uncertain", "unknown"].includes(String(child))) ||
       hasGenerationEvidence(child, depth + 1)
   );
 }
@@ -208,8 +209,8 @@ async function boundedErrorCode(response: Response): Promise<{
             !!value?.error &&
             typeof value.error === "object" &&
             !Array.isArray(value.error) &&
-            Object.keys(value).every((key) => key === "error") &&
-            !hasGenerationEvidence(value.error),
+            Object.keys(value).every((key) => ["error", "upstream_details"].includes(key)) &&
+            !hasGenerationEvidence(value),
           uncertain:
             detail?.execution_outcome === "uncertain" || detail?.execution_outcome === "unknown",
           reason: typeof detail?.reason === "string" ? detail.reason : null,

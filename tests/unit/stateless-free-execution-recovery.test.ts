@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRoutingAttemptGuard } from "../../open-sse/services/combo/routingAttemptSafety.ts";
+import { createErrorResult } from "../../open-sse/utils/error.ts";
 const body = { messages: [{ role: "user", content: "fixture" }] };
 async function exercise(
   input: Record<string, unknown> = body,
@@ -52,3 +53,31 @@ test("a timeout does not become a completed-rejection retry", async () => {
   await run(body, "nvidia/fixture-b");
   assert.equal(calls, 1);
 });
+
+test("native normalized upstream 503 advances without discarding its bounded diagnostics", async () => {
+  const failure = createErrorResult(503, "temporarily unavailable", null, undefined, undefined, {
+    error: { message: "temporarily unavailable" },
+    status: 503,
+  }).response;
+  assert.equal((await exercise(body, { allowStatelessZeroCost503: true }, failure)).calls, 2);
+});
+for (const details of [
+  { error: { details: { execution_outcome: "unknown" } } },
+  { usage: { completion_tokens: 1 } },
+  { choices: [{ text: "partial" }] },
+])
+  test(
+    "native upstream diagnostics cannot conceal partial or uncertain execution: " +
+      JSON.stringify(details),
+    async () => {
+      const failure = createErrorResult(
+        503,
+        "temporarily unavailable",
+        null,
+        undefined,
+        undefined,
+        details
+      ).response;
+      assert.equal((await exercise(body, { allowStatelessZeroCost503: true }, failure)).calls, 1);
+    }
+  );
