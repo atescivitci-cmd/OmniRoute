@@ -146,6 +146,12 @@ function targetForCandidate(
   };
 }
 
+import {
+  describeContextDrops,
+  describeToolFilterDrops,
+  droppedTargets,
+  loneUnprovenWinner,
+} from "./prefilterDiagnostics.ts";
 /**
  * Resolve target ordering for the `auto` combo strategy.
  *
@@ -203,6 +209,18 @@ export async function resolveAutoStrategyOrder(
         supportsToolCalling(target.modelStr) || providerSupportsEmulatedToolCalling(target.provider)
     );
     if (filtered.length > 0) {
+      const toolDrops = droppedTargets(eligibleTargets, filtered);
+      if (toolDrops.length > 0) {
+        log.info(
+          "COMBO",
+          JSON.stringify({
+            event: "prefilter_drop",
+            stage: "tool_calling",
+            combo: combo.name,
+            dropped: describeToolFilterDrops(toolDrops),
+          })
+        );
+      }
       eligibleTargets = filtered;
     } else if (compatFilterFailOpen) {
       log.warn(
@@ -296,6 +314,19 @@ export async function resolveAutoStrategyOrder(
         "COMBO",
         `Auto strategy: context-window filter kept ${filteredByContext.length}/${eligibleTargets.length} candidates (est. ${estimatedInputTokens} tokens)`
       );
+      const contextDrops = droppedTargets(eligibleTargets, filteredByContext);
+      if (contextDrops.length > 0) {
+        log.info(
+          "COMBO",
+          JSON.stringify({
+            event: "prefilter_drop",
+            stage: "context_window",
+            combo: combo.name,
+            estimatedTokens: estimatedInputTokens,
+            dropped: describeContextDrops(contextDrops, targetContextLimit, targetRequiredTokens),
+          })
+        );
+      }
       eligibleTargets = filteredByContext;
     } else if (compatFilterFailOpen && !preserveFullContext) {
       log.warn(
@@ -660,6 +691,13 @@ export async function resolveAutoStrategyOrder(
             }
           ),
         };
+      }
+      const loneWinner = loneUnprovenWinner(fitFirstDecision.ranked);
+      if (loneWinner) {
+        log.warn(
+          "COMBO",
+          JSON.stringify({ event: "single_unproven_candidate", combo: combo.name, ...loneWinner })
+        );
       }
       selectedProvider = winner.candidate.provider;
       selectedModel = winner.candidate.model;
