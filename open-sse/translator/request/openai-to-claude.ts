@@ -1,4 +1,5 @@
 import { register } from "../registry.ts";
+import { normalizeClaudeInputSchema } from "../helpers/claudeInputSchema.ts";
 import { FORMATS } from "../formats.ts";
 // CLAUDE_SYSTEM_PROMPT import removed — no longer injected unconditionally (#1966/#2130)
 import { supportsClaudeMaxEffort, supportsXHighEffort } from "../../config/providerModels.ts";
@@ -400,10 +401,12 @@ export function openaiToClaudeRequest(model, body, stream, credentials = null) {
         // MCP tools (e.g. pencil, computer_use) may omit properties on object-type schemas.
         const rawSchema: Record<string, unknown> = toolData.parameters ||
           toolData.input_schema || { type: "object", properties: {}, required: [] };
-        const normalizedSchema =
+        const objectSchema =
           rawSchema.type === "object" && !rawSchema.properties
             ? { ...rawSchema, properties: {} }
             : rawSchema;
+        // Anthropic rejects oneOf/allOf/anyOf at the top level of input_schema; flatten it.
+        const normalizedSchema = normalizeClaudeInputSchema(objectSchema);
 
         return {
           name: toolName,
