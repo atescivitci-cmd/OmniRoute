@@ -213,14 +213,100 @@ test("equal property schemas across variants are de-duplicated, three-way confli
   });
 });
 
-test("a conflict with a base property keeps the base schema as the first choice", () => {
+test("a base definition and a differing oneOf definition are conjunctive: allOf of base and the alternatives", () => {
   const out = normalizeClaudeInputSchema({
     type: "object",
     properties: { mode: { type: "string" } },
-    oneOf: [{ properties: { mode: { enum: ["fast"] } } }],
+    oneOf: [
+      { properties: { mode: { enum: ["fast"] } } },
+      { properties: { mode: { enum: ["slow"] } } },
+    ],
   });
   assert.deepEqual((out.properties as Record<string, unknown>).mode, {
-    anyOf: [{ type: "string" }, { enum: ["fast"] }],
+    allOf: [{ type: "string" }, { anyOf: [{ enum: ["fast"] }, { enum: ["slow"] }] }],
+  });
+});
+
+test("overlapping allOf constraints on one key all survive through a nested allOf", () => {
+  const out = normalizeClaudeInputSchema({
+    type: "object",
+    properties: { mode: { type: "string" } },
+    allOf: [
+      { properties: { mode: { enum: ["a", "b"] } } },
+      { properties: { mode: { minLength: 1 } } },
+      { properties: { mode: { type: "string" } } },
+    ],
+  });
+  assert.deepEqual((out.properties as Record<string, unknown>).mode, {
+    allOf: [{ type: "string" }, { enum: ["a", "b"] }, { minLength: 1 }],
+  });
+  const two = normalizeClaudeInputSchema({
+    allOf: [{ properties: { n: { type: "string" } } }, { properties: { n: { enum: ["x"] } } }],
+  });
+  assert.deepEqual((two.properties as Record<string, unknown>).n, {
+    allOf: [{ type: "string" }, { enum: ["x"] }],
+  });
+});
+
+test("a property missing from one oneOf branch stays permitted and is not required", () => {
+  const out = normalizeClaudeInputSchema({
+    oneOf: [
+      {
+        properties: { kind: { const: "a" }, extra: { type: "string" } },
+        required: ["kind", "extra"],
+      },
+      { properties: { kind: { const: "b" } }, required: ["kind"] },
+    ],
+  });
+  assert.deepEqual(out.required, ["kind"]);
+  const props = out.properties as Record<string, unknown>;
+  assert.deepEqual(props.extra, { type: "string" });
+  assert.deepEqual(props.kind, { anyOf: [{ const: "a" }, { const: "b" }] });
+});
+
+const PROTO_NAMES = ["constructor", "toString", "hasOwnProperty", "__proto__"];
+
+function assertProtoNamesPreserved(out: Record<string, unknown>, label: string) {
+  const props = out.properties as Record<string, unknown>;
+  assert.equal(Object.getPrototypeOf(props), Object.prototype, `${label}: prototype untouched`);
+  for (const name of PROTO_NAMES) {
+    assert.equal(Object.prototype.hasOwnProperty.call(props, name), true, `${label}: ${name}`);
+    assert.ok(Object.keys(props).includes(name), `${label}: ${name} enumerable`);
+    assert.ok(JSON.stringify(out).includes(`"${name}":`), `${label}: ${name} serialized`);
+  }
+}
+
+test("prototype-named properties survive as own keys in base, oneOf and allOf schemas", () => {
+  // JSON.parse creates a genuine own "__proto__" key, unlike an object literal.
+  const withProto = (type: string) =>
+    JSON.parse(`{${PROTO_NAMES.map((n) => `"${n}":{"type":"${type}"}`).join(",")}}`) as Record<
+      string,
+      unknown
+    >;
+
+  const inBase = normalizeClaudeInputSchema({
+    type: "object",
+    properties: withProto("string"),
+    oneOf: [{ required: ["constructor"] }],
+  });
+  assertProtoNamesPreserved(inBase, "base");
+
+  const inOneOf = normalizeClaudeInputSchema({
+    oneOf: [{ properties: withProto("string") }, { properties: withProto("number") }],
+  });
+  assertProtoNamesPreserved(inOneOf, "oneOf");
+  assert.deepEqual(Object.getOwnPropertyDescriptor(inOneOf.properties, "__proto__")?.value, {
+    anyOf: [{ type: "string" }, { type: "number" }],
+  });
+
+  const inAllOf = normalizeClaudeInputSchema({
+    type: "object",
+    properties: withProto("string"),
+    allOf: [{ properties: withProto("string") }, { properties: { toString: { minLength: 1 } } }],
+  });
+  assertProtoNamesPreserved(inAllOf, "allOf");
+  assert.deepEqual((inAllOf.properties as Record<string, unknown>).toString, {
+    allOf: [{ type: "string" }, { minLength: 1 }],
   });
 });
 
