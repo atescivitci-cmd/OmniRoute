@@ -12,6 +12,12 @@ import {
 const nonDispatch = new WeakSet<Response>();
 const terminal = new WeakSet<Response>();
 const definiteRejection = new WeakSet<Response>();
+// A completed, bounded stateless free-text503 may advance the existing queue.
+// This is not evidence of nondispatch and cannot be granted through wire fields.
+const statelessServiceFailures = new WeakSet<object>();
+export function isStatelessZeroCostServiceFailure(response: object): boolean {
+  return statelessServiceFailures.has(response);
+}
 // A target refused BEFORE dispatch because the API key is over its USD limit. No provider saw
 // the request, so a sanitized body may move on to another target (see sanitizedSwitch below).
 const keyLimitRefusal = new WeakSet<Response>();
@@ -53,6 +59,7 @@ function copyRoutingResponseState<T extends Response>(source: Response, target: 
   if (nonDispatch.has(source)) nonDispatch.add(target);
   if (definiteRejection.has(source)) definiteRejection.add(target);
   if (terminal.has(source)) terminal.add(target);
+  if (statelessServiceFailures.has(source)) statelessServiceFailures.add(target);
   if (keyLimitRefusal.has(source)) keyLimitRefusal.add(target);
   const reason = stopReasons.get(source);
   if (reason) stopReasons.set(target, reason);
@@ -546,19 +553,26 @@ export function createRoutingAttemptGuard(options: {
             priorFailure = result;
             return result;
           }
+          if (
+            options.allowStatelessZeroCost503 === true &&
+            !input.hasTools &&
+            result.status === 503 &&
+            error?.errorOnly === true
+          ) {
+            // Do not retry this pair or poison the account's other model targets.
+            // The existing ranked queue and final cost guard still own dispatch.
+            statelessServiceFailures.add(result);
+            rejected.add(key);
+            priorFailure = result;
+            return result;
+          }
           // A wire error code is not positive evidence of non-generation. The
           // native handler marks the one qualified NVIDIA rejection locally.
           if (
             (typed?.provider === "nvidia" || (!typed?.provider && model.startsWith("nvidia/"))) &&
             ([401, 403, 404, 408, 429].includes(result.status) || result.status >= 500) &&
             !nonDispatch.has(result) &&
-            !definiteRejection.has(result) &&
-            !(
-              options.allowStatelessZeroCost503 === true &&
-              !input.hasTools &&
-              result.status === 503 &&
-              error?.errorOnly === true
-            )
+            !definiteRejection.has(result)
           )
             return stop(result, "no_safe_fallback");
           if (

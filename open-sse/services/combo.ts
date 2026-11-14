@@ -1,5 +1,6 @@
 import { resolveFitFirstFreeConfig } from "./autoCombo/fitFirstPolicy.ts";
 import {
+  isStatelessZeroCostServiceFailure,
   createRoutingAttemptGuard,
   isKeyLimitRefusal,
   routingGuardFor,
@@ -1896,7 +1897,9 @@ async function handleComboChatRemote({
                       : undefined,
                 }
               : undefined;
-          const scopedFailure = isScopedFailure(result.status, errorText, structuredError);
+          const scopedFailure =
+            isStatelessZeroCostServiceFailure(result) ||
+            isScopedFailure(result.status, errorText, structuredError);
 
           // #8375: input-bound request-scoped failures (context_length_exceeded) are
           // deterministic for the same input — retrying on other accounts of the same
@@ -2066,6 +2069,7 @@ async function handleComboChatRemote({
           // Check if this is a transient error worth retrying on same model.
           // A token-limit 429 is terminal for the client — never retry it.
           const isTransient =
+            !isStatelessZeroCostServiceFailure(result) &&
             !isStreamReadinessFailure &&
             !isTokenLimitBreach &&
             !isLocalRateLimitQueueFailure(errorText, structuredError) &&
@@ -3187,7 +3191,9 @@ async function handleRoundRobinCombo({
                     : undefined,
               }
             : undefined;
-        const scopedFailure = isScopedFailure(result.status, errorText, structuredError);
+        const scopedFailure =
+          isStatelessZeroCostServiceFailure(result) ||
+          isScopedFailure(result.status, errorText, structuredError);
         const fallbackResult = checkFallbackError(
           result.status,
           errorText,

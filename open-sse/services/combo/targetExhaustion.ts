@@ -1,3 +1,4 @@
+import { isStatelessZeroCostServiceFailure } from "./routingAttemptSafety.ts";
 /**
  * Shared upstream-error → exhaustion-set classification for the combo dispatchers
  * (Quality Gate v2 / Fase 9 — combo god-file decomposition, dispatcher de-dup fase 2b).
@@ -79,6 +80,7 @@ export function applyComboTargetExhaustion(
 ): boolean {
   const { result, sets, log, tag } = opts;
   const provider = target.provider;
+  if (isStatelessZeroCostServiceFailure(result)) return false;
 
   // #8133/#8137: auth-level failures (401/403) mean that connection's credentials are bad.
   // Split out to keep applyComboTargetExhaustion under the complexity ceiling.

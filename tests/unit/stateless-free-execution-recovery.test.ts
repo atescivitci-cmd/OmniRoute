@@ -81,3 +81,64 @@ for (const details of [
       assert.equal((await exercise(body, { allowStatelessZeroCost503: true }, failure)).calls, 1);
     }
   );
+
+test("native free503 does not exhaust the account, retry the pair, or reorder alternatives", async () => {
+  const { applyComboTargetExhaustion } =
+    await import("../../open-sse/services/combo/targetExhaustion.ts");
+  const { inheritRoutingResponseState, isStatelessZeroCostServiceFailure } =
+    await import("../../open-sse/services/combo/routingAttemptSafety.ts");
+  const calls: string[] = [];
+  const guard = createRoutingAttemptGuard({ body, limit: 3, allowStatelessZeroCost503: true });
+  const run = guard.wrap(async (_b, model, target) => {
+    calls.push(model);
+    target!.routingAttemptToken!.enter();
+    return calls.length === 1
+      ? createErrorResult(503, "temporarily unavailable", null, undefined, undefined, {
+          error: { message: "temporarily unavailable" },
+        }).response
+      : Response.json({ text: "fixture" });
+  });
+  const target = {
+    provider: "nvidia",
+    connectionId: "fixture",
+    modelStr: "nvidia/fixture-a",
+    model: "fixture-a",
+  };
+  const failed = await run(body, "nvidia/fixture-a", target);
+  const wrapped = inheritRoutingResponseState(
+    failed,
+    new Response(failed.body, { status: 503, headers: failed.headers })
+  );
+  assert.equal(isStatelessZeroCostServiceFailure(wrapped), true);
+  assert.equal(
+    isStatelessZeroCostServiceFailure(
+      Response.json({ error: { code: "service_unavailable" } }, { status: 503 })
+    ),
+    false
+  );
+  const sets = {
+    exhaustedProviders: new Set<string>(),
+    exhaustedConnections: new Set<string>(),
+    transientRateLimitedProviders: new Set<string>(),
+  };
+  applyComboTargetExhaustion(target, {
+    result: wrapped,
+    fallbackResult: { shouldFallback: true, cooldownMs: 0 },
+    errorText: "temporarily unavailable",
+    rawModel: "fixture-a",
+    isTokenLimitBreach: false,
+    allAccountsRateLimited: false,
+    sets,
+    log: { info() {}, warn() {}, debug() {}, error() {} },
+    tag: "fixture",
+    exhaustedLogLevel: "info",
+  });
+  assert.equal(sets.exhaustedProviders.size + sets.exhaustedConnections.size, 0);
+  await run(body, "nvidia/fixture-a", target);
+  await run(body, "nvidia/fixture-b", {
+    ...target,
+    modelStr: "nvidia/fixture-b",
+    model: "fixture-b",
+  });
+  assert.deepEqual(calls, ["nvidia/fixture-a", "nvidia/fixture-b"]);
+});
