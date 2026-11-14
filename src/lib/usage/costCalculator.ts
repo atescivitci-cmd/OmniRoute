@@ -55,7 +55,7 @@ const USD_TICKS_PER_DOLLAR = 10_000_000_000;
  * is present, so callers can trust it over the token × pricing estimate. Currently
  * only xAI's `cost_in_usd_ticks` field is handled — see comment above.
  */
-function extractExactCostUsd(
+export function extractExactCostUsd(
   tokens: Record<string, number | undefined> | null | undefined
 ): number | null {
   const ticks = tokens?.cost_in_usd_ticks;
