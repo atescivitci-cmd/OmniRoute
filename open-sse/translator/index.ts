@@ -1,6 +1,11 @@
 import { mapNvidiaGlm52ReasoningParams } from "../executors/base/reasoningEffort.ts";
 import { FORMATS } from "./formats.ts";
 import {
+  attachNamespaceIdentityMap,
+  captureNamespaceIdentityMap,
+  type NamespaceIdentity,
+} from "./helpers/namespaceIdentity.ts";
+import {
   ensureToolCallIds,
   fixMissingToolResponses,
   stripOrphanedToolResults,
@@ -261,6 +266,11 @@ export function translateRequest(
     result.messages = hoistLeadingSystemMessage(result.messages, provider);
   }
 
+  // The Responses->Chat translator records namespace tool identities on a request-scoped map.
+  // Later hub steps build new objects and drop non-enumerable properties, so keep it here and
+  // attach it to the final result on its own channel (never the string alias `_toolNameMap`).
+  let namespaceIdentityMap: Map<string, NamespaceIdentity> | null = null;
+
   // If same format, skip translation steps
   if (sourceFormat !== targetFormat) {
     // Check for direct translation path first (e.g., Claude → Gemini)
@@ -276,6 +286,7 @@ export function translateRequest(
             }
           : credentials;
       result = directTranslator(model, result, stream, directCredentials);
+      namespaceIdentityMap = captureNamespaceIdentityMap(result);
     } else {
       // Fallback: hub-and-spoke via OpenAI
       // Step 1: source -> openai (if source is not openai)
@@ -305,6 +316,7 @@ export function translateRequest(
           result = toOpenAI(model, result, stream, step1Credentials);
           // Log OpenAI intermediate format
           reqLogger?.logOpenAIRequest?.(result);
+          namespaceIdentityMap = captureNamespaceIdentityMap(result) ?? namespaceIdentityMap;
         }
       }
 
@@ -585,6 +597,8 @@ export function translateRequest(
       }
     }
   }
+
+  attachNamespaceIdentityMap(result, namespaceIdentityMap);
 
   return result;
 }

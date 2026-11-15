@@ -1318,6 +1318,281 @@ test("chatCore restores prefixed Claude passthrough tool names in upstream respo
   assert.equal(payload.content[0].name, "Bash");
 });
 
+function claudeToolUseResponse(toolName: string) {
+  return new Response(
+    JSON.stringify({
+      id: "msg_tool_use",
+      type: "message",
+      role: "assistant",
+      model: "claude-sonnet-4-6",
+      content: [{ type: "tool_use", id: "toolu_1", name: toolName, input: { command: "ls" } }],
+      stop_reason: "tool_use",
+      usage: { input_tokens: 4, output_tokens: 2 },
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } }
+  );
+}
+
+test("chatCore maps a translator alias back to the flat name for a namespaced Responses call", async () => {
+  // The Gemini translator renames tool names it cannot send as-is and carries the alias map on
+  // the translated body. chatCore used to delete that map before reading it, so the renamed
+  // upstream name never resolved to the flat name and the namespace identity lookup missed.
+  const { result } = await invokeChatCore({
+    provider: "gemini",
+    model: "gemini-2.5-flash",
+    endpoint: "/v1/responses",
+    credentials: { apiKey: "gemini-key", providerSpecificData: {} },
+    body: {
+      model: "gemini-2.5-flash",
+      stream: false,
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "go" }] }],
+      tools: [
+        {
+          type: "namespace",
+          name: "ns",
+          description: "ns",
+          tools: [
+            {
+              type: "function",
+              name: "_a",
+              description: "a",
+              parameters: { type: "object", properties: {} },
+            },
+          ],
+        },
+      ],
+    },
+    responseFactory: (captured) => {
+      const sentName = captured.body.tools[0].functionDeclarations[0].name;
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: { role: "model", parts: [{ functionCall: { name: sentName, args: {} } }] },
+              finishReason: "STOP",
+            },
+          ],
+          usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 2, totalTokenCount: 6 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    },
+  });
+
+  const payload = (await result.response.json()) as {
+    output: Array<{ type: string; namespace?: string; name?: string }>;
+  };
+  const item = payload.output.find((o) => o.type === "function_call");
+  assert.equal(item.namespace, "ns");
+  assert.equal(item.name, "_a");
+});
+
+test("chatCore returns a namespaced Responses tool call from a Claude target", async () => {
+  const { result } = await invokeChatCore({
+    provider: "claude",
+    model: "claude-sonnet-4-6",
+    endpoint: "/v1/responses",
+    credentials: { apiKey: "claude-key", providerSpecificData: {} },
+    body: {
+      model: "claude-sonnet-4-6",
+      stream: false,
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "go" }] }],
+      tools: [
+        {
+          type: "namespace",
+          name: "mcp__codex_apps__google_calendar",
+          description: "calendar",
+          tools: [
+            {
+              type: "function",
+              name: "_list_calendars",
+              description: "list",
+              parameters: { type: "object", properties: {} },
+            },
+          ],
+        },
+      ],
+    },
+    responseFormat: "claude",
+    responseFactory: () =>
+      claudeToolUseResponse("mcp__codex_apps__google_calendar___list_calendars"),
+  });
+
+  const payload = (await result.response.json()) as {
+    output: Array<{ type: string; namespace?: string; name?: string }>;
+  };
+  const item = payload.output.find((o) => o.type === "function_call");
+  assert.equal(item.namespace, "mcp__codex_apps__google_calendar");
+  assert.equal(item.name, "_list_calendars");
+});
+
+const NAMESPACED_RESPONSES_TOOLS = [
+  {
+    type: "namespace",
+    name: "mcp__codex_apps__google_calendar",
+    description: "calendar",
+    tools: [
+      {
+        type: "function",
+        name: "_list_calendars",
+        description: "list",
+        parameters: { type: "object", properties: {} },
+      },
+    ],
+  },
+  {
+    type: "function",
+    name: "shell",
+    description: "run a command",
+    parameters: { type: "object", properties: {} },
+  },
+];
+
+function sseResponse(events: Array<[string, unknown]>) {
+  const body = events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  return new Response(body.join(""), {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
+function claudeToolUseStream(toolName: string) {
+  return sseResponse([
+    [
+      "message_start",
+      {
+        type: "message_start",
+        message: {
+          id: "msg_s",
+          type: "message",
+          role: "assistant",
+          model: "claude-sonnet-4-6",
+          usage: { input_tokens: 4, output_tokens: 0 },
+        },
+      },
+    ],
+    [
+      "content_block_start",
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "tool_use", id: "toolu_1", name: toolName, input: {} },
+      },
+    ],
+    [
+      "content_block_delta",
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: "{}" },
+      },
+    ],
+    ["content_block_stop", { type: "content_block_stop", index: 0 }],
+    [
+      "message_delta",
+      { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 2 } },
+    ],
+    ["message_stop", { type: "message_stop" }],
+  ]);
+}
+
+function geminiToolUseStream(toolName: string) {
+  const chunk = {
+    candidates: [
+      {
+        content: { role: "model", parts: [{ functionCall: { name: toolName, args: {} } }] },
+        finishReason: "STOP",
+      },
+    ],
+    usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 2, totalTokenCount: 6 },
+  };
+  return new Response(`data: ${JSON.stringify(chunk)}\n\n`, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
+type ClientFunctionCall = { type: string; name?: string; namespace?: string };
+
+// Collect every function_call item the client sees in a Responses SSE stream.
+function functionCallItems(sse: string): ClientFunctionCall[] {
+  const items: ClientFunctionCall[] = [];
+  for (const line of sse.split("\n")) {
+    if (!line.startsWith("data:")) continue;
+    let payload: { item?: ClientFunctionCall; response?: { output?: ClientFunctionCall[] } };
+    try {
+      payload = JSON.parse(line.slice(5));
+    } catch {
+      continue;
+    }
+    if (payload.item?.type === "function_call") items.push(payload.item);
+    for (const o of payload.response?.output ?? []) if (o.type === "function_call") items.push(o);
+  }
+  return items;
+}
+
+async function streamNamespacedResponses(
+  target: "claude" | "gemini",
+  upstreamToolName: (sentName: string) => string
+) {
+  const { result } = await invokeChatCore({
+    provider: target,
+    model: target === "claude" ? "claude-sonnet-4-6" : "gemini-2.5-flash",
+    endpoint: "/v1/responses",
+    accept: "text/event-stream",
+    credentials: { apiKey: `${target}-key`, providerSpecificData: {} },
+    body: {
+      model: target === "claude" ? "claude-sonnet-4-6" : "gemini-2.5-flash",
+      stream: true,
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "go" }] }],
+      tools: NAMESPACED_RESPONSES_TOOLS,
+    },
+    responseFactory: (captured) => {
+      const sent =
+        target === "claude"
+          ? captured.body.tools.map((t) => t.name)[0]
+          : captured.body.tools[0].functionDeclarations.map((t) => t.name)[0];
+      const name = upstreamToolName(sent);
+      return target === "claude" ? claudeToolUseStream(name) : geminiToolUseStream(name);
+    },
+  });
+  assert.equal(result.success, true);
+  return functionCallItems(await result.response.text());
+}
+
+for (const target of ["claude", "gemini"] as const) {
+  test(`chatCore streams a namespaced Responses tool call from a ${target} target`, async () => {
+    // The upstream echoes whatever tool name it was sent (flattened, possibly aliased).
+    const items = await streamNamespacedResponses(target, (sent) => sent);
+    const call = items.at(-1);
+    assert.ok(call, "expected a function_call item in the client stream");
+    assert.equal(call.namespace, "mcp__codex_apps__google_calendar");
+    assert.equal(call.name, "_list_calendars");
+  });
+}
+
+test("chatCore leaves a non-namespaced Responses tool call unchanged", async () => {
+  const { result } = await invokeChatCore({
+    provider: "claude",
+    model: "claude-sonnet-4-6",
+    endpoint: "/v1/responses",
+    credentials: { apiKey: "claude-key", providerSpecificData: {} },
+    body: {
+      model: "claude-sonnet-4-6",
+      stream: false,
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "go" }] }],
+      tools: NAMESPACED_RESPONSES_TOOLS,
+    },
+    responseFormat: "claude",
+    responseFactory: () => claudeToolUseResponse("shell"),
+  });
+
+  const payload = (await result.response.json()) as { output: ClientFunctionCall[] };
+  const item = payload.output.find((o) => o.type === "function_call");
+  assert.equal(item?.name, "shell");
+  assert.equal(item?.namespace, undefined);
+});
+
 test("chatCore strips unsupported reasoning params and caps provider token fields", async () => {
   const { call } = await invokeChatCore({
     provider: "openai",

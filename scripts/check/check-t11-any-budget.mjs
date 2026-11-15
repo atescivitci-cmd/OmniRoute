@@ -93,7 +93,10 @@ const budget = [
   { file: "open-sse/handlers/responsesHandler.ts", maxAny: 0 },
   { file: "open-sse/mcp-server/__tests__/advancedTools.test.ts", maxAny: 0 },
   { file: "open-sse/mcp-server/__tests__/essentialTools.test.ts", maxAny: 0 },
-  { file: "open-sse/services/combo.ts", maxAny: 0 },
+  // 1 FALSE POSITIVE: `AbortSignal.any([...])` (the platform API that merges abort
+  // signals) matches the checker's `.any` pattern. There are zero actual TypeScript
+  // `any` types in this file. Budget set to the matched count.
+  { file: "open-sse/services/combo.ts", maxAny: 1 },
   { file: "open-sse/services/thinkingBudget.ts", maxAny: 0 },
   { file: "open-sse/translator/helpers/geminiHelper.ts", maxAny: 0 },
   { file: "open-sse/translator/helpers/openaiHelper.ts", maxAny: 0 },
