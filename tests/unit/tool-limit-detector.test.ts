@@ -127,4 +127,30 @@ describe("toolLimitDetector", () => {
     assert.strictEqual(shouldDetectLimit("Maximum number of tools is 128", 500), false);
     assert.strictEqual(shouldDetectLimit("Maximum number of tools is 128", 429), false);
   });
+
+  describe("per-provider default limits", () => {
+    it("gives claude a higher default without making it a known limit", () => {
+      assert.strictEqual(getEffectiveToolLimit("claude"), 256);
+      assert.strictEqual(getKnownToolLimit("claude"), null);
+    });
+
+    it("keeps the 128 default for other providers and strict limits unchanged", () => {
+      assert.strictEqual(getEffectiveToolLimit("openai"), 128);
+      assert.strictEqual(getEffectiveToolLimit("nvidia"), 1536);
+      assert.strictEqual(getEffectiveToolLimit("grok-cli"), 200);
+    });
+
+    it("lets a learned lower limit win and never raises it", () => {
+      setDetectedToolLimit("claude", 100);
+      assert.strictEqual(getEffectiveToolLimit("claude"), 100);
+      setDetectedToolLimit("claude", 300);
+      assert.strictEqual(getEffectiveToolLimit("claude"), 100);
+    });
+
+    it("does not learn a limit above the claude default", () => {
+      setDetectedToolLimit("claude", 300);
+      assert.strictEqual(getEffectiveToolLimit("claude"), 256);
+      assert.strictEqual(getKnownToolLimit("claude"), null);
+    });
+  });
 });

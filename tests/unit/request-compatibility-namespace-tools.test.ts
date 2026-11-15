@@ -68,7 +68,7 @@ test("plain function tools under the cap are unaffected", () => {
 test("a no-known-limit target that expands namespaces gets the dispatcher's default cap", () => {
   const body = responsesBody();
   const target = resolveRequestCompatibilityTarget(body, "claude", "claude-model");
-  assert.equal(target.maxTools, 128);
+  assert.equal(target.maxTools, 256);
   assert.deepEqual(probeRequestCompatibility(body, target), {
     ok: false,
     code: "request_tool_limit_exceeded",
@@ -83,4 +83,29 @@ test("without namespace tools, a no-known-limit target keeps no planner cap", ()
   const target = resolveRequestCompatibilityTarget(body, "claude", "claude-model");
   assert.equal(target.maxTools, null);
   assert.equal(probeRequestCompatibility(body, target).ok, true);
+});
+
+test("claude's higher default cap admits namespaces expanding to 140 tools", () => {
+  const body = {
+    model: "alias",
+    input: [{ role: "user", content: "synthetic" }],
+    tools: [ns("a", 70), ns("b", 70)],
+  };
+  const target = resolveRequestCompatibilityTarget(body, "claude", "claude-model");
+  assert.equal(target.maxTools, 256);
+  assert.equal(probeRequestCompatibility(body, target).ok, true);
+});
+
+test("a non-claude provider without a known limit keeps the 128 default for 140 expanded tools", () => {
+  const body = {
+    model: "alias",
+    input: [{ role: "user", content: "synthetic" }],
+    tools: [ns("a", 70), ns("b", 70)],
+  };
+  const target = resolveRequestCompatibilityTarget(body, "openai", "some-model");
+  assert.equal(target.maxTools, 128);
+  assert.deepEqual(probeRequestCompatibility(body, target), {
+    ok: false,
+    code: "request_tool_limit_exceeded",
+  });
 });

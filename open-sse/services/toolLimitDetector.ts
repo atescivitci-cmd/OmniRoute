@@ -6,7 +6,16 @@ const DEFAULT_LIMIT = MAX_TOOLS_LIMIT;
 
 const PROVIDER_TOOL_LIMITS: Record<string, number> = {
   "grok-cli": 200,
-  "nvidia": 1536,
+  nvidia: 1536,
+};
+
+// Default tool-count ceilings for providers with no strict known limit. Unlike
+// PROVIDER_TOOL_LIMITS these are NOT enforced when the default cap is bypassed, so they
+// never newly cap passthrough traffic. The values are gateway-side ceilings, not
+// documented provider guarantees; an upstream rejection lowers them through the
+// detector below (setDetectedToolLimit).
+const PROVIDER_DEFAULT_TOOL_LIMITS: Record<string, number> = {
+  claude: 256,
 };
 
 const _detectedLimitsSweep = setInterval(() => {
@@ -32,7 +41,10 @@ export function getKnownToolLimit(provider: string | null | undefined): number |
 }
 
 export function getEffectiveToolLimit(provider: string | null | undefined): number {
-  return getKnownToolLimit(provider) ?? DEFAULT_LIMIT;
+  const known = getKnownToolLimit(provider);
+  if (known !== null) return known;
+  const providerDefault = provider ? PROVIDER_DEFAULT_TOOL_LIMITS[provider] : undefined;
+  return providerDefault ?? DEFAULT_LIMIT;
 }
 
 export function setDetectedToolLimit(provider: string, limit: number): void {
