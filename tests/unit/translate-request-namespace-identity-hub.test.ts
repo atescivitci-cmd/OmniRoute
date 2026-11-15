@@ -1,8 +1,9 @@
-// A Responses request with namespace tool groups is flattened to Chat function names and a
-// non-enumerable `_toolNameMap` identity map ({ flatName -> { namespace, name } }). When the target
-// needs a second hub step (openai -> claude, ...), that step builds a new object and used to drop
-// the map, so the tool call came back to the client without its namespace. translateRequest must
-// carry the identity map across the hub.
+// A Responses request with namespace tool groups is flattened to Chat function names, and the
+// Responses->Chat step records a { flatName -> { namespace, name } } identity map. A later hub
+// step (openai -> claude, ...) builds a new object and used to drop that map, so the tool call
+// came back to the client without its namespace. translateRequest now carries the map to the
+// final result on its own non-enumerable `_namespaceIdentityMap`, leaving `_toolNameMap` for the
+// translators' string alias maps (Claude proxy_ prefix, Gemini renames).
 import test from "node:test";
 import assert from "node:assert/strict";
 
