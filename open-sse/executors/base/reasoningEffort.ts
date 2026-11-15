@@ -9,6 +9,7 @@ import {
   omitNoThinkingControls,
   declaredThinkingEfforts,
 } from "../../services/reasoningEffortCompatibility.ts";
+import { RequestCompatibilityError } from "../../services/requestCompatibility.ts";
 
 /**
  * Sanitize reasoning_effort for providers that don't accept all values.
@@ -68,6 +69,19 @@ function isNvidiaMistralLarge4(provider: string, model: string | undefined): boo
   return provider === "nvidia" && model === "mistralai/mistral-large-4-1t-a52b";
 }
 
+/**
+ * An unsupported reasoning VALUE for the exact hosted Mistral Large 4 target. Typed so the
+ * chat pipeline reports it as the existing pre-dispatch compatibility refusal (422, known
+ * non-dispatch) and the router can try the next target. Malformed input stays a TypeError.
+ */
+export class NvidiaMistralLarge4UnsupportedReasoningError extends RequestCompatibilityError {
+  constructor(message: string) {
+    super("request_required_control_unsupported");
+    this.name = "NvidiaMistralLarge4UnsupportedReasoningError";
+    this.message = message;
+  }
+}
+
 /** Exact hosted recipe accepts only none/high; enable_thinking is ignored upstream.
  * https://docs.api.nvidia.com/nim/reference/mistralai-mistral-large-4-1t-a52b-infer
  * Do not silently drop reasoning, invent a token budget, or affect other models.
@@ -88,7 +102,7 @@ function mapNvidiaMistralLarge4ReasoningParams(
   ] as const) {
     if (!present) continue;
     if (value !== "none" && value !== "high")
-      throw new TypeError(
+      throw new NvidiaMistralLarge4UnsupportedReasoningError(
         "NVIDIA Mistral Large 4: unsupported reasoning effort; expected none or high"
       );
     values.push(value);
@@ -117,7 +131,9 @@ function mapNvidiaMistralLarge4ReasoningParams(
     throw new TypeError("NVIDIA Mistral Large 4: explicit reasoning token budgets are unsupported");
   }
   if (new Set(values).size > 1)
-    throw new TypeError("NVIDIA Mistral Large 4: conflicting reasoning controls");
+    throw new NvidiaMistralLarge4UnsupportedReasoningError(
+      "NVIDIA Mistral Large 4: conflicting reasoning controls"
+    );
   if (values.length === 0) return b;
   const next = stripEffortValue(b, c);
   next.reasoning_effort = values[0];

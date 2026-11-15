@@ -2390,6 +2390,17 @@ export async function handleChatCore({
       );
     }
 
+    // A typed refusal raised while translating (for example an unsupported reasoning value for
+    // the exact target) is a pre-dispatch decision: report it as the known-non-dispatch 422.
+    if (error instanceof RequestCompatibilityError) {
+      trackPendingRequest(model, provider, connectionId, false);
+      log?.warn?.(
+        "REQUEST_COMPATIBILITY",
+        `translation refusal ${JSON.stringify({ code: error.code, provider, model })}`
+      );
+      return requestCompatibilityErrorResult(error);
+    }
+
     const parsedStatus = Number(error?.statusCode);
     const statusCode =
       Number.isInteger(parsedStatus) && parsedStatus >= 400 && parsedStatus <= 599
