@@ -1318,6 +1318,114 @@ test("chatCore restores prefixed Claude passthrough tool names in upstream respo
   assert.equal(payload.content[0].name, "Bash");
 });
 
+function claudeToolUseResponse(toolName: string) {
+  return new Response(
+    JSON.stringify({
+      id: "msg_tool_use",
+      type: "message",
+      role: "assistant",
+      model: "claude-sonnet-4-6",
+      content: [{ type: "tool_use", id: "toolu_1", name: toolName, input: { command: "ls" } }],
+      stop_reason: "tool_use",
+      usage: { input_tokens: 4, output_tokens: 2 },
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } }
+  );
+}
+
+test("chatCore maps a translator alias back to the flat name for a namespaced Responses call", async () => {
+  // The Gemini translator renames tool names it cannot send as-is and carries the alias map on
+  // the translated body. chatCore used to delete that map before reading it, so the renamed
+  // upstream name never resolved to the flat name and the namespace identity lookup missed.
+  const { result } = await invokeChatCore({
+    provider: "gemini",
+    model: "gemini-2.5-flash",
+    endpoint: "/v1/responses",
+    credentials: { apiKey: "gemini-key", providerSpecificData: {} },
+    body: {
+      model: "gemini-2.5-flash",
+      stream: false,
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "go" }] }],
+      tools: [
+        {
+          type: "namespace",
+          name: "ns",
+          description: "ns",
+          tools: [
+            {
+              type: "function",
+              name: "_a",
+              description: "a",
+              parameters: { type: "object", properties: {} },
+            },
+          ],
+        },
+      ],
+    },
+    responseFactory: (captured) => {
+      const sentName = captured.body.tools[0].functionDeclarations[0].name;
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: { role: "model", parts: [{ functionCall: { name: sentName, args: {} } }] },
+              finishReason: "STOP",
+            },
+          ],
+          usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 2, totalTokenCount: 6 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    },
+  });
+
+  const payload = (await result.response.json()) as {
+    output: Array<{ type: string; namespace?: string; name?: string }>;
+  };
+  const item = payload.output.find((o) => o.type === "function_call");
+  assert.equal(item.namespace, "ns");
+  assert.equal(item.name, "_a");
+});
+
+test("chatCore returns a namespaced Responses tool call from a Claude target", async () => {
+  const { result } = await invokeChatCore({
+    provider: "claude",
+    model: "claude-sonnet-4-6",
+    endpoint: "/v1/responses",
+    credentials: { apiKey: "claude-key", providerSpecificData: {} },
+    body: {
+      model: "claude-sonnet-4-6",
+      stream: false,
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "go" }] }],
+      tools: [
+        {
+          type: "namespace",
+          name: "mcp__codex_apps__google_calendar",
+          description: "calendar",
+          tools: [
+            {
+              type: "function",
+              name: "_list_calendars",
+              description: "list",
+              parameters: { type: "object", properties: {} },
+            },
+          ],
+        },
+      ],
+    },
+    responseFormat: "claude",
+    responseFactory: () =>
+      claudeToolUseResponse("mcp__codex_apps__google_calendar___list_calendars"),
+  });
+
+  const payload = (await result.response.json()) as {
+    output: Array<{ type: string; namespace?: string; name?: string }>;
+  };
+  const item = payload.output.find((o) => o.type === "function_call");
+  assert.equal(item.namespace, "mcp__codex_apps__google_calendar");
+  assert.equal(item.name, "_list_calendars");
+});
+
 test("chatCore strips unsupported reasoning params and caps provider token fields", async () => {
   const { call } = await invokeChatCore({
     provider: "openai",

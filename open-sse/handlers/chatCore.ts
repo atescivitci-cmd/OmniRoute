@@ -137,6 +137,7 @@ import {
   isNativeNvidiaEntitlementRejection,
 } from "../services/modelEligibilityResponse.ts";
 import { FORMATS } from "../translator/formats.ts";
+import { extractRequestToolMaps } from "../translator/helpers/namespaceIdentity.ts";
 import { collectCustomToolNamesForSourceFormat } from "../translator/request/openai-responses/additionalTools.ts";
 import { sanitizeKiroTools } from "../utils/kiroSanitizer.ts";
 import {
@@ -2430,12 +2431,12 @@ export async function handleChatCore({
   trace("post_translation");
 
   // Keep the request translator's namespace identities separate from toolNameMap:
-  // the latter is a Kiro/Claude passthrough alias channel with string values,
-  // while namespace identities carry `{namespace, name}` for the #7936 response
-  // seam. Extract first because Kiro merge may reuse `_toolNameMap` below.
-  const requestToolIdentityMap =
-    translatedBody._toolNameMap instanceof Map ? translatedBody._toolNameMap : null;
-  delete translatedBody._toolNameMap;
+  // the latter is a Kiro/Claude alias channel with string values, while namespace
+  // identities carry `{namespace, name}` for the #7936 response seam. Extract both up
+  // front (this also deletes them from the body); the alias map is re-used below.
+  const extractedToolMaps = extractRequestToolMaps(translatedBody);
+  const requestToolIdentityMap = extractedToolMaps.identityMap;
+  let translatedAliasMap = extractedToolMaps.aliasMap;
 
   // Kiro: sanitize tool schemas before dispatch. Kiro returns 400 "Improperly
   // formed request" for unsupported JSON-Schema keywords (anyOf/$ref/if-then,
@@ -2451,12 +2452,9 @@ export async function handleChatCore({
       translatedBody.conversationState.currentMessage.userInputMessage.userInputMessageContext.tools =
         sanitizedKiroTools;
       if (kiroNameMap.size > 0) {
-        const existing =
-          translatedBody._toolNameMap instanceof Map
-            ? translatedBody._toolNameMap
-            : new Map<string, string>();
+        const existing = translatedAliasMap ?? new Map<string, string>();
         kiroNameMap.forEach((original, truncated) => existing.set(truncated, original));
-        translatedBody._toolNameMap = existing;
+        translatedAliasMap = existing;
       }
     }
   }
@@ -2472,15 +2470,13 @@ export async function handleChatCore({
   }
 
   // Extract toolNameMap for response translation (Claude OAuth)
-  const translatedToolNameMap = translatedBody._toolNameMap;
   const nativeClaudeToolNameMap = isClaudePassthrough
     ? buildClaudePassthroughToolNameMap(body)
     : null;
   const toolNameMap =
-    translatedToolNameMap instanceof Map && translatedToolNameMap.size > 0
-      ? translatedToolNameMap
+    translatedAliasMap && translatedAliasMap.size > 0
+      ? translatedAliasMap
       : nativeClaudeToolNameMap;
-  delete translatedBody._toolNameMap;
   delete translatedBody._disableToolPrefix;
 
   // Update model in body — use resolved alias so the provider gets the correct model ID (#472)

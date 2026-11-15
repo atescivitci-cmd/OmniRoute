@@ -17,3 +17,54 @@ export function isNamespaceIdentityMap(map: unknown): map is Map<string, Namespa
   }
   return true;
 }
+
+/** Side channel for the identity map; never collides with the string-valued `_toolNameMap`. */
+export const NAMESPACE_IDENTITY_KEY = "_namespaceIdentityMap";
+
+/** Read the identity map a Responses->Chat translator left on its result, if any. */
+export function captureNamespaceIdentityMap(
+  result: unknown
+): Map<string, NamespaceIdentity> | null {
+  const map = (result as { _toolNameMap?: unknown } | null | undefined)?._toolNameMap;
+  return isNamespaceIdentityMap(map) ? map : null;
+}
+
+/** Attach the identity map as a non-enumerable property so it never reaches the upstream wire. */
+export function attachNamespaceIdentityMap(
+  result: unknown,
+  map: Map<string, NamespaceIdentity> | null
+): void {
+  if (!map || !result || typeof result !== "object") return;
+  Object.defineProperty(result, NAMESPACE_IDENTITY_KEY, {
+    value: map,
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+}
+
+/**
+ * Split the request-side tool maps off a translated body (and delete both properties).
+ * - identityMap: `{ namespace, name }` values, for returning namespaced tool calls to the client.
+ * - aliasMap: string-valued aliases (Claude OAuth `proxy_` prefix, Kiro truncated names), used to
+ *   map upstream tool names back. A string map is never treated as an identity map.
+ */
+export function extractRequestToolMaps(body: Record<string, unknown>): {
+  identityMap: Map<string, NamespaceIdentity> | null;
+  aliasMap: Map<string, string> | null;
+} {
+  const side = body[NAMESPACE_IDENTITY_KEY];
+  const legacy = body._toolNameMap;
+  const identityMap = isNamespaceIdentityMap(side)
+    ? side
+    : isNamespaceIdentityMap(legacy)
+      ? legacy
+      : null;
+  const aliasMap =
+    legacy instanceof Map && !isNamespaceIdentityMap(legacy)
+      ? (legacy as Map<string, string>)
+      : null;
+  delete body[NAMESPACE_IDENTITY_KEY];
+  delete body._toolNameMap;
+  return { identityMap, aliasMap };
+}

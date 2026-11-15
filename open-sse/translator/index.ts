@@ -1,6 +1,10 @@
 import { mapNvidiaGlm52ReasoningParams } from "../executors/base/reasoningEffort.ts";
 import { FORMATS } from "./formats.ts";
-import { isNamespaceIdentityMap, type NamespaceIdentity } from "./helpers/namespaceIdentity.ts";
+import {
+  attachNamespaceIdentityMap,
+  captureNamespaceIdentityMap,
+  type NamespaceIdentity,
+} from "./helpers/namespaceIdentity.ts";
 import {
   ensureToolCallIds,
   fixMissingToolResponses,
@@ -262,6 +266,11 @@ export function translateRequest(
     result.messages = hoistLeadingSystemMessage(result.messages, provider);
   }
 
+  // The Responses->Chat translator records namespace tool identities on a request-scoped map.
+  // Later hub steps build new objects and drop non-enumerable properties, so keep it here and
+  // attach it to the final result on its own channel (never the string alias `_toolNameMap`).
+  let namespaceIdentityMap: Map<string, NamespaceIdentity> | null = null;
+
   // If same format, skip translation steps
   if (sourceFormat !== targetFormat) {
     // Check for direct translation path first (e.g., Claude → Gemini)
@@ -277,11 +286,9 @@ export function translateRequest(
             }
           : credentials;
       result = directTranslator(model, result, stream, directCredentials);
+      namespaceIdentityMap = captureNamespaceIdentityMap(result);
     } else {
       // Fallback: hub-and-spoke via OpenAI
-      // The Responses->Chat step records namespace tool identities on a non-enumerable
-      // `_toolNameMap`; step 2 builds a new object and would drop it (see below).
-      let namespaceIdentityMap: Map<string, NamespaceIdentity> | null = null;
       // Step 1: source -> openai (if source is not openai)
       if (sourceFormat !== FORMATS.OPENAI) {
         const toOpenAI = getRequestTranslator(sourceFormat, FORMATS.OPENAI);
@@ -309,9 +316,7 @@ export function translateRequest(
           result = toOpenAI(model, result, stream, step1Credentials);
           // Log OpenAI intermediate format
           reqLogger?.logOpenAIRequest?.(result);
-          if (isNamespaceIdentityMap(result?._toolNameMap)) {
-            namespaceIdentityMap = result._toolNameMap;
-          }
+          namespaceIdentityMap = captureNamespaceIdentityMap(result) ?? namespaceIdentityMap;
         }
       }
 
@@ -336,19 +341,6 @@ export function translateRequest(
                 }
               : credentials;
           result = fromOpenAI(model, result, stream, translationCredentials);
-          // Re-attach the identity map unless the target translator set its own alias map
-          // (e.g. the Claude tool-prefix map), which must not be overwritten or merged.
-          if (
-            namespaceIdentityMap &&
-            !(result?._toolNameMap instanceof Map && result._toolNameMap.size > 0)
-          ) {
-            Object.defineProperty(result, "_toolNameMap", {
-              value: namespaceIdentityMap,
-              enumerable: false,
-              configurable: true,
-              writable: true,
-            });
-          }
         }
       }
     }
@@ -605,6 +597,8 @@ export function translateRequest(
       }
     }
   }
+
+  attachNamespaceIdentityMap(result, namespaceIdentityMap);
 
   return result;
 }
