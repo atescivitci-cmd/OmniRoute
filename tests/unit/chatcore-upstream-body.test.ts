@@ -562,3 +562,41 @@ test("Claude-format normalization leaves already-valid schemas byte-identical", 
     assert.equal(JSON.stringify(await normalizeOne(schema)), before);
   }
 });
+
+// Per-provider default tool cap: claude's default is 256 (not a strict known limit), so the
+// bypass path stays uncapped while the non-bypass path uses the higher ceiling.
+const claudeTools = (n: number) =>
+  Array.from({ length: n }, (_, i) => ({
+    name: `tool_${i}`,
+    input_schema: { type: "object", properties: {} },
+  }));
+const prepareClaude = (n: number, bypassDefaultToolLimit: boolean) =>
+  prepareUpstreamBody({
+    translatedBody: { model: "claude-model", messages: [], tools: claudeTools(n) },
+    modelToCall: "claude-model",
+    provider: "claude",
+    targetFormat: "claude",
+    credentials: null,
+    bypassDefaultToolLimit,
+  });
+
+test("claude default cap admits 200 tools without bypass", async () => {
+  const out = await prepareClaude(200, false);
+  assert.equal((out.tools as unknown[]).length, 200);
+});
+
+test("claude default cap refuses 300 tools without bypass", async () => {
+  await assert.rejects(
+    prepareClaude(300, false),
+    (error: unknown) =>
+      !!error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "request_tool_limit_exceeded"
+  );
+});
+
+test("claude with bypassDefaultToolLimit still passes 300 tools", async () => {
+  const out = await prepareClaude(300, true);
+  assert.equal((out.tools as unknown[]).length, 300);
+});
