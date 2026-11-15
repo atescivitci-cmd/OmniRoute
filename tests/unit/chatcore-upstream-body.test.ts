@@ -302,3 +302,180 @@ test("injects prompt_cache_key for Kimi Code's OpenAI protocol", async () => {
   });
   assert.match(String(out.prompt_cache_key), /^omni-[0-9a-f]{32}$/);
 });
+
+test("Claude-format body: a top-level oneOf tool schema is flattened before dispatch", async () => {
+  const translatedBody = {
+    model: "claude-sonnet-4-6",
+    messages: [{ role: "user", content: "hi" }],
+    tools: [
+      {
+        name: "pick",
+        description: "pick one",
+        input_schema: {
+          type: "object",
+          oneOf: [
+            { properties: { a: { type: "string" } }, required: ["a"] },
+            { properties: { b: { type: "number" } }, required: ["b"] },
+          ],
+        },
+      },
+    ],
+  };
+  const snapshot = structuredClone(translatedBody);
+  const out = await prepareUpstreamBody({
+    translatedBody,
+    modelToCall: "claude-sonnet-4-6",
+    provider: "anthropic-compatible-test",
+    targetFormat: FORMATS.CLAUDE,
+    credentials: null,
+  });
+  const schema = (out.tools as Array<{ input_schema: Record<string, unknown> }>)[0].input_schema;
+  assert.equal(schema.oneOf, undefined);
+  assert.equal(schema.type, "object");
+  assert.deepEqual(Object.keys(schema.properties as object), ["a", "b"]);
+  assert.deepEqual(translatedBody, snapshot, "caller body must not be mutated");
+});
+
+test("Claude-format body: server tools and already-valid tools are left byte-identical", async () => {
+  const serverTool = { type: "web_search_20250305", name: "web_search", max_uses: 3 };
+  const computerTool = {
+    type: "computer_20250124",
+    name: "computer",
+    display_width_px: 1024,
+    display_height_px: 768,
+  };
+  const validTool = {
+    name: "ok",
+    description: "fine",
+    input_schema: { type: "object", properties: { x: { type: "string" } }, required: ["x"] },
+  };
+  const noSchemaTool = { name: "bare" };
+  const tools = [serverTool, computerTool, validTool, noSchemaTool];
+  const before = JSON.stringify(tools);
+  const out = await prepareUpstreamBody({
+    translatedBody: { model: "claude-sonnet-4-6", messages: [], tools },
+    modelToCall: "claude-sonnet-4-6",
+    provider: "anthropic-compatible-test",
+    targetFormat: FORMATS.CLAUDE,
+    credentials: null,
+  });
+  assert.equal(JSON.stringify(out.tools), before);
+});
+
+test("Claude-format body: a custom-typed client tool is normalized", async () => {
+  const out = await prepareUpstreamBody({
+    translatedBody: {
+      model: "claude-sonnet-4-6",
+      messages: [],
+      tools: [
+        {
+          type: "custom",
+          name: "t",
+          input_schema: { type: "object", anyOf: [{ properties: { a: { type: "string" } } }] },
+        },
+      ],
+    },
+    modelToCall: "claude-sonnet-4-6",
+    provider: "claude-web",
+    targetFormat: FORMATS.CLAUDE,
+    credentials: null,
+  });
+  const tool = (out.tools as Array<Record<string, unknown>>)[0];
+  assert.equal(tool.type, "custom");
+  assert.equal((tool.input_schema as Record<string, unknown>).anyOf, undefined);
+});
+
+test("non-Claude target format leaves tool schemas untouched", async () => {
+  const tools = [
+    {
+      type: "function",
+      function: {
+        name: "f",
+        parameters: { type: "object", oneOf: [{ properties: { a: { type: "string" } } }] },
+      },
+    },
+    {
+      name: "x",
+      input_schema: { type: "object", oneOf: [{ properties: { a: { type: "string" } } }] },
+    },
+  ];
+  const before = JSON.stringify(tools);
+  const out = await prepareUpstreamBody({
+    translatedBody: { model: "m", messages: [], tools },
+    modelToCall: "m",
+    provider: "some-openai-provider",
+    targetFormat: FORMATS.OPENAI,
+    credentials: null,
+  });
+  assert.equal(JSON.stringify(out.tools), before);
+});
+
+test("Claude-format normalization is idempotent and keeps openai-to-claude output unchanged", async () => {
+  const body = {
+    model: "claude-sonnet-4-6",
+    messages: [{ role: "user", content: "hi" }],
+    tools: [
+      {
+        name: "pick",
+        input_schema: {
+          oneOf: [{ properties: { a: { type: "string" } }, required: ["a"] }, { properties: {} }],
+        },
+      },
+    ],
+  };
+  const args = {
+    modelToCall: "claude-sonnet-4-6",
+    provider: "anthropic-compatible-test",
+    targetFormat: FORMATS.CLAUDE,
+    credentials: null,
+  };
+  const once = await prepareUpstreamBody({ translatedBody: body, ...args });
+  const twice = await prepareUpstreamBody({ translatedBody: once, ...args });
+  assert.deepEqual(twice, once);
+
+  const translated = translateRequest(
+    FORMATS.OPENAI,
+    FORMATS.CLAUDE,
+    "claude-sonnet-4-6",
+    {
+      model: "claude-sonnet-4-6",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "pick",
+            parameters: { type: "object", oneOf: [{ properties: { a: { type: "string" } } }] },
+          },
+        },
+      ],
+    },
+    false,
+    null,
+    "claude"
+  ) as Record<string, unknown>;
+  const toolsBefore = JSON.stringify(translated.tools);
+  const prepared = await prepareUpstreamBody({
+    translatedBody: translated,
+    modelToCall: "claude-sonnet-4-6",
+    provider: "claude",
+    targetFormat: FORMATS.CLAUDE,
+    credentials: null,
+  });
+  assert.equal(JSON.stringify(prepared.tools), toolsBefore);
+});
+
+test("protocol preservation mode does not rewrite tool schemas", async () => {
+  const tools = [
+    { name: "p", input_schema: { type: "object", oneOf: [{ properties: { a: {} } }] } },
+  ];
+  const out = await prepareUpstreamBody({
+    translatedBody: { model: "claude-sonnet-4-6", messages: [], tools },
+    modelToCall: "claude-sonnet-4-6",
+    provider: "claude",
+    targetFormat: FORMATS.CLAUDE,
+    credentials: null,
+    preserveProtocol: true,
+  });
+  assert.deepEqual(out.tools, tools);
+});

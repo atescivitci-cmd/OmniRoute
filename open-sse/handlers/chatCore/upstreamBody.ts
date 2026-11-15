@@ -28,6 +28,7 @@ import {
   assertNativeProtocolDataUnchanged,
 } from "../../services/requestCompatibility.ts";
 import { resolveRequestCompatibilityTarget } from "../../services/requestCompatibilityTarget.ts";
+import { normalizeClaudeInputSchema } from "../../translator/helpers/claudeInputSchema.ts";
 
 type LoggerLike = { debug?: (...args: unknown[]) => void } | null | undefined;
 type Body = Record<string, unknown>;
@@ -54,6 +55,34 @@ function buildAppliedRulesSummary(
       return `${rule.type}:${rule.path}=${safeValue}`;
     })
     .join(", ");
+}
+
+/**
+ * Anthropic rejects a tool input_schema with oneOf/allOf/anyOf at the top level. The OpenAI to
+ * Claude translator already flattens those, but Claude-format bodies that reach this point by
+ * other routes (passthrough, claude-web, anthropic-compatible upstreams, bridges) do not pass
+ * through it. Applying the same normalization here covers every path that sends a Claude body.
+ *
+ * Only client tools that carry an input_schema object are touched; server tools (web_search,
+ * computer, ...) are identified by a non-"custom" `type` and are left as they are. Schemas that
+ * need no change keep their identity, so a body with nothing to fix is returned as is. Nothing
+ * is mutated in place.
+ */
+function normalizeClaudeToolSchemas(bodyToSend: Body, targetFormat: string): Body {
+  if (targetFormat !== FORMATS.CLAUDE || !Array.isArray(bodyToSend.tools)) return bodyToSend;
+  let changed = false;
+  const tools = bodyToSend.tools.map((tool: unknown) => {
+    if (!tool || typeof tool !== "object" || Array.isArray(tool)) return tool;
+    const entry = tool as Record<string, unknown>;
+    if (typeof entry.type === "string" && entry.type !== "custom") return tool;
+    const schema = entry.input_schema;
+    if (!schema || typeof schema !== "object" || Array.isArray(schema)) return tool;
+    const normalized = normalizeClaudeInputSchema(schema as Record<string, unknown>);
+    if (normalized === schema) return tool;
+    changed = true;
+    return { ...entry, input_schema: normalized };
+  });
+  return changed ? { ...bodyToSend, tools } : bodyToSend;
 }
 
 function enforceToolLimit(
@@ -175,6 +204,7 @@ export async function prepareUpstreamBody(opts: {
     requiredNoThinking,
     log,
   });
+  bodyToSend = normalizeClaudeToolSchemas(bodyToSend, targetFormat);
   bodyToSend = enforceToolLimit(bodyToSend, provider, bypassDefaultToolLimit ?? false, log);
   const connectionCacheOverride = resolveConnectionCacheOverride(credentials?.providerSpecificData);
   bodyToSend = await injectPromptCacheKey(
