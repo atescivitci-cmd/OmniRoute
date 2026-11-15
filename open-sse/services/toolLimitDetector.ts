@@ -12,8 +12,9 @@ const PROVIDER_TOOL_LIMITS: Record<string, number> = {
 // Default tool-count ceilings for providers with no strict known limit. Unlike
 // PROVIDER_TOOL_LIMITS these are NOT enforced when the default cap is bypassed, so they
 // never newly cap passthrough traffic. The values are gateway-side ceilings, not
-// documented provider guarantees; an upstream rejection lowers them through the
-// detector below (setDetectedToolLimit).
+// documented provider guarantees and nothing lowers them at runtime today: a learned
+// limit (setDetectedToolLimit) would win, but no request path calls it yet. Validate a
+// new value with a live request before relying on it.
 const PROVIDER_DEFAULT_TOOL_LIMITS: Record<string, number> = {
   claude: 256,
 };
