@@ -479,3 +479,86 @@ test("protocol preservation mode does not rewrite tool schemas", async () => {
   });
   assert.deepEqual(out.tools, tools);
 });
+
+test("github Claude-format target keeps native tool schemas untouched and does not trip the integrity check", async () => {
+  const tools = [
+    {
+      name: "pick",
+      input_schema: {
+        type: "object",
+        oneOf: [{ properties: { a: { type: "string" } }, required: ["a"] }],
+      },
+    },
+  ];
+  const before = JSON.stringify(tools);
+  for (const provider of ["github", "gh"]) {
+    const out = await prepareUpstreamBody({
+      translatedBody: { model: "claude-sonnet-4-6", messages: [], tools },
+      modelToCall: "claude-sonnet-4-6",
+      provider,
+      targetFormat: FORMATS.CLAUDE,
+      credentials: null,
+    });
+    assert.equal(JSON.stringify(out.tools), before, provider);
+  }
+});
+
+async function normalizeOne(schema: unknown): Promise<unknown> {
+  const out = await prepareUpstreamBody({
+    translatedBody: {
+      model: "claude-sonnet-4-6",
+      messages: [],
+      tools: [{ name: "t", input_schema: schema }],
+    },
+    modelToCall: "claude-sonnet-4-6",
+    provider: "anthropic-compatible-test",
+    targetFormat: FORMATS.CLAUDE,
+    credentials: null,
+  });
+  return (out.tools as Array<{ input_schema: unknown }>)[0].input_schema;
+}
+
+test("Claude-format normalization also repairs schemas with no type, a type array, or not/if/then/else", async () => {
+  assert.deepEqual(await normalizeOne({}), { type: "object", properties: {} });
+  assert.deepEqual(await normalizeOne({ properties: { a: { type: "string" } } }), {
+    type: "object",
+    properties: { a: { type: "string" } },
+  });
+  const typeArray = (await normalizeOne({
+    type: ["object", "null"],
+    properties: { a: { type: "string" } },
+  })) as Record<string, unknown>;
+  assert.equal(typeArray.type, "object");
+  assert.deepEqual(typeArray.properties, { a: { type: "string" } });
+  const unsupported = (await normalizeOne({
+    type: "object",
+    properties: { a: { type: "string" } },
+    not: { required: ["a"] },
+    if: { required: ["a"] },
+    then: { required: ["a"] },
+    else: { required: ["a"] },
+  })) as Record<string, unknown>;
+  for (const key of ["not", "if", "then", "else"]) assert.equal(key in unsupported, false, key);
+  assert.deepEqual(unsupported.properties, { a: { type: "string" } });
+});
+
+test("Claude-format normalization leaves already-valid schemas byte-identical", async () => {
+  const schemas = [
+    {
+      type: "object",
+      properties: { a: { anyOf: [{ type: "string" }, { type: "number" }] } },
+      required: ["a"],
+    },
+    {
+      type: "object",
+      properties: { a: { $ref: "#/$defs/A" } },
+      $defs: { A: { type: "string" } },
+    },
+    { type: "object", properties: { a: { type: "string" } }, additionalProperties: false },
+    { type: "object", properties: {} },
+  ];
+  for (const schema of schemas) {
+    const before = JSON.stringify(schema);
+    assert.equal(JSON.stringify(await normalizeOne(schema)), before);
+  }
+});

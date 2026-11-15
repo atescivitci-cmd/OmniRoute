@@ -204,7 +204,9 @@ export async function prepareUpstreamBody(opts: {
     requiredNoThinking,
     log,
   });
-  bodyToSend = normalizeClaudeToolSchemas(bodyToSend, targetFormat);
+  // Native-protocol providers (nativeBefore is set) must keep their tools byte-for-byte; the
+  // integrity check below would reject a rewritten schema.
+  if (!nativeBefore) bodyToSend = normalizeClaudeToolSchemas(bodyToSend, targetFormat);
   bodyToSend = enforceToolLimit(bodyToSend, provider, bypassDefaultToolLimit ?? false, log);
   const connectionCacheOverride = resolveConnectionCacheOverride(credentials?.providerSpecificData);
   bodyToSend = await injectPromptCacheKey(
