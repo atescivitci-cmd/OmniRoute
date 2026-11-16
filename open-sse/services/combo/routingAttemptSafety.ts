@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { LOCAL_COST_ERROR_CODES } from "../autoCombo/zeroCostAdmission.ts";
 import { isCredentialRejectionText } from "./credentialRejection.ts";
 import { isCreditExhaustionError } from "./creditExhaustion.ts";
+import { CONTENT_SHAPE_QUALITY_CODES, type QualityRejection } from "./qualityCodes.ts";
 import {
   createRoutingTransportAttempt,
   runWithRoutingTransportAttempt,
@@ -137,6 +138,60 @@ export function inspectReplayInput(body: Record<string, unknown>): ReplayInput {
   };
   visit(body);
   return { providerBound, hasTools, hardBound };
+}
+
+// QUALITY_FAILOVER_V1 replay-safety. Deliberately STRICTER than inspectReplayInput (whose
+// hasTools feeds the other guard decisions and is left untouched): the quality failover re-sends
+// the request to another target, so ANY sign that a tool, function, MCP server, search, shell,
+// computer-use, image-generation or code-execution capability is in play, in the request
+// parameters or in the history, denies it. Wire-format coverage: OpenAI chat (tools, functions,
+// tool_choice, tool_calls, role tool), Responses (tools of every type, *_call and *_call_output
+// items), Anthropic (tools incl. server tools, mcp_servers, tool_use / server_tool_use /
+// mcp_tool_use / *_tool_result blocks) and Gemini (tools, tool_config / toolConfig,
+// functionCall / functionResponse parts).
+const REPLAY_UNSAFE_TOP_LEVEL_KEYS = [
+  "tool_choice",
+  "function_call",
+  "mcp_servers",
+  "tool_resources",
+  "tool_config",
+  "toolConfig",
+  "web_search_options",
+  "parallel_tool_calls",
+];
+const REPLAY_UNSAFE_ROW_KEYS = [
+  "tool_calls",
+  "function_call",
+  "functionCall",
+  "functionResponse",
+  "function_response",
+  "tool_call_id",
+  "executableCode",
+  "codeExecutionResult",
+];
+const REPLAY_UNSAFE_TYPE =
+  /^(?:tool_use|tool_result|server_tool_use|mcp_tool_use|[a-z0-9_]+_tool_result|[a-z0-9_]+_call|[a-z0-9_]+_call_output)$/;
+export function isQualityFailoverReplayUnsafe(body: Record<string, unknown>): boolean {
+  for (const key of REPLAY_UNSAFE_TOP_LEVEL_KEYS) if (body[key] != null) return true;
+  for (const key of ["tools", "functions"])
+    if (Array.isArray(body[key]) && (body[key] as unknown[]).length > 0) return true;
+  const seen = new WeakSet<object>();
+  const visit = (value: unknown): boolean => {
+    if (!value || typeof value !== "object" || seen.has(value)) return false;
+    seen.add(value);
+    if (Array.isArray(value)) return value.some(visit);
+    const row = value as Record<string, unknown>;
+    if (row.role === "tool" || row.role === "function") return true;
+    if (typeof row.type === "string" && REPLAY_UNSAFE_TYPE.test(row.type)) return true;
+    for (const key of REPLAY_UNSAFE_ROW_KEYS) if (row[key] != null) return true;
+    for (const [key, child] of Object.entries(row)) {
+      if (["content", "input", "output", "result"].includes(key) && typeof child === "string")
+        continue;
+      if (visit(child)) return true;
+    }
+    return false;
+  };
+  return visit(body);
 }
 
 export type RoutingAttemptToken = { enter(): void; entered(): boolean; refused(): boolean };
@@ -322,6 +377,14 @@ export function createRoutingAttemptGuard(options: {
   let eventCount = 0;
   const retryNotBefore = new Map<string, number>();
   let priorFailure: Response | null = null;
+  // QUALITY_FAILOVER_V1: the [model, connection] whose 200 this guard last committed, the single
+  // quality failover this request may spend, and the rejection that spent it.
+  let committedModel: string | null = null;
+  let qualityFailoverUsed = false;
+  // A reasoning-only / empty reply is a property of the MODEL, not of one connection, so a
+  // quality failover rejects the model on every connection for the rest of the request.
+  const rejectedModels = new Set<string>();
+  let withheldQuality: QualityRejection | null = null;
   const emit = (event: Record<string, unknown>) => {
     if (eventCount++ >= 256) return;
     const clean: Record<string, unknown> = { requestId: safeId(options.requestId) };
@@ -399,6 +462,96 @@ export function createRoutingAttemptGuard(options: {
         },
       });
     },
+    /**
+     * QUALITY_FAILOVER_V1. The combo calls this when validateResponseQuality rejected the HTTP 200
+     * this guard just committed. The response has not reached the client (the combo owns it and
+     * the client asked for a non-streaming reply), so for a replay-safe request ONE follow-up
+     * dispatch is allowed:
+     *   - {failover: true}: the committed response is withheld and cancelled, its
+     *     model is rejected on every connection for the rest of the request, and dispatch is reopened
+     *     for the next target. Budget, deadline and abort checks in wrap() still apply to it.
+     *   - {failover: false, denial, response}: failover is not admitted; `response` is the
+     *     terminal 502 response_contract_failed (the exact behaviour before this change) and
+     *     `denial` names why, for the caller's log line.
+     * Eligible only when ALL hold: top-level guard (no parent stage), the rejected response is the
+     * one this guard committed, no quality failover was spent yet, the request carries no tools /
+     * tool history / legacy function params and no provider-bound state, no streaming was
+     * requested, and the verdict is a content-shape code (empty visible content, reasoning-only
+     * exhaustion). Every other verdict keeps the 502.
+     */
+    rejectCommittedForQuality(
+      response: Response,
+      quality: QualityRejection & { stream?: boolean; provider?: string; model?: string }
+    ): { failover: true } | { failover: false; denial: string; response: Response } {
+      const code =
+        quality.code && CONTENT_SHAPE_QUALITY_CODES.has(quality.code) ? quality.code : null;
+      const body = options.body as Record<string, unknown>;
+      const streamed = Boolean(quality.stream) || Boolean(body.stream);
+      const committed =
+        stopped !== null && stopped.ok && stopReasons.get(stopped) === "response_committed";
+      const denial = !committed
+        ? "not_committed_here"
+        : options.sharedBudget || options.hooks
+          ? "nested_guard"
+          : qualityFailoverUsed
+            ? "already_used"
+            : isQualityFailoverReplayUnsafe(body)
+              ? "tools"
+              : input.providerBound
+                ? "provider_bound"
+                : streamed
+                  ? "stream"
+                  : !code
+                    ? "reason_not_content_shape"
+                    : null;
+      const event = {
+        provider: quality.provider,
+        model: quality.model,
+        reason: code ?? "quality_other",
+        attempts,
+      };
+      emit({ event: "quality_rejected", ...event });
+      if (denial) {
+        emit({ event: "quality_failover_denied", ...event, code: denial });
+        // Cancel what we hold; the caller already released its own clone.
+        void cancelRoutingResponse(response);
+        return { failover: false, denial, response: routingFailure("response_contract_failed") };
+      }
+      const withheld = stopped!;
+      rejectedModels.add(committedModel!);
+      qualityFailoverUsed = true;
+      withheldQuality = { code: code!, reason: quality.reason, diagnostics: quality.diagnostics };
+      priorFailure = null;
+      stopped = null;
+      void cancelRoutingResponse(withheld);
+      if (response !== withheld) void cancelRoutingResponse(response);
+      emit({ event: "quality_failover", ...event });
+      return { failover: true };
+    },
+    /**
+     * After a spent quality failover, the request ended without another accepted response.
+     * Returns the terminal 502 response_contract_failed (the pre-existing outcome of the
+     * rejection) and stops the guard on it; null when no failover was spent or the guard is
+     * already stopped (a later target committed or hit a terminal outcome of its own).
+     *
+     * Outcome of the follow-up dispatch after a spent failover (decided, do not change silently):
+     *   2xx accepted by the validator ........ 200 to the client (guard stopped on it)
+     *   2xx rejected again (any verdict) ..... 502 response_contract_failed, no third dispatch
+     *   429 / 5xx / 408 / no further target . 502 response_contract_failed (this method)
+     *   400 / 401 / 403 / 404 / 422 / 499 .... terminal (request_rejected / no_safe_fallback),
+     *                                          passed through exactly as for a first-target refusal
+     *   thrown error ......................... execution_uncertain 502
+     *   client abort ......................... 499 request_cancelled
+     *   attempt budget / deadline ............ 503 routing_attempt_limit / 504 routing_deadline
+     */
+    qualityFailoverExhausted(): Response | null {
+      if (!withheldQuality || stopped) return null;
+      // The later target's failure body is never returned; release it.
+      if (priorFailure) void cancelRoutingResponse(priorFailure);
+      priorFailure = null;
+      emit({ event: "quality_failover_exhausted", reason: withheldQuality.code, attempts });
+      return stop(routingFailure("response_contract_failed"), "quality_failover_exhausted");
+    },
     /** The combo has an explicit per-terminal session and will sanitize the body before any
      * dispatch that follows a key-limit refusal. Called by the combo, never by wire input. */
     enableSanitizedSwitch() {
@@ -459,7 +612,7 @@ export function createRoutingAttemptGuard(options: {
           return response;
         }
 
-        if (rejected.has(key))
+        if (rejected.has(key) || rejectedModels.has(model))
           return markKnownNonDispatch(
             Response.json(
               {
@@ -532,7 +685,10 @@ export function createRoutingAttemptGuard(options: {
                 : "response_observed",
           });
           if (isRoutingTerminal(result)) return stop(result, "terminal_outcome");
-          if (result.ok) return stop(result, "response_committed");
+          if (result.ok) {
+            committedModel = model;
+            return stop(result, "response_committed");
+          }
           if (error?.uncertain) {
             if (["error_body_deadline", "error_body_unreadable"].includes(error.reason ?? "")) {
               void cancelRoutingResponse(result);

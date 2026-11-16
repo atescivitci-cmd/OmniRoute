@@ -15,6 +15,11 @@ import {
 import { evaluateResponseValidation, type ResponseValidationConfig } from "./responseValidation.ts";
 import { getReasoningTokens } from "../../../src/lib/usage/tokenAccounting.ts";
 import type { ComboRetryAfter } from "./types.ts";
+import {
+  QUALITY_CODE_EMPTY_CONTENT,
+  QUALITY_CODE_REASONING_EXHAUSTED,
+  type QualityDiagnostics,
+} from "./qualityCodes.ts";
 
 export function toRetryAfterDisplayValue(value: ComboRetryAfter): string | Date {
   if (typeof value !== "number") return value;
@@ -225,7 +230,15 @@ export async function validateResponseQuality(
   isStreaming: boolean,
   log: { warn?: (...args: unknown[]) => void },
   responseValidation?: ResponseValidationConfig | null
-): Promise<{ valid: boolean; reason?: string; clonedResponse?: Response }> {
+): Promise<{
+  valid: boolean;
+  reason?: string;
+  /** Set only for the content-shape verdicts (see qualityCodes.ts). */
+  code?: string;
+  /** Counts and finish marker for log lines; set only alongside `code`. */
+  diagnostics?: QualityDiagnostics;
+  clonedResponse?: Response;
+}> {
   // Issue #3685: For Claude SSE streaming responses, use a BOUNDED PEEK to
   // detect the empty-content-block pattern (content_filter stop_reason with
   // no content_block_* events) WITHOUT de-streaming non-empty responses.
@@ -694,8 +707,22 @@ export async function validateResponseQuality(
   }
   const hasToolCalls = Array.isArray(toolCalls) && toolCalls.length > 0;
 
+  const usageRecord = json?.usage as Record<string, unknown> | undefined;
+  const diagnostics: QualityDiagnostics = {
+    finishReason:
+      typeof firstChoice?.finish_reason === "string" ? (firstChoice.finish_reason as string) : null,
+    promptTokens: usageRecord ? Number(usageRecord.prompt_tokens) || 0 : null,
+    completionTokens: usageRecord ? Number(usageRecord.completion_tokens) || 0 : null,
+    reasoningTokens: usageRecord ? getReasoningTokens(usageRecord) : null,
+  };
+
   if (!hasContent && !hasToolCalls) {
-    return { valid: false, reason: "empty content and no tool_calls in response" };
+    return {
+      valid: false,
+      reason: "empty content and no tool_calls in response",
+      code: QUALITY_CODE_EMPTY_CONTENT,
+      diagnostics,
+    };
   }
 
   // Issue #3587: Reasoning models (deepseek-v4-flash, nemotron, etc.) may consume
@@ -715,6 +742,8 @@ export async function validateResponseQuality(
         return {
           valid: false,
           reason: `reasoning consumed ${reasoningTokens}/${completionTokens} tokens — no content output`,
+          code: QUALITY_CODE_REASONING_EXHAUSTED,
+          diagnostics,
         };
       }
     }

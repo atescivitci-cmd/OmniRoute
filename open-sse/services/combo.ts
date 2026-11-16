@@ -157,6 +157,7 @@ import {
   releaseRejectedQualityResponse,
   toRetryAfterDisplayValue,
 } from "./combo/validateQuality.ts";
+import { formatQualityRejectionLog } from "./combo/qualityCodes.ts";
 import {
   resolveComboCooldownWaitDecision,
   ResolveComboCooldownDecisionResult,
@@ -1535,12 +1536,33 @@ async function handleComboChatRemote({
             releaseQualityClone(qualityClone, result, quality);
             if (!quality.valid) {
               releaseRejectedQualityResponse(qualityClone, result);
-              if (routingAttemptGuard)
-                return { ok: false, response: routingFailure("response_contract_failed") };
-              log.warn(
-                "COMBO",
-                `Model ${modelStr} returned 200 but failed quality check: ${quality.reason}`
-              );
+              if (routingAttemptGuard) {
+                // QUALITY_FAILOVER_V1: a replay-safe, non-streaming request whose 200 had no
+                // visible output may spend ONE failover; every other case keeps the 502.
+                const verdict = routingAttemptGuard.rejectCommittedForQuality(result, {
+                  ...quality,
+                  stream: clientRequestedStream,
+                  provider,
+                  model: modelStr,
+                });
+                log.warn(
+                  "COMBO",
+                  formatQualityRejectionLog({
+                    quality,
+                    provider,
+                    model: modelStr,
+                    outcome: verdict.failover
+                      ? "withheld, quality failover to the next target"
+                      : `no failover: ${verdict.denial}`,
+                  })
+                );
+                if (!verdict.failover) return { ok: false, response: verdict.response };
+              } else {
+                log.warn(
+                  "COMBO",
+                  `Model ${modelStr} returned 200 but failed quality check: ${quality.reason}`
+                );
+              }
               // #6692: a quality-rejected 200 never marks the connection row
               // unhealthy, so the sticky pin's lazy headroom recheck would never
               // catch it either — release it here, on the failing response.
@@ -1558,7 +1580,9 @@ async function handleComboChatRemote({
               lastError = `Upstream response failed quality validation: ${quality.reason}`;
               lastStatus = 502;
               if (i > 0) fallbackCount++;
-              if (provider && rawModel) {
+              // A guarded quality failover rejects this target for THIS request only (guard
+              // `rejected` set); it must not also lock the model out for other traffic.
+              if (!routingAttemptGuard && provider && rawModel) {
                 const mlSettings = resolveModelLockoutSettings(settings);
                 if (mlSettings.enabled && mlSettings.errorCodes.includes(502)) {
                   recordModelLockoutFailure(
@@ -2398,6 +2422,10 @@ async function handleComboChatRemote({
       if (setTry < maxSetRetries) continue;
 
       // All set retries exhausted — return the final error
+      // QUALITY_FAILOVER_V1: a withheld quality-rejected 200 was followed by no accepted
+      // response. Keep the pre-existing outcome of that rejection (502 response_contract_failed).
+      const qualityExhausted = routingAttemptGuard?.qualityFailoverExhausted();
+      if (qualityExhausted) return qualityExhausted;
       if (!lastStatus) {
         notifyWebhookEvent("request.failed", {
           combo: combo.name,
@@ -2986,12 +3014,33 @@ async function handleRoundRobinCombo({
           releaseQualityClone(rrClone, result, quality);
           if (!quality.valid) {
             releaseRejectedQualityResponse(rrClone, result);
-            if (routingGuardFor(handleSingleModel))
-              return routingFailure("response_contract_failed");
-            log.warn(
-              "COMBO-RR",
-              `${modelStr} returned 200 but failed quality check: ${quality.reason}`
-            );
+            const rrGuard = routingGuardFor(handleSingleModel);
+            if (rrGuard) {
+              // QUALITY_FAILOVER_V1: same one-failover rule as the priority path.
+              const verdict = rrGuard.rejectCommittedForQuality(result, {
+                ...quality,
+                stream: clientRequestedStream,
+                provider,
+                model: modelStr,
+              });
+              log.warn(
+                "COMBO-RR",
+                formatQualityRejectionLog({
+                  quality,
+                  provider,
+                  model: modelStr,
+                  outcome: verdict.failover
+                    ? "withheld, quality failover to the next target"
+                    : `no failover: ${verdict.denial}`,
+                })
+              );
+              if (!verdict.failover) return verdict.response;
+            } else {
+              log.warn(
+                "COMBO-RR",
+                `${modelStr} returned 200 but failed quality check: ${quality.reason}`
+              );
+            }
             // #6692: same rationale as handleComboChat's quality-fail branch —
             // a quality-rejected 200 never marks the connection row unhealthy,
             // so release the sticky pin here rather than on the next turn.
@@ -3329,6 +3378,11 @@ async function handleRoundRobinCombo({
 
   // All models exhausted
   const latencyMs = Date.now() - startTime;
+
+  // QUALITY_FAILOVER_V1: a withheld quality-rejected 200 was followed by no accepted response.
+  // Keep the pre-existing outcome of that rejection (502 response_contract_failed).
+  const rrQualityExhausted = routingGuardFor(handleSingleModel)?.qualityFailoverExhausted();
+  if (rrQualityExhausted) return rrQualityExhausted;
 
   // #6238: every compat-kept target was skipped as unavailable and NONE was ever
   // attempted (recordedAttempts === 0). Before crystallizing 503, probe the targets
