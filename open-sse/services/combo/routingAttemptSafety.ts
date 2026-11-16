@@ -1,6 +1,7 @@
 import type { HandleSingleModel, SingleModelTarget } from "./types.ts";
 import { createHash } from "node:crypto";
 import { LOCAL_COST_ERROR_CODES } from "../autoCombo/zeroCostAdmission.ts";
+import { isCredentialRejectionText } from "./credentialRejection.ts";
 import {
   createRoutingTransportAttempt,
   runWithRoutingTransportAttempt,
@@ -161,9 +162,12 @@ function makeToken(signal?: AbortSignal | null): RoutingAttemptToken {
   };
 }
 
-async function boundedErrorCode(
-  response: Response
-): Promise<{ code: string | null; uncertain: boolean; reason: string | null } | null> {
+async function boundedErrorCode(response: Response): Promise<{
+  code: string | null;
+  uncertain: boolean;
+  reason: string | null;
+  credentialRejection: boolean;
+} | null> {
   if (!response.headers.get("content-type")?.includes("application/json")) return null;
   const reader = response.clone().body?.getReader();
   if (!reader) return null;
@@ -194,17 +198,34 @@ async function boundedErrorCode(
           uncertain:
             detail?.execution_outcome === "uncertain" || detail?.execution_outcome === "unknown",
           reason: typeof detail?.reason === "string" ? detail.reason : null,
+          credentialRejection: isCredentialRejectionText(value?.error?.message),
         };
       })(),
-      new Promise<{ code: null; uncertain: boolean; reason: string }>((resolve) => {
+      new Promise<{
+        code: null;
+        uncertain: boolean;
+        reason: string;
+        credentialRejection: boolean;
+      }>((resolve) => {
         timer = setTimeout(
-          () => resolve({ code: null, uncertain: true, reason: "error_body_deadline" }),
+          () =>
+            resolve({
+              code: null,
+              uncertain: true,
+              reason: "error_body_deadline",
+              credentialRejection: false,
+            }),
           100
         );
       }),
     ]);
   } catch {
-    return { code: null, uncertain: true, reason: "error_body_unreadable" };
+    return {
+      code: null,
+      uncertain: true,
+      reason: "error_body_unreadable",
+      credentialRejection: false,
+    };
   } finally {
     clearTimeout(timer);
     void reader.cancel().catch(() => {});
@@ -541,6 +562,16 @@ export function createRoutingAttemptGuard(options: {
               result.status < 500 &&
               DEFINITE_REJECTIONS.has(code ?? ""))
           ) {
+            rejected.add(key);
+            priorFailure = result;
+            return result;
+          }
+          // A 400 whose upstream text says the target's own authorization header is
+          // malformed is about this connection, not the request: it was refused at the
+          // auth layer before any processing, so another target is safe for plain and tool
+          // requests alike. Provider-bound state never reaches here (stopped above), and
+          // every other 400 and 401/403/422/499 keep the stop below.
+          if (result.status === 400 && error?.credentialRejection) {
             rejected.add(key);
             priorFailure = result;
             return result;

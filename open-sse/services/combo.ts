@@ -216,6 +216,7 @@ import {
 } from "./combo/providerWildcard.ts";
 import { resolveShadowTargets, scheduleShadowRouting } from "./combo/shadowRouting.ts";
 import { sanitizeBodyAfterKeyLimit } from "./keyLimitFallThrough.ts";
+import { isCredentialRejectionText } from "./combo/credentialRejection.ts";
 import { attemptCompatRejectedFallback } from "./combo/comboCompatFallback.ts";
 import {
   computeCompatRejectedTargets,
@@ -1999,6 +2000,7 @@ async function handleComboChatRemote({
             !isContextOverflow400(errorText) &&
             !isParamValidation400(errorText) &&
             !isModelScoped400(errorText) &&
+            !isCredentialRejectionText(errorText) &&
             (errorText.toLowerCase().includes("context") ||
               errorText.toLowerCase().includes("prompt") ||
               errorText.toLowerCase().includes("token") ||
