@@ -14,7 +14,12 @@ import {
 } from "./adapters/driverFactory";
 import path from "path";
 import fs from "fs";
-import { resolveWritableDataDir, getLegacyDotDataDir } from "../dataPaths";
+import {
+  resolveWritableDataDir,
+  getLegacyDotDataDir,
+  getLiveDataDirViolation,
+  assertDataDirNotLiveInTests,
+} from "../dataPaths";
 import { runMigrations } from "./migrationRunner";
 import { runDbHealthCheck } from "./healthCheck";
 import { resetAllDbModuleState } from "./stateReset";
@@ -205,8 +210,19 @@ function openSqliteDatabase(sqliteFile: string, options?: Record<string, unknown
   );
 }
 
-// Ensure data directory exists — with fallback for restricted home directories (#133)
-if (!isCloud && !fs.existsSync(DATA_DIR)) {
+/**
+ * Live-data-dir guard: throws when a TEST process would use the real `~/.omniroute`. Called before any
+ * file is opened, migrated, backed up or restored (see testProcessGuard.ts). No-op for cloud/build
+ * (in-memory) and for every non-test process.
+ */
+export function assertDataDirSafeForThisProcess(): void {
+  if (isCloud || isBuildPhase) return;
+  assertDataDirNotLiveInTests(DATA_DIR);
+}
+
+// Ensure data directory exists — with fallback for restricted home directories (#133).
+// Skipped for a test process aimed at the live dir: importing this module must not create ~/.omniroute.
+if (!isCloud && !getLiveDataDirViolation(DATA_DIR) && !fs.existsSync(DATA_DIR)) {
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   } catch (err: unknown) {
@@ -988,6 +1004,8 @@ export function getDbInstance(): SqliteDatabase {
     return memoryDb;
   }
 
+  assertDataDirSafeForThisProcess();
+
   const sqliteFile = SQLITE_FILE;
   if (!sqliteFile) {
     throw new Error("SQLITE_FILE is unavailable for local mode");
@@ -1385,6 +1403,8 @@ export async function ensureDbInitialized(): Promise<void> {
     getDbInstance();
     return;
   }
+
+  assertDataDirSafeForThisProcess();
 
   // Tenta drivers síncronos primeiro
   const sync = tryOpenSync(SQLITE_FILE);

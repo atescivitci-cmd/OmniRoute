@@ -1,5 +1,5 @@
 import path from "path";
-import { resolveDataDir } from "@/lib/dataPaths";
+import { getLiveDataDirViolation, resolveDataDir } from "@/lib/dataPaths";
 
 const DEFAULT_APP_LOG_RETENTION_DAYS = 7;
 const DEFAULT_CALL_LOG_RETENTION_DAYS = 7;
@@ -64,7 +64,12 @@ export function parseFileSize(raw: string | undefined): number {
 }
 
 export function getAppLogToFile(): boolean {
-  return process.env.APP_LOG_TO_FILE !== "false";
+  if (process.env.APP_LOG_TO_FILE === "false") return false;
+  // A test process aimed at the real ~/.omniroute (see testProcessGuard.ts) must not write its
+  // log lines into the live logs/ directory either: console only. An explicit APP_LOG_FILE_PATH
+  // is the operator's choice and is left alone.
+  if (!process.env.APP_LOG_FILE_PATH && getLiveDataDirViolation(resolveDataDir())) return false;
+  return true;
 }
 
 export function getAppLogFilePath(): string {

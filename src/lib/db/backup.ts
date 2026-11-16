@@ -12,6 +12,7 @@ import {
   SQLITE_FILE,
   DB_BACKUPS_DIR,
   DATA_DIR,
+  assertDataDirSafeForThisProcess,
 } from "./core";
 import { resetAllDbModuleState } from "./stateReset";
 import { isAutomatedTestProcess } from "@/shared/utils/testProcess";
@@ -343,6 +344,8 @@ export async function unlinkFileWithRetry(
 // ──────────────── Backup ────────────────
 
 export function backupDbFile(reason = "auto") {
+  // Outside the try on purpose: the live-dir guard must surface, not be swallowed as a failed backup.
+  assertDataDirSafeForThisProcess();
   try {
     if (isBuildPhase || isCloud) return null;
     if (!SQLITE_FILE || !fs.existsSync(SQLITE_FILE)) return null;
@@ -462,6 +465,7 @@ export async function listDbBackups() {
 // ──────────────── Restore Backup ────────────────
 
 export async function restoreDbBackup(backupId: string) {
+  assertDataDirSafeForThisProcess();
   const backupDir = getBackupDir();
 
   // Validate format: must be db_<timestamp>_<reason>.sqlite, no path separators
