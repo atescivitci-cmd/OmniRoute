@@ -46,6 +46,12 @@ import {
   recordModelLockoutFailure,
 } from "@omniroute/open-sse/services/accountFallback.ts";
 import { isLocalProvider } from "@omniroute/open-sse/config/providerRegistry.ts";
+import {
+  credentialRejectionBaseLevel,
+  credentialRejectionCooldown,
+  describeCredentialCooldown,
+  isCredentialRejection,
+} from "@omniroute/open-sse/services/credentialRejectionCooldown.ts";
 import { COOLDOWN_MS, RateLimitReason } from "@omniroute/open-sse/config/constants.ts";
 import {
   preflightQuota,
@@ -1227,7 +1233,10 @@ export async function getProviderCredentials(
       if (
         c.backoffLevel > 0 &&
         !isTerminalConnectionStatus(c) &&
-        !isAccountUnavailable(c.rateLimitedUntil)
+        !isAccountUnavailable(c.rateLimitedUntil) &&
+        // A credential-rejection cooldown keeps its escalation level until the first success
+        // (or a passing test) clears it; otherwise every expiry would restart at the base.
+        c.lastErrorType !== PROVIDER_ERROR_TYPES.CREDENTIAL_REJECTED
       ) {
         c.backoffLevel = 0;
         resetConnectionBackoff(c.id).catch(() => {});
@@ -1434,6 +1443,9 @@ export async function getProviderCredentials(
           retryAfterHuman: formatRetryAfter(earliest),
           lastError: earliestConn?.lastError || null,
           lastErrorCode: allBlockedByModelCooldown ? 429 : earliestConn?.errorCode || null,
+          // True only when every cooling connection is cooling for a credential rejection, so
+          // the caller does not wait out a cooldown that no amount of waiting will fix.
+          credentialRejectedOnly: credentialRejectedOnly(cooldownStates),
           cooldownScope: allBlockedByModelCooldown ? "model" : "connection",
           cooldownModel: allBlockedByModelCooldown ? requestedModel : null,
           connectionsCount: connections.length,
@@ -1980,6 +1992,25 @@ export async function getProviderCredentialsWithQuotaPreflight(
 }
 
 /** Persist exponential-backoff state for an unavailable provider connection. */
+function credentialRejectedOnly(states: CooldownInspectionState[]): boolean {
+  const cooling = states.filter(
+    (s) =>
+      s.connectionCooldownMs !== null ||
+      s.codexScopeCooldownMs !== null ||
+      s.retryableModelCooldownMs !== null
+  );
+  return (
+    cooling.length > 0 &&
+    cooling.every(
+      (s) =>
+        s.connectionCooldownMs !== null &&
+        s.codexScopeCooldownMs === null &&
+        s.retryableModelCooldownMs === null &&
+        s.connection.lastErrorType === PROVIDER_ERROR_TYPES.CREDENTIAL_REJECTED
+    )
+  );
+}
+
 export async function markAccountUnavailable(
   connectionId: string,
   status: number,
@@ -1991,6 +2022,8 @@ export async function markAccountUnavailable(
     persistUnavailableState?: boolean;
     /** Caller is the combo engine — it records its own model-level lockouts. */
     isCombo?: boolean;
+    /** Client request body; used only to tell an echoed phrase from a real credential rejection. */
+    requestBody?: unknown;
   } = {}
 ) {
   const currentMutex = markMutexes.get(connectionId) || Promise.resolve();
@@ -2094,6 +2127,50 @@ export async function markAccountUnavailable(
     // per-model lockout branches (per-model quota 403/404, codex scope) are left
     // as-is — extending disableCooling to model lockout is a follow-up.
     const disableCooling = connProviderSpecificData.disableCooling === true;
+
+    // A 400 whose upstream text says THIS connection's authorization header is malformed
+    // describes the connection, not the request. Remember it as an ordinary connection
+    // cooldown (never terminal, never a provider-breaker failure) so later requests skip it
+    // instead of paying for it first. The sibling connections of the provider stay untouched.
+    if (isCredentialRejection(status, errorText, options.requestBody)) {
+      const rejection = credentialRejectionCooldown(
+        credentialRejectionBaseLevel(
+          backoffLevel,
+          conn?.rateLimitedUntil ? cooldownUntilMs(conn.rateLimitedUntil) : NaN,
+          Date.now()
+        )
+      );
+      await updateProviderConnection(connectionId, {
+        lastError: typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error",
+        lastErrorType: PROVIDER_ERROR_TYPES.CREDENTIAL_REJECTED,
+        errorCode: status,
+        lastErrorAt: new Date().toISOString(),
+        backoffLevel: rejection.newBackoffLevel,
+        ...(disableCooling
+          ? {}
+          : {
+              rateLimitedUntil: getUnavailableUntil(rejection.cooldownMs),
+              testStatus: "unavailable",
+            }),
+      });
+      // Provider + connection prefix + numbers only: never the upstream message text.
+      log.warn(
+        "AUTH",
+        describeCredentialCooldown(
+          provider,
+          connectionId,
+          rejection.newBackoffLevel,
+          rejection.cooldownMs
+        )
+      );
+      log.info(
+        "AUTH",
+        `${connectionId.slice(0, 8)} credential rejected (400) — cooling ${Math.ceil(rejection.cooldownMs / 1000)}s (backoffLevel=${rejection.newBackoffLevel}, connection stays active)`
+      );
+      // Direct requests move on to a sibling connection; a combo target keeps the 400 so
+      // the central attempt owner (which advances on credentialRejection) stays in charge.
+      return { shouldFallback: options.isCombo !== true, cooldownMs: 0 };
+    }
 
     const isPerModelQuotaProvider = hasPerModelQuota(provider, model, connectionPassthroughModels);
     const modelLockoutOptions = { maxCooldownMs: effectiveProviderProfile?.maxCooldownMs };

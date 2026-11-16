@@ -500,7 +500,7 @@ export async function executeChatWithBreaker({
                 provider,
                 model,
                 providerProfile,
-                { isCombo }
+                { isCombo: isCombo || !!routingAttemptToken }
               );
             },
           })

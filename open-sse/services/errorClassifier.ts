@@ -5,6 +5,7 @@ import {
   isOAuthInvalidToken,
 } from "./accountFallback.ts";
 import { isSubscriptionQuotaText } from "./quotaTextCooldowns.ts";
+import { CREDENTIAL_REJECTED_ERROR_TYPE } from "./credentialRejectionCooldown.ts";
 import { getProviderCategory, getRegistryEntry } from "../config/providerRegistry.ts";
 
 // Terminal stop signals where an empty content payload is still a legitimate,
@@ -96,6 +97,9 @@ export const PROVIDER_ERROR_TYPES = {
   OAUTH_INVALID_TOKEN: "oauth_invalid_token",
   EMPTY_CONTENT: "empty_content",
   MODEL_NOT_FOUND: "model_not_found",
+  // Written only by markAccountUnavailable's credential-rejection branch (never returned by
+  // classifyProviderError, so a loose text match can never label a connection with it).
+  CREDENTIAL_REJECTED: CREDENTIAL_REJECTED_ERROR_TYPE,
 };
 
 export const CONTEXT_OVERFLOW_SIGNALS = [

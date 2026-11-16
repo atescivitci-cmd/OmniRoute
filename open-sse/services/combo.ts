@@ -495,7 +495,13 @@ export async function buildAutoCandidates(
       // The connection's terminal/transient status (credits_exhausted / rate_limited /
       // banned / expired / future-dated unavailable) is classified unconditionally.
       const connectionStatusReason = getConnectionStatusQuotaCutoffReason(connection);
-      const statusCutoffReason = quotaCutoffEnabled ? connectionStatusReason : undefined;
+      // A live credential-rejection cooldown is a certain "this connection answers 400 to
+      // every request" signal, not a quota estimate, so it is excluded whether or not the
+      // opt-in quota cutoff is on. It still survives as a last-resort tail target.
+      const statusCutoffReason =
+        quotaCutoffEnabled || connectionStatusReason === "credential_rejected"
+          ? connectionStatusReason
+          : undefined;
       // #4540: when the HARD cutoff is OFF (default), a status-flagged connection is NOT
       // hard-blocked (that would surface a misleading "below quota cutoff" 429), but it
       // also must not score identically to a healthy provider. A no-fetcher exhausted

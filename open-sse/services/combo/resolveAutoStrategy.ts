@@ -33,6 +33,7 @@ import {
 import { selectWithStrategy } from "../autoCombo/routerStrategy.ts";
 import { buildComplexityRoutingHint } from "../autoCombo/complexityRouter";
 import { getModePack } from "../autoCombo/modePacks.ts";
+import { demoteAllCredentialCooledCandidates } from "./credentialCooledPool.ts";
 import { isModelLocked } from "../accountFallback.ts";
 import { recordComboIntent } from "../comboMetrics.ts";
 import { estimateTokens, getComboTargetTokenLimit } from "../contextManager.ts";
@@ -474,6 +475,7 @@ export async function resolveAutoStrategyOrder(
   for (const candidate of candidates) {
     candidate.cacheAffinity = cacheAffinityScores.get(promptCacheTargetIdentity(candidate)) ?? 0;
   }
+  demoteAllCredentialCooledCandidates(candidates);
   const routableCandidates = candidates.filter(
     (candidate) => candidate.quotaCutoffBlocked !== true
   );
