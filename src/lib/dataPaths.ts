@@ -1,6 +1,12 @@
 import path from "path";
 import os from "os";
 import fs from "fs";
+import {
+  assertNotLiveDataDir,
+  findLiveDataDirViolation,
+  guardHomeDir,
+  type LiveDataDirViolation,
+} from "./testProcessGuard";
 
 export const APP_NAME = "omniroute";
 
@@ -61,6 +67,26 @@ export function getDefaultDataDir() {
   return legacyDir;
 }
 
+/**
+ * Live-data-dir guard (see testProcessGuard.ts). Returns a violation when this is a TEST process and
+ * `dataDir` is the real default location (`~/.omniroute`, or the XDG/APPDATA default), else null.
+ * Pure: it never creates or modifies anything, and it is a handful of property reads for any
+ * process that is not a test process.
+ */
+export function getLiveDataDirViolation(dataDir: string): LiveDataDirViolation | null {
+  return findLiveDataDirViolation({
+    dataDir,
+    protectedDirs: [...new Set([getLegacyDotDataDir(), getDefaultDataDir()])],
+    rawDataDir: process.env.DATA_DIR,
+    homeDir: guardHomeDir(),
+  });
+}
+
+/** Throws a LiveDataDirGuardError when a test process is about to use the real data directory. */
+export function assertDataDirNotLiveInTests(dataDir: string): void {
+  assertNotLiveDataDir(getLiveDataDirViolation(dataDir));
+}
+
 export function resolveDataDir({ isCloud = false }: { isCloud?: boolean } = {}): string {
   if (isCloud) return "/tmp";
 
@@ -92,6 +118,9 @@ export function resolveWritableDataDir({ isCloud = false }: { isCloud?: boolean 
   // No explicit override → already the default user dir; nothing to fall back to.
   const configured = normalizeConfiguredPath(process.env.DATA_DIR);
   if (!configured) return resolved;
+
+  // Test process pointed at the real default dir: do NOT mkdir it. The open path throws.
+  if (getLiveDataDirViolation(resolved)) return resolved;
 
   try {
     fs.mkdirSync(resolved, { recursive: true });
