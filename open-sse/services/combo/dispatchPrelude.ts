@@ -13,6 +13,7 @@
  * Extracted from combo.ts as a pure move (#3501). No behaviour change.
  */
 import { getCachedProviderConnections } from "../../../src/lib/db/readCache";
+import { isCreditExhaustionError } from "./creditExhaustion.ts";
 import { getHiddenModelsByProvider } from "../../../src/lib/db/models";
 import { getCircuitBreaker } from "../../../src/shared/utils/circuitBreaker";
 import { fisherYatesShuffle, getNextFromDeck } from "../../../src/shared/utils/shuffleDeck";
@@ -226,13 +227,24 @@ async function evaluatePinnedResponse(args: {
     );
     return null;
   }
-  if (pinnedResult.status === 400) {
+  if (pinnedResult.status === 400 || pinnedResult.status === 402) {
     try {
       const details = await pinnedResult.clone().json();
-      if (details?.error?.code === "context_length_exceeded") {
+      if (pinnedResult.status === 400 && details?.error?.code === "context_length_exceeded") {
         log.warn(
           "COMBO",
           `Pinned model ${pinnedModel} context limit exceeded, falling through to combo retry/fallback`
+        );
+        return null;
+      }
+      // CREDIT_EXHAUSTION_ADVANCE_V1: the pinned account is out of credit. That is an admission
+      // refusal before any output, like the 429 below, so hand over to the normal strategy
+      // instead of failing the turn. The caller still returns the response as is when the
+      // routing guard marked it terminal (provider-bound state, committed or uncertain outcome).
+      if (isCreditExhaustionError(pinnedResult.status, details)) {
+        log.warn(
+          "COMBO",
+          `Pinned model ${pinnedModel} out of credit (${pinnedResult.status}), falling through to combo retry/fallback`
         );
         return null;
       }

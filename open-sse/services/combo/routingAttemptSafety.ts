@@ -2,6 +2,7 @@ import type { HandleSingleModel, SingleModelTarget } from "./types.ts";
 import { createHash } from "node:crypto";
 import { LOCAL_COST_ERROR_CODES } from "../autoCombo/zeroCostAdmission.ts";
 import { isCredentialRejectionText } from "./credentialRejection.ts";
+import { isCreditExhaustionError } from "./creditExhaustion.ts";
 import {
   createRoutingTransportAttempt,
   runWithRoutingTransportAttempt,
@@ -162,11 +163,15 @@ function makeToken(signal?: AbortSignal | null): RoutingAttemptToken {
   };
 }
 
-async function boundedErrorCode(response: Response): Promise<{
+async function boundedErrorCode(
+  response: Response,
+  status: number
+): Promise<{
   code: string | null;
   uncertain: boolean;
   reason: string | null;
   credentialRejection: boolean;
+  creditExhaustion: boolean;
 } | null> {
   if (!response.headers.get("content-type")?.includes("application/json")) return null;
   const reader = response.clone().body?.getReader();
@@ -199,6 +204,7 @@ async function boundedErrorCode(response: Response): Promise<{
             detail?.execution_outcome === "uncertain" || detail?.execution_outcome === "unknown",
           reason: typeof detail?.reason === "string" ? detail.reason : null,
           credentialRejection: isCredentialRejectionText(value?.error?.message),
+          creditExhaustion: isCreditExhaustionError(status, value),
         };
       })(),
       new Promise<{
@@ -206,6 +212,7 @@ async function boundedErrorCode(response: Response): Promise<{
         uncertain: boolean;
         reason: string;
         credentialRejection: boolean;
+        creditExhaustion: boolean;
       }>((resolve) => {
         timer = setTimeout(
           () =>
@@ -214,6 +221,7 @@ async function boundedErrorCode(response: Response): Promise<{
               uncertain: true,
               reason: "error_body_deadline",
               credentialRejection: false,
+              creditExhaustion: false,
             }),
           100
         );
@@ -225,6 +233,7 @@ async function boundedErrorCode(response: Response): Promise<{
       uncertain: true,
       reason: "error_body_unreadable",
       credentialRejection: false,
+      creditExhaustion: false,
     };
   } finally {
     clearTimeout(timer);
@@ -504,7 +513,7 @@ export function createRoutingAttemptGuard(options: {
               routingFailure("nested_transport_retry_blocked"),
               "nested_transport_retry_blocked"
             );
-          const error = result.ok ? null : await boundedErrorCode(result);
+          const error = result.ok ? null : await boundedErrorCode(result, result.status);
           assertRoutingTransportOutcome(transport);
           const code = error?.code ?? null;
           emit({
@@ -572,6 +581,17 @@ export function createRoutingAttemptGuard(options: {
           // requests alike. Provider-bound state never reaches here (stopped above), and
           // every other 400 and 401/403/422/499 keep the stop below.
           if (result.status === 400 && error?.credentialRejection) {
+            rejected.add(key);
+            priorFailure = result;
+            return result;
+          }
+          // CREDIT_EXHAUSTION_ADVANCE_V1: an upstream that says the account is out of credit
+          // (400 with credit text, or chatCore's canonical 402 payment_required envelope or
+          // credit text on a 402) refused at admission before any generation or tool run,
+          // exactly like the 429 case below, so another target is safe for plain and tool
+          // requests. Provider-bound state never reaches here (stopped above); 401/403/422/499,
+          // other 400s, other 402 codes and 5xx are untouched.
+          if ((result.status === 400 || result.status === 402) && error?.creditExhaustion) {
             rejected.add(key);
             priorFailure = result;
             return result;
