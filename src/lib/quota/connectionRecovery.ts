@@ -22,6 +22,7 @@
  */
 
 import { cooldownUntilMs } from "@omniroute/open-sse/services/accountFallback.ts";
+import { CREDENTIAL_REJECTED_ERROR_TYPE } from "@omniroute/open-sse/services/credentialRejectionCooldown.ts";
 import { isAutomatedTestProcess } from "@/shared/utils/testProcess";
 
 /**
@@ -48,6 +49,7 @@ export interface RecoverableConnectionInput {
   id: string;
   testStatus?: string | null;
   rateLimitedUntil?: string | null;
+  lastErrorType?: string | null;
 }
 
 function normalizeStatus(value: string | null | undefined): string {
@@ -84,6 +86,9 @@ export function isRecoverableCooldownConnection(
   const status = normalizeStatus(connection.testStatus);
   if (status !== RECOVERABLE_COOLDOWN_STATUS) return false;
   if (TERMINAL_CONNECTION_STATUSES.has(status)) return false; // defensive; 'unavailable' is never terminal
+  // A credential-rejection cooldown keeps its escalation level until a real success or a
+  // passing test clears it; the lazy selection filter already re-admits it on expiry.
+  if (connection.lastErrorType === CREDENTIAL_REJECTED_ERROR_TYPE) return false;
   return hasElapsedCooldown(connection.rateLimitedUntil, nowMs);
 }
 
@@ -144,12 +149,14 @@ export async function runConnectionRecoveryTick(
           id?: unknown;
           testStatus?: unknown;
           rateLimitedUntil?: unknown;
+          lastErrorType?: unknown;
         }>;
         return (Array.isArray(rows) ? rows : []).map((row) => ({
           id: typeof row.id === "string" ? row.id : "",
           testStatus: typeof row.testStatus === "string" ? row.testStatus : null,
           rateLimitedUntil:
             typeof row.rateLimitedUntil === "string" ? row.rateLimitedUntil : null,
+          lastErrorType: typeof row.lastErrorType === "string" ? row.lastErrorType : null,
         }));
       });
     connections = await load();

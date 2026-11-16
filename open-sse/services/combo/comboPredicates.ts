@@ -12,6 +12,7 @@ import { isSelfInflictedUpstreamTimeout } from "../../handlers/chatCore/cooldown
 import { isLocalStreamLifecycleError } from "@/shared/utils/circuitBreaker";
 import { CONTEXT_OVERFLOW_PATTERNS, MODEL_ACCESS_DENIED_PATTERNS } from "../accountFallback.ts";
 import { isResourceNotFoundResponse } from "../errorClassifier.ts";
+import { CREDENTIAL_REJECTED_ERROR_TYPE } from "../credentialRejectionCooldown.ts";
 import type { ResolvedComboTarget } from "./types.ts";
 
 // Status codes that should mark round-robin target semaphores as cooling down.
@@ -429,7 +430,9 @@ export function getConnectionStatusQuotaCutoffReason(
   const status = normalizeConnectionStatus(connection.testStatus);
   if (QUOTA_BLOCKING_CONNECTION_STATUSES.has(status)) return status;
   if (status === "unavailable" && hasFutureRateLimitUntil(connection.rateLimitedUntil)) {
-    return "rate_limited";
+    return connection.lastErrorType === CREDENTIAL_REJECTED_ERROR_TYPE
+      ? CREDENTIAL_REJECTED_ERROR_TYPE
+      : "rate_limited";
   }
   return undefined;
 }

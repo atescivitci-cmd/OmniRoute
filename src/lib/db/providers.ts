@@ -38,6 +38,7 @@ import {
   toStringOrNull,
   toNumberOrZero,
 } from "./providers/columns";
+import { credentialChangeRecoveryPatch } from "./providers/credentialChangeRecovery";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -416,7 +417,12 @@ export async function createProviderConnection(data: JsonRecord) {
     if (!existingId) return null;
     const rawExisting = toRecord(rowToCamel(existing));
     const decryptedExisting = decryptConnectionFields({ ...rawExisting });
-    const merged: JsonRecord = { ...decryptedExisting, ...data, updatedAt: now };
+    const merged: JsonRecord = {
+      ...decryptedExisting,
+      ...credentialChangeRecoveryPatch(decryptedExisting, data),
+      ...data,
+      updatedAt: now,
+    };
     merged.providerSpecificData = normalizeProviderSpecificData(
       toStringOrNull(merged.provider),
       merged.providerSpecificData
@@ -745,6 +751,10 @@ export async function updateProviderConnection(id: string, data: JsonRecord) {
 
   const merged: JsonRecord = {
     ...toRecord(rowToCamel(existing)),
+    ...credentialChangeRecoveryPatch(
+      decryptConnectionFields({ ...toRecord(rowToCamel(existing)) }),
+      data
+    ),
     ...data,
     updatedAt: new Date().toISOString(),
   };

@@ -1657,6 +1657,10 @@ async function handleSingleModelChat(
     });
 
   // 3. Credential retry loop
+  // A routing attempt token means a central attempt owner drives this dispatch even when the
+  // caller (for example the safety-net redirect) did not mark it as a combo: it must never move
+  // to a sibling connection inside this loop (that is a blocked nested retry).
+  const comboOwnedAttempt = isCombo || !!runtimeOptions.routingAttemptToken;
   let requestRetryAttempt = 0;
   let requestRetryLastError = null;
   let requestRetryLastStatus = null;
@@ -1742,7 +1746,9 @@ async function handleSingleModelChat(
         return cachedModelEligibilityResponse(NVIDIA_MODEL_NEGATIVE_CODE);
       }
       if (!credentials || "allRateLimited" in credentials || !credentials.connectionId) {
-        if (credentials?.allRateLimited) {
+        // A credential-rejection cooldown is not a transient limit: waiting it out only
+        // delays the same 400, so the request answers immediately instead of retrying.
+        if (credentials?.allRateLimited && credentials.credentialRejectedOnly !== true) {
           const retryDecision = getCooldownAwareRetryDecision({
             retryAfter: credentials.retryAfter,
             settings: retrySettings,
@@ -2098,7 +2104,7 @@ async function handleSingleModelChat(
           provider,
           model,
           providerProfile,
-          { isCombo }
+          { isCombo: comboOwnedAttempt }
         );
 
         if (shouldFallback && !hasForcedConnection) {
@@ -2148,7 +2154,7 @@ async function handleSingleModelChat(
           provider,
           model,
           providerProfile,
-          { isCombo }
+          { isCombo: comboOwnedAttempt }
         );
 
         if (shouldFallback && !hasForcedConnection) {
@@ -2358,7 +2364,8 @@ async function handleSingleModelChat(
                 result.status === 429 &&
                 (failureKind === "rate_limit" || failureKind === "transient")
               ),
-              isCombo,
+              isCombo: comboOwnedAttempt,
+              requestBody: body,
             }
           );
 
