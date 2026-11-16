@@ -99,6 +99,35 @@ export const CLAUDE_SONNET_5_PRICING = {
   cache_creation: 3.0,
 };
 
+// Claude 5.5 family — official base-tier rates (platform.claude.com pricing, 2026-11-16).
+// cached = cache read, cache_creation = 5-minute cache write, reasoning = output rate.
+// Haiku 5.5 bills a higher tier for prompts over 100k tokens (input $0.50, output $2.50,
+// cache read $0.05, 5m write $0.625); this flat structure cannot express it, so the base
+// tier is used and long Haiku 5.5 prompts are under-estimated.
+export const CLAUDE_HAIKU_5_5_PRICING = {
+  input: 0.1,
+  output: 0.5,
+  cached: 0.01,
+  reasoning: 0.5,
+  cache_creation: 0.125,
+};
+
+export const CLAUDE_SONNET_5_5_PRICING = {
+  input: 2.0,
+  output: 10.0,
+  cached: 0.1,
+  reasoning: 10.0,
+  cache_creation: 2.5,
+};
+
+export const CLAUDE_OPUS_5_5_PRICING = {
+  input: 4.0,
+  output: 20.0,
+  cached: 0.2,
+  reasoning: 20.0,
+  cache_creation: 5.0,
+};
+
 export const GLM_PRICING = {
   "glm-5.2": {
     input: 1.2,

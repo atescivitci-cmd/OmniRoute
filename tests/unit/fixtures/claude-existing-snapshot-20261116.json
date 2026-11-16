@@ -1,0 +1,732 @@
+{
+  "specs": {
+    "claude-opus-4-5": {
+      "maxOutputTokens": 32768,
+      "contextWindow": 200000,
+      "defaultThinkingBudget": 10000,
+      "thinkingBudgetCap": 32000,
+      "supportsThinking": true,
+      "supportsTools": true,
+      "supportsVision": true
+    },
+    "claude-sonnet-4-5": {
+      "maxOutputTokens": 64000,
+      "contextWindow": 200000,
+      "thinkingBudgetCap": 62000,
+      "supportsThinking": true,
+      "supportsTools": true,
+      "supportsVision": true,
+      "aliases": [
+        "claude-sonnet-4-5",
+        "anthropic.claude-sonnet-4-5",
+        "eu.anthropic.claude-sonnet-4-5",
+        "us.anthropic.claude-sonnet-4-5",
+        "global.anthropic.claude-sonnet-4-5",
+        "bedrock/anthropic.claude-sonnet-4-5",
+        "bedrock/eu.anthropic.claude-sonnet-4-5",
+        "bedrock/us.anthropic.claude-sonnet-4-5",
+        "bedrock/global.anthropic.claude-sonnet-4-5",
+        "claude-sonnet-4-5-20250929",
+        "anthropic.claude-sonnet-4-5-20250929",
+        "eu.anthropic.claude-sonnet-4-5-20250929",
+        "us.anthropic.claude-sonnet-4-5-20250929",
+        "global.anthropic.claude-sonnet-4-5-20250929",
+        "bedrock/anthropic.claude-sonnet-4-5-20250929",
+        "bedrock/eu.anthropic.claude-sonnet-4-5-20250929",
+        "bedrock/us.anthropic.claude-sonnet-4-5-20250929",
+        "bedrock/global.anthropic.claude-sonnet-4-5-20250929"
+      ]
+    },
+    "claude-opus-4-5-20251101": {
+      "maxOutputTokens": 64000,
+      "contextWindow": 200000,
+      "defaultThinkingBudget": 10000,
+      "thinkingBudgetCap": 32000,
+      "supportsThinking": true,
+      "supportsTools": true,
+      "supportsVision": true
+    },
+    "claude-sonnet-4-6": {
+      "maxOutputTokens": 64000,
+      "contextWindow": 1000000,
+      "thinkingBudgetCap": 62000,
+      "supportsThinking": true,
+      "supportsTools": true,
+      "supportsVision": true,
+      "aliases": [
+        "claude-sonnet-4-6",
+        "anthropic.claude-sonnet-4-6",
+        "eu.anthropic.claude-sonnet-4-6",
+        "us.anthropic.claude-sonnet-4-6",
+        "global.anthropic.claude-sonnet-4-6",
+        "bedrock/anthropic.claude-sonnet-4-6",
+        "bedrock/eu.anthropic.claude-sonnet-4-6",
+        "bedrock/us.anthropic.claude-sonnet-4-6",
+        "bedrock/global.anthropic.claude-sonnet-4-6",
+        "claude-sonnet-4.6",
+        "anthropic.claude-sonnet-4.6",
+        "eu.anthropic.claude-sonnet-4.6",
+        "us.anthropic.claude-sonnet-4.6",
+        "global.anthropic.claude-sonnet-4.6",
+        "bedrock/anthropic.claude-sonnet-4.6",
+        "bedrock/eu.anthropic.claude-sonnet-4.6",
+        "bedrock/us.anthropic.claude-sonnet-4.6",
+        "bedrock/global.anthropic.claude-sonnet-4.6"
+      ]
+    },
+    "claude-sonnet-5": {
+      "maxOutputTokens": 128000,
+      "contextWindow": 1000000,
+      "defaultThinkingBudget": 32000,
+      "thinkingBudgetCap": 120000,
+      "supportsThinking": true,
+      "supportsTools": true,
+      "supportsVision": true,
+      "adaptiveThinkingOnly": true,
+      "aliases": [
+        "claude-sonnet-5",
+        "anthropic.claude-sonnet-5",
+        "eu.anthropic.claude-sonnet-5",
+        "us.anthropic.claude-sonnet-5",
+        "global.anthropic.claude-sonnet-5",
+        "bedrock/anthropic.claude-sonnet-5",
+        "bedrock/eu.anthropic.claude-sonnet-5",
+        "bedrock/us.anthropic.claude-sonnet-5",
+        "bedrock/global.anthropic.claude-sonnet-5"
+      ]
+    },
+    "claude-opus-4-6": {
+      "maxOutputTokens": 128000,
+      "contextWindow": 1000000,
+      "defaultThinkingBudget": 32000,
+      "thinkingBudgetCap": 120000,
+      "supportsThinking": true,
+      "supportsTools": true,
+      "supportsVision": true,
+      "aliases": [
+        "claude-opus-4-6",
+        "anthropic.claude-opus-4-6",
+        "eu.anthropic.claude-opus-4-6",
+        "us.anthropic.claude-opus-4-6",
+        "global.anthropic.claude-opus-4-6",
+        "bedrock/anthropic.claude-opus-4-6",
+        "bedrock/eu.anthropic.claude-opus-4-6",
+        "bedrock/us.anthropic.claude-opus-4-6",
+        "bedrock/global.anthropic.claude-opus-4-6",
+        "claude-opus-4.6",
+        "anthropic.claude-opus-4.6",
+        "eu.anthropic.claude-opus-4.6",
+        "us.anthropic.claude-opus-4.6",
+        "global.anthropic.claude-opus-4.6",
+        "bedrock/anthropic.claude-opus-4.6",
+        "bedrock/eu.anthropic.claude-opus-4.6",
+        "bedrock/us.anthropic.claude-opus-4.6",
+        "bedrock/global.anthropic.claude-opus-4.6"
+      ]
+    },
+    "claude-opus-4-7": {
+      "maxOutputTokens": 128000,
+      "contextWindow": 1000000,
+      "defaultThinkingBudget": 32000,
+      "thinkingBudgetCap": 120000,
+      "supportsThinking": true,
+      "supportsTools": true,
+      "supportsVision": true,
+      "adaptiveThinkingOnly": true,
+      "aliases": [
+        "claude-opus-4-7",
+        "anthropic.claude-opus-4-7",
+        "eu.anthropic.claude-opus-4-7",
+        "us.anthropic.claude-opus-4-7",
+        "global.anthropic.claude-opus-4-7",
+        "bedrock/anthropic.claude-opus-4-7",
+        "bedrock/eu.anthropic.claude-opus-4-7",
+        "bedrock/us.anthropic.claude-opus-4-7",
+        "bedrock/global.anthropic.claude-opus-4-7",
+        "claude-opus-4.7",
+        "anthropic.claude-opus-4.7",
+        "eu.anthropic.claude-opus-4.7",
+        "us.anthropic.claude-opus-4.7",
+        "global.anthropic.claude-opus-4.7",
+        "bedrock/anthropic.claude-opus-4.7",
+        "bedrock/eu.anthropic.claude-opus-4.7",
+        "bedrock/us.anthropic.claude-opus-4.7",
+        "bedrock/global.anthropic.claude-opus-4.7"
+      ]
+    },
+    "claude-fable-5": {
+      "maxOutputTokens": 128000,
+      "contextWindow": 1000000,
+      "defaultThinkingBudget": 32000,
+      "thinkingBudgetCap": 120000,
+      "supportsThinking": true,
+      "supportsTools": true,
+      "supportsVision": true,
+      "rejectsThinkingDisabled": true,
+      "adaptiveThinkingOnly": true,
+      "aliases": [
+        "claude-fable-5",
+        "anthropic.claude-fable-5",
+        "eu.anthropic.claude-fable-5",
+        "us.anthropic.claude-fable-5",
+        "global.anthropic.claude-fable-5",
+        "bedrock/anthropic.claude-fable-5",
+        "bedrock/eu.anthropic.claude-fable-5",
+        "bedrock/us.anthropic.claude-fable-5",
+        "bedrock/global.anthropic.claude-fable-5"
+      ]
+    },
+    "claude-opus-5": {
+      "maxOutputTokens": 128000,
+      "contextWindow": 1000000,
+      "defaultThinkingBudget": 32000,
+      "thinkingBudgetCap": 120000,
+      "supportsThinking": true,
+      "supportsTools": true,
+      "supportsVision": true,
+      "adaptiveThinkingOnly": true,
+      "maxEffortWhenThinkingDisabled": "high",
+      "aliases": [
+        "claude-opus-5",
+        "anthropic.claude-opus-5",
+        "eu.anthropic.claude-opus-5",
+        "us.anthropic.claude-opus-5",
+        "global.anthropic.claude-opus-5",
+        "bedrock/anthropic.claude-opus-5",
+        "bedrock/eu.anthropic.claude-opus-5",
+        "bedrock/us.anthropic.claude-opus-5",
+        "bedrock/global.anthropic.claude-opus-5"
+      ]
+    },
+    "claude-opus-4-8": {
+      "maxOutputTokens": 128000,
+      "contextWindow": 1000000,
+      "defaultThinkingBudget": 32000,
+      "thinkingBudgetCap": 120000,
+      "supportsThinking": true,
+      "supportsTools": true,
+      "supportsVision": true,
+      "adaptiveThinkingOnly": true,
+      "aliases": [
+        "claude-opus-4-8",
+        "anthropic.claude-opus-4-8",
+        "eu.anthropic.claude-opus-4-8",
+        "us.anthropic.claude-opus-4-8",
+        "global.anthropic.claude-opus-4-8",
+        "bedrock/anthropic.claude-opus-4-8",
+        "bedrock/eu.anthropic.claude-opus-4-8",
+        "bedrock/us.anthropic.claude-opus-4-8",
+        "bedrock/global.anthropic.claude-opus-4-8",
+        "claude-opus-4.8",
+        "anthropic.claude-opus-4.8",
+        "eu.anthropic.claude-opus-4.8",
+        "us.anthropic.claude-opus-4.8",
+        "global.anthropic.claude-opus-4.8",
+        "bedrock/anthropic.claude-opus-4.8",
+        "bedrock/eu.anthropic.claude-opus-4.8",
+        "bedrock/us.anthropic.claude-opus-4.8",
+        "bedrock/global.anthropic.claude-opus-4.8",
+        "claude-opus-4.8-fast",
+        "anthropic.claude-opus-4.8-fast",
+        "eu.anthropic.claude-opus-4.8-fast",
+        "us.anthropic.claude-opus-4.8-fast",
+        "global.anthropic.claude-opus-4.8-fast",
+        "bedrock/anthropic.claude-opus-4.8-fast",
+        "bedrock/eu.anthropic.claude-opus-4.8-fast",
+        "bedrock/us.anthropic.claude-opus-4.8-fast",
+        "bedrock/global.anthropic.claude-opus-4.8-fast"
+      ]
+    },
+    "claude-sonnet-4-5-20250929": {
+      "maxOutputTokens": 64000,
+      "contextWindow": 200000,
+      "thinkingBudgetCap": 62000,
+      "supportsThinking": true,
+      "supportsTools": true,
+      "supportsVision": true,
+      "aliases": ["claude-sonnet-4.5"]
+    },
+    "claude-haiku-4-5-20251001": {
+      "maxOutputTokens": 64000,
+      "contextWindow": 200000,
+      "thinkingBudgetCap": 62000,
+      "supportsThinking": true,
+      "supportsTools": true,
+      "supportsVision": true,
+      "aliases": ["claude-haiku-4.5"]
+    }
+  },
+  "pricing": {
+    "cc": {
+      "claude-fable-5": {
+        "input": 10,
+        "output": 50,
+        "cached": 1,
+        "reasoning": 50,
+        "cache_creation": 12.5
+      },
+      "claude-opus-5": {
+        "input": 5,
+        "output": 25,
+        "cached": 0.5,
+        "reasoning": 25,
+        "cache_creation": 6.25
+      },
+      "claude-opus-4-8": {
+        "input": 5,
+        "output": 25,
+        "cached": 0.5,
+        "reasoning": 25,
+        "cache_creation": 6.25
+      },
+      "claude-opus-4-7": {
+        "input": 5,
+        "output": 25,
+        "cached": 0.5,
+        "reasoning": 25,
+        "cache_creation": 6.25
+      },
+      "claude-opus-4-6": {
+        "input": 5,
+        "output": 25,
+        "cached": 0.5,
+        "reasoning": 25,
+        "cache_creation": 6.25
+      },
+      "claude-sonnet-4-6": {
+        "input": 3,
+        "output": 15,
+        "cached": 0.3,
+        "reasoning": 15,
+        "cache_creation": 3.75
+      },
+      "claude-sonnet-5": {
+        "input": 3,
+        "output": 15,
+        "cached": 0.3,
+        "reasoning": 15,
+        "cache_creation": 3.75
+      },
+      "claude-opus-4-5-20251101": {
+        "input": 5,
+        "output": 25,
+        "cached": 0.5,
+        "reasoning": 25,
+        "cache_creation": 6.25
+      },
+      "claude-sonnet-4-5-20250929": {
+        "input": 3,
+        "output": 15,
+        "cached": 0.3,
+        "reasoning": 15,
+        "cache_creation": 3.75
+      },
+      "claude-haiku-4-5-20251001": {
+        "input": 1,
+        "output": 5,
+        "cached": 0.1,
+        "reasoning": 5,
+        "cache_creation": 1.25
+      }
+    },
+    "ag": {
+      "claude-sonnet-4-6": {
+        "input": 3,
+        "output": 15,
+        "cached": 0.3,
+        "reasoning": 22.5,
+        "cache_creation": 3
+      },
+      "claude-opus-4-6-thinking": {
+        "input": 5,
+        "output": 25,
+        "cached": 0.5,
+        "reasoning": 37.5,
+        "cache_creation": 5
+      }
+    },
+    "gh": {
+      "claude-opus-5": {
+        "input": 5,
+        "output": 25,
+        "cached": 0.5,
+        "reasoning": 25,
+        "cache_creation": 6.25
+      },
+      "claude-4.5-sonnet": {
+        "input": 3,
+        "output": 15,
+        "cached": 0.3,
+        "reasoning": 22.5,
+        "cache_creation": 3
+      },
+      "claude-4.5-opus": {
+        "input": 5,
+        "output": 25,
+        "cached": 0.5,
+        "reasoning": 37.5,
+        "cache_creation": 5
+      },
+      "claude-4.5-haiku": {
+        "input": 0.5,
+        "output": 2.5,
+        "cached": 0.05,
+        "reasoning": 3.75,
+        "cache_creation": 0.5
+      }
+    },
+    "kiro": {
+      "claude-sonnet-4.5": {
+        "input": 3,
+        "output": 15,
+        "cached": 1.5,
+        "reasoning": 15,
+        "cache_creation": 3
+      },
+      "claude-haiku-4.5": {
+        "input": 0.5,
+        "output": 2.5,
+        "cached": 0.25,
+        "reasoning": 2.5,
+        "cache_creation": 0.5
+      },
+      "claude-sonnet-5": {
+        "input": 3,
+        "output": 15,
+        "cached": 1.5,
+        "reasoning": 15,
+        "cache_creation": 3
+      }
+    },
+    "anthropic": {
+      "claude-sonnet-4-20250514": {
+        "input": 3,
+        "output": 15,
+        "cached": 1.5,
+        "reasoning": 15,
+        "cache_creation": 3
+      },
+      "claude-opus-4-20250514": {
+        "input": 15,
+        "output": 75,
+        "cached": 7.5,
+        "reasoning": 112.5,
+        "cache_creation": 15
+      },
+      "claude-3-5-sonnet-20241022": {
+        "input": 3,
+        "output": 15,
+        "cached": 1.5,
+        "reasoning": 15,
+        "cache_creation": 3
+      },
+      "claude-haiku-4-5-20251001": {
+        "input": 1,
+        "output": 5,
+        "cached": 0.5,
+        "reasoning": 7.5,
+        "cache_creation": 1
+      },
+      "claude-haiku-4.5": {
+        "input": 1,
+        "output": 5,
+        "cached": 0.5,
+        "reasoning": 7.5,
+        "cache_creation": 1
+      },
+      "claude-sonnet-4-6-20251031": {
+        "input": 3,
+        "output": 15,
+        "cached": 1.5,
+        "reasoning": 22.5,
+        "cache_creation": 3
+      },
+      "claude-sonnet-4.6": {
+        "input": 3,
+        "output": 15,
+        "cached": 1.5,
+        "reasoning": 22.5,
+        "cache_creation": 3
+      },
+      "claude-opus-4-6-20251031": {
+        "input": 5,
+        "output": 25,
+        "cached": 2.5,
+        "reasoning": 37.5,
+        "cache_creation": 5
+      },
+      "claude-opus-4.6": {
+        "input": 5,
+        "output": 25,
+        "cached": 2.5,
+        "reasoning": 37.5,
+        "cache_creation": 5
+      },
+      "claude-fable-5": {
+        "input": 15,
+        "output": 75,
+        "cached": 7.5,
+        "reasoning": 112.5,
+        "cache_creation": 15
+      },
+      "claude-opus-5": {
+        "input": 5,
+        "output": 25,
+        "cached": 0.5,
+        "reasoning": 25,
+        "cache_creation": 6.25
+      },
+      "claude-sonnet-5": {
+        "input": 3,
+        "output": 15,
+        "cached": 1.5,
+        "reasoning": 22.5,
+        "cache_creation": 3
+      },
+      "claude-opus-4.8": {
+        "input": 15,
+        "output": 75,
+        "cached": 7.5,
+        "reasoning": 112.5,
+        "cache_creation": 15
+      },
+      "claude-opus-4-8": {
+        "input": 15,
+        "output": 75,
+        "cached": 7.5,
+        "reasoning": 112.5,
+        "cache_creation": 15
+      },
+      "claude-opus-4-7": {
+        "input": 15,
+        "output": 75,
+        "cached": 7.5,
+        "reasoning": 112.5,
+        "cache_creation": 15
+      },
+      "claude-opus-4-6": {
+        "input": 5,
+        "output": 25,
+        "cached": 2.5,
+        "reasoning": 37.5,
+        "cache_creation": 5
+      },
+      "claude-sonnet-4-6": {
+        "input": 3,
+        "output": 15,
+        "cached": 1.5,
+        "reasoning": 22.5,
+        "cache_creation": 3
+      },
+      "claude-opus-4-5-20251101": {
+        "input": 15,
+        "output": 75,
+        "cached": 7.5,
+        "reasoning": 112.5,
+        "cache_creation": 15
+      },
+      "claude-sonnet-4-5-20250929": {
+        "input": 3,
+        "output": 15,
+        "cached": 1.5,
+        "reasoning": 15,
+        "cache_creation": 3
+      },
+      "claude-sonnet-4": {
+        "input": 3,
+        "output": 15,
+        "cached": 1.5,
+        "reasoning": 15,
+        "cache_creation": 3
+      },
+      "claude-opus-4": {
+        "input": 15,
+        "output": 75,
+        "cached": 7.5,
+        "reasoning": 112.5,
+        "cache_creation": 15
+      }
+    },
+    "blackbox": {
+      "claude-sonnet-4": {
+        "input": 0,
+        "output": 0,
+        "cached": 0,
+        "reasoning": 0,
+        "cache_creation": 0
+      }
+    }
+  },
+  "known": {
+    "claude-fable-5": {
+      "inputCostPer1M": 15,
+      "outputCostPer1M": 75,
+      "isFree": false
+    },
+    "claude-opus-5": {
+      "inputCostPer1M": 5,
+      "outputCostPer1M": 25,
+      "isFree": false
+    },
+    "claude-opus-4-8": {
+      "inputCostPer1M": 15,
+      "outputCostPer1M": 75,
+      "isFree": false
+    },
+    "claude-opus-4-7": {
+      "inputCostPer1M": 15,
+      "outputCostPer1M": 75,
+      "isFree": false
+    },
+    "claude-sonnet-4-6": {
+      "inputCostPer1M": 3,
+      "outputCostPer1M": 15,
+      "isFree": false
+    },
+    "claude-sonnet-5": {
+      "inputCostPer1M": 3,
+      "outputCostPer1M": 15,
+      "isFree": false
+    },
+    "claude-haiku-4-5": {
+      "inputCostPer1M": 0.8,
+      "outputCostPer1M": 4,
+      "isFree": false
+    }
+  },
+  "registry": {
+    "claude": [
+      {
+        "id": "claude-fable-5",
+        "name": "Claude Fable 5",
+        "contextLength": 1000000,
+        "maxOutputTokens": 128000,
+        "unsupportedParams": ["temperature", "top_p", "top_k"]
+      },
+      {
+        "id": "claude-opus-5",
+        "name": "Claude Opus 5",
+        "contextLength": 1000000,
+        "maxOutputTokens": 128000,
+        "supportsXHighEffort": true,
+        "unsupportedParams": ["temperature", "top_p", "top_k"]
+      },
+      {
+        "id": "claude-opus-4-8",
+        "name": "Claude Opus 4.8",
+        "contextLength": 1000000,
+        "maxOutputTokens": 128000,
+        "unsupportedParams": ["temperature", "top_p", "top_k"]
+      },
+      {
+        "id": "claude-opus-4-7",
+        "name": "Claude Opus 4.7",
+        "contextLength": 1000000,
+        "maxOutputTokens": 128000,
+        "unsupportedParams": ["temperature", "top_p", "top_k"]
+      },
+      {
+        "id": "claude-opus-4-6",
+        "name": "Claude Opus 4.6",
+        "supportsXHighEffort": false,
+        "contextLength": 1000000,
+        "maxOutputTokens": 128000
+      },
+      {
+        "id": "claude-opus-4-5-20251101",
+        "name": "Claude Opus 4.5",
+        "supportsXHighEffort": false,
+        "contextLength": 200000,
+        "maxOutputTokens": 64000
+      },
+      {
+        "id": "claude-sonnet-5",
+        "name": "Claude Sonnet 5",
+        "contextLength": 1000000,
+        "maxOutputTokens": 128000,
+        "supportsXHighEffort": true,
+        "unsupportedParams": ["temperature", "top_p", "top_k"]
+      },
+      {
+        "id": "claude-sonnet-4-6",
+        "name": "Claude 4.6 Sonnet",
+        "supportsXHighEffort": false,
+        "contextLength": 1000000,
+        "maxOutputTokens": 64000
+      },
+      {
+        "id": "claude-sonnet-4-5-20250929",
+        "name": "Claude 4.5 Sonnet",
+        "supportsXHighEffort": false,
+        "contextLength": 200000,
+        "maxOutputTokens": 64000
+      },
+      {
+        "id": "claude-haiku-4-5-20251001",
+        "name": "Claude 4.5 Haiku",
+        "supportsXHighEffort": false,
+        "contextLength": 200000,
+        "maxOutputTokens": 64000
+      }
+    ],
+    "anthropic": [
+      {
+        "id": "claude-fable-5",
+        "name": "Claude Fable 5",
+        "contextLength": 1048576,
+        "unsupportedParams": ["temperature", "top_p", "top_k"]
+      },
+      {
+        "id": "claude-opus-5",
+        "name": "Claude Opus 5",
+        "contextLength": 1000000,
+        "maxOutputTokens": 128000,
+        "supportsXHighEffort": true,
+        "unsupportedParams": ["temperature", "top_p", "top_k"]
+      },
+      {
+        "id": "claude-opus-4.7",
+        "name": "Claude Opus 4.7",
+        "unsupportedParams": ["temperature", "top_p", "top_k"]
+      },
+      {
+        "id": "claude-opus-4.8",
+        "name": "Claude Opus 4.8",
+        "contextLength": 1048576,
+        "unsupportedParams": ["temperature", "top_p", "top_k"]
+      },
+      {
+        "id": "claude-opus-4.6",
+        "name": "Claude Opus 4.6"
+      },
+      {
+        "id": "claude-opus-4.5",
+        "name": "Claude Opus 4.5"
+      },
+      {
+        "id": "claude-sonnet-5",
+        "name": "Claude Sonnet 5",
+        "contextLength": 1048576,
+        "unsupportedParams": ["temperature", "top_p", "top_k"]
+      },
+      {
+        "id": "claude-sonnet-4.6",
+        "name": "Claude Sonnet 4.6"
+      },
+      {
+        "id": "claude-sonnet-4.5",
+        "name": "Claude Sonnet 4.6"
+      },
+      {
+        "id": "claude-haiku-4.5",
+        "name": "Claude Haiku 4.5"
+      }
+    ]
+  },
+  "defaults": {
+    "fable": "claude-fable-5",
+    "opus": "claude-opus-5",
+    "sonnet": "claude-sonnet-5",
+    "haiku": "claude-haiku-4-5-20251001"
+  }
+}

@@ -106,5 +106,34 @@ export const claudeProvider: RegistryEntry = {
       contextLength: 200000,
       maxOutputTokens: 64000,
     },
+    // Claude 5.5 family (2026-09/10; official overview, pricing and effort pages).
+    // Appended AFTER the older siblings on purpose: getClaudeCodeDefaultModels() takes the
+    // FIRST match per family, so listing these earlier would repoint Claude Code's
+    // ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL aliases to 5.5. Move them up only on purpose.
+    // All: 1M context, 128K output, xhigh effort, sampling params rejected (Haiku docs: "omit").
+    {
+      id: "claude-opus-5-5",
+      name: "Claude Opus 5.5",
+      contextLength: 1000000,
+      maxOutputTokens: 128000,
+      supportsXHighEffort: true,
+      unsupportedParams: ["temperature", "top_p", "top_k"],
+    },
+    {
+      id: "claude-sonnet-5-5",
+      name: "Claude Sonnet 5.5",
+      contextLength: 1000000,
+      maxOutputTokens: 128000,
+      supportsXHighEffort: true,
+      unsupportedParams: ["temperature", "top_p", "top_k"],
+    },
+    {
+      id: "claude-haiku-5-5",
+      name: "Claude Haiku 5.5",
+      contextLength: 1000000,
+      maxOutputTokens: 128000,
+      supportsXHighEffort: true,
+      unsupportedParams: ["temperature", "top_p", "top_k"],
+    },
   ],
 };

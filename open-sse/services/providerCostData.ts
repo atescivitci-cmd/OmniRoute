@@ -18,6 +18,10 @@ export const KNOWN_MODEL_PRICING: Record<string, ModelPricing> = {
   "claude-sonnet-4-6": { inputCostPer1M: 3.0, outputCostPer1M: 15.0, isFree: false },
   "claude-sonnet-5": { inputCostPer1M: 3.0, outputCostPer1M: 15.0, isFree: false },
   "claude-haiku-4-5": { inputCostPer1M: 0.8, outputCostPer1M: 4.0, isFree: false },
+  "claude-opus-5-5": { inputCostPer1M: 4.0, outputCostPer1M: 20.0, isFree: false },
+  "claude-sonnet-5-5": { inputCostPer1M: 2.0, outputCostPer1M: 10.0, isFree: false },
+  // Base tier (prompts up to 100k); over 100k Haiku 5.5 bills $0.50 / $2.50 (not modelled).
+  "claude-haiku-5-5": { inputCostPer1M: 0.1, outputCostPer1M: 0.5, isFree: false },
   "gemini-2.5-flash": { inputCostPer1M: 0.15, outputCostPer1M: 0.6, isFree: false },
   "gemini-2.5-pro": { inputCostPer1M: 1.25, outputCostPer1M: 5.0, isFree: false },
   "deepseek-chat": { inputCostPer1M: 0.27, outputCostPer1M: 1.1, isFree: false },
