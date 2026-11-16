@@ -11,6 +11,7 @@ import {
 } from "./urlHelpers";
 import { applyCustomUserAgent, buildBearerHeaders } from "./headers";
 import { toValidationErrorResult, validationRead, validationWrite } from "./transport";
+import { credentialRejection400 } from "./credentialRejection";
 import { validateDirectChatProvider } from "./directChatProbe";
 import { getGigachatAccessToken } from "@omniroute/open-sse/services/gigachatAuth.ts";
 import {
@@ -265,6 +266,9 @@ export async function validateAzureOpenAIProvider({ apiKey, providerSpecificData
     }),
   });
 
+  const rejected = await credentialRejection400(response, { apiKey });
+  if (rejected) return rejected;
+
   if (
     response.ok ||
     response.status === 400 ||
@@ -409,6 +413,11 @@ export async function validateAzureAiProvider({ apiKey, providerSpecificData = {
         body: JSON.stringify(chatBody),
       });
 
+      const rejected = await credentialRejection400(response, { apiKey });
+      if (rejected) {
+        return { deploymentId, valid: false, status: "auth_error", error: rejected.error };
+      }
+
       if (
         response.ok ||
         response.status === 400 ||
@@ -539,6 +548,9 @@ export async function validateWatsonxProvider({ apiKey, providerSpecificData = {
       }),
     });
 
+    const rejected = await credentialRejection400(response, { apiKey });
+    if (rejected) return rejected;
+
     if (
       response.ok ||
       response.status === 400 ||
@@ -639,6 +651,9 @@ export async function validateOciProvider({ apiKey, providerSpecificData = {} }:
       body: JSON.stringify(body),
     });
 
+    const rejected = await credentialRejection400(response, { apiKey });
+    if (rejected) return rejected;
+
     if (
       response.ok ||
       response.status === 400 ||
@@ -734,6 +749,9 @@ export async function validateSapProvider({ apiKey, providerSpecificData = {} }:
         max_tokens: 1,
       }),
     });
+
+    const rejected = await credentialRejection400(response, { apiKey });
+    if (rejected) return rejected;
 
     if (
       response.ok ||

@@ -11,6 +11,7 @@ import {
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { syncToCloud } from "@/lib/cloudSync";
 import { validateProviderApiKey } from "@/lib/providers/validation";
+import { credentialRejection400 } from "@/lib/providers/validation/credentialRejection";
 import { getCliRuntimeStatus } from "@/shared/services/cliRuntime";
 // Use the shared open-sse token refresh with built-in dedup/race-condition cache
 import { getAccessToken } from "@omniroute/open-sse/services/tokenRefresh.ts";
@@ -461,6 +462,18 @@ export async function testOAuthConnection(
       res.ok ||
       (Array.isArray(config.acceptStatuses) && config.acceptStatuses.includes(res.status));
     if (accepted) {
+      // acceptStatuses lets a probe's intentional 400 mean "auth ok, body invalid", but a 400
+      // whose body says the Authorization header itself is rejected is a dead credential.
+      const rejected = await credentialRejection400(res, { apiKey: accessToken });
+      if (rejected) {
+        return {
+          valid: false,
+          error: rejected.error,
+          refreshed,
+          newTokens,
+          diagnosis: classifyFailure({ error: rejected.error }),
+        };
+      }
       return {
         valid: true,
         error: null,
@@ -511,6 +524,18 @@ export async function testOAuthConnection(
           retryRes.ok ||
           (Array.isArray(config.acceptStatuses) && config.acceptStatuses.includes(retryRes.status));
         if (retryAccepted) {
+          const retryRejected = await credentialRejection400(retryRes, {
+            apiKey: tokens.accessToken,
+          });
+          if (retryRejected) {
+            return {
+              valid: false,
+              error: retryRejected.error,
+              refreshed: true,
+              newTokens: tokens,
+              diagnosis: classifyFailure({ error: retryRejected.error }),
+            };
+          }
           return {
             valid: true,
             error: null,

@@ -16,6 +16,7 @@ import {
 } from "./urlHelpers";
 import { applyCustomUserAgent } from "./headers";
 import { toValidationErrorResult, validationRead, validationWrite } from "./transport";
+import { credentialRejection400 } from "./credentialRejection";
 
 export async function validateAnthropicLikeProvider({
   apiKey,
@@ -223,6 +224,10 @@ export async function validateAnthropicCompatibleProvider({
     if (messagesRes.status === 401 || messagesRes.status === 403) {
       return { valid: false, error: "Invalid API key" };
     }
+
+    // A 400 that says the authorization header itself is rejected is a dead credential.
+    const rejected = await credentialRejection400(messagesRes, { apiKey });
+    if (rejected) return rejected;
 
     // Any other response (200, 400, 422, etc.) means auth passed
     return { valid: true, error: null };

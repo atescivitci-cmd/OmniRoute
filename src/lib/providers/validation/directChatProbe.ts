@@ -4,6 +4,7 @@
 // a cycle. Behavior is byte-identical to the original inline def.
 import { applyCustomUserAgent } from "./headers";
 import { toValidationErrorResult, validationWrite } from "./transport";
+import { credentialRejection400 } from "./credentialRejection";
 
 export async function validateDirectChatProvider({
   url,
@@ -26,6 +27,9 @@ export async function validateDirectChatProvider({
     if (response.status === 401 || response.status === 403) {
       return { valid: false, error: "Invalid API key" };
     }
+
+    const rejected = await credentialRejection400(response);
+    if (rejected) return rejected;
 
     if (
       response.ok ||

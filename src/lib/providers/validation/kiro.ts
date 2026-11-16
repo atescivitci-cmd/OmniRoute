@@ -2,6 +2,8 @@
 // cannot list profiles. Extracted from validation.ts (god-file decomposition) — top-level
 // function with no dispatcher-state captures; behavior is byte-identical to the original
 // inline def.
+import { credentialRejection400 } from "./credentialRejection";
+
 export async function validateKiroApiKeyRuntimeProbe({
   apiKey,
   region,
@@ -53,7 +55,10 @@ export async function validateKiroApiKeyRuntimeProbe({
       signal: controller.signal,
     });
 
+    // Read a bounded excerpt of a 400 BEFORE the body is discarded below.
+    const rejected = await credentialRejection400(res, { apiKey });
     await res.body?.cancel().catch(() => undefined);
+    if (rejected) return rejected;
 
     if (res.ok) {
       return { valid: true, error: null, method: "kiro_generate_assistant_response" };

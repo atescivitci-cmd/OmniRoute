@@ -13,6 +13,7 @@ import { applyCustomUserAgent, buildBearerHeaders } from "./headers";
 import { toValidationErrorResult, validationRead, validationWrite } from "./transport";
 import { validateDirectChatProvider } from "./directChatProbe";
 import { extractCozeValidationError } from "./cozeError";
+import { credentialRejection400 } from "./credentialRejection";
 
 export async function validateBedrockProvider({ apiKey, providerSpecificData = {} }: any) {
   if (!apiKey) {
@@ -103,6 +104,10 @@ export async function validateOpenAILikeProvider({
       return { valid: false, error: "Invalid API key" };
     }
 
+    // A 400 whose body says the Authorization header itself is rejected is a dead credential.
+    const modelsRejected = await credentialRejection400(response, { apiKey });
+    if (modelsRejected) return modelsRejected;
+
     // #2929: A 403 on the models endpoint is not always a bad key. Some providers
     // (e.g. Fireworks Fire Pass `fpk_*` keys) return "...not authorized for this
     // route." on /models while still serving chat. Fall through to the chat probe
@@ -143,6 +148,11 @@ export async function validateOpenAILikeProvider({
     if (chatRes.ok) {
       return { valid: true, error: null };
     }
+
+    // A 400 whose body says the Authorization header itself is rejected is a dead credential,
+    // not "reachable". Any other 400 (e.g. unsupported probe model) keeps falling through to valid.
+    const chatRejected = await credentialRejection400(chatRes, { apiKey });
+    if (chatRejected) return chatRejected;
 
     // #5426: Coze answers the chat probe with a JSON envelope ({ code, msg,
     // logId, from }) on a bad key. Translate it into a friendly message so the
@@ -404,6 +414,9 @@ export async function validateOpenAICompatibleProvider({ apiKey, providerSpecifi
       return { valid: false, error: "Invalid API key" };
     }
 
+    const modelsRejected = await credentialRejection400(modelsRes, { apiKey });
+    if (modelsRejected) return modelsRejected;
+
     // Endpoint responded and auth seems valid, but quota is exhausted/rate-limited.
     if (modelsRes.status === 429) {
       return {
@@ -464,6 +477,8 @@ export async function validateOpenAICompatibleProvider({ apiKey, providerSpecifi
     // If /models was reachable but returned non-auth error, and chat succeeds
     // auth-wise, this still confirms credentials are valid.
     if (chatRes.status === 400) {
+      const chatRejected = await credentialRejection400(chatRes, { apiKey });
+      if (chatRejected) return chatRejected;
       return {
         valid: true,
         error: null,
