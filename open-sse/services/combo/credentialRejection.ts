@@ -10,7 +10,7 @@
 const CREDENTIAL_REJECTION_PATTERNS: readonly RegExp[] = [
   /\bauthorization\s+header\s+is\s+(?:badly\s+formatted|malformed|invalid)\b/i,
   /\binvalid\s+authorization\s+header\b/i,
-  /\bmalformed\s+authorization(?:\s+header)?\b/i,
+  /\bmalformed\s+authorization\s+header\b/i,
 ];
 
 const MAX_SCANNED_CHARS = 2000;

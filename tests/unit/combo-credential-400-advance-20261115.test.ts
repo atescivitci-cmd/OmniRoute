@@ -155,7 +155,7 @@ test("pattern matcher: positives", () => {
     "invalid authorization header",
     "Invalid Authorization header format",
     "malformed authorization header",
-    "Malformed Authorization",
+    "Malformed Authorization header",
   ]) {
     assert.equal(isCredentialRejectionText(text), true, text);
   }
@@ -171,6 +171,12 @@ test("pattern matcher: near-misses must not match", () => {
     "authorization parameter is required",
     "Authorization header is required",
     "authorization is pending",
+    "malformed authorization code",
+    "malformed authorization request",
+    "Malformed Authorization",
+    "authorization code is malformed",
+    "invalid authorization request",
+    "authorization failed for model gpt-x",
     "invalid header value in request",
     "model is not supported",
     "",
@@ -179,4 +185,18 @@ test("pattern matcher: near-misses must not match", () => {
   }
   assert.equal(isCredentialRejectionText(undefined as unknown as string), false);
   assert.equal(isCredentialRejectionText(42 as unknown as string), false);
+});
+
+test("known limit: a second model on the same rejected connection is still dispatched", async () => {
+  const seen: string[] = [];
+  const run = createRoutingAttemptGuard({ body: plainBody(), limit: 5 }).wrap(
+    async (_b: unknown, model: string) => {
+      seen.push(model);
+      return model === "p1/model-a" ? errResponse(400, CRED_TEXT) : okResponse(model);
+    }
+  );
+  const target = { connectionId: "conn-1" };
+  await run(plainBody(), "p1/model-a", target);
+  assert.equal((await run(plainBody(), "p1/model-b", target)).status, 200);
+  assert.deepEqual(seen, ["p1/model-a", "p1/model-b"]);
 });
