@@ -48,6 +48,17 @@ function makeBody(overrides: Record<string, unknown> = {}): Record<string, unkno
   return { messages: [{ role: "user", content: "Hello" }], ...overrides };
 }
 
+// These tests assert the legacy classification. An exported ROUTING_LIGHT_BY_ASK in the
+// operator's shell would change some levels, so isolate it for this file and restore after.
+const savedLightByAskFlag = process.env.ROUTING_LIGHT_BY_ASK;
+before(() => {
+  delete process.env.ROUTING_LIGHT_BY_ASK;
+});
+after(() => {
+  if (savedLightByAskFlag === undefined) delete process.env.ROUTING_LIGHT_BY_ASK;
+  else process.env.ROUTING_LIGHT_BY_ASK = savedLightByAskFlag;
+});
+
 // ── classifyTask ──────────────────────────────────────────────────────────────
 
 describe("classifyTask", () => {

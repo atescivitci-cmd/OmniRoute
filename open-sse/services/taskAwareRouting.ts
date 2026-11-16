@@ -333,6 +333,11 @@ function normalizeEffort(body: Record<string, unknown>) {
   };
 }
 
+// A narrow positive operation cue at the START of the ask. Shared by hasPositiveComplexOperation
+// and the light-by-ask pre-check so both agree on what a complex-operation cue is.
+const COMPLEX_OPERATION_CUE_RE =
+  /^\s*(?:please\s+)?(?:analy[sz]e|debug|investigate|design|refactor|implement|migrate|compare|benchmark|architect)\b/i;
+
 function hasPositiveComplexOperation(body: Record<string, unknown>): boolean {
   const arrays = [body.messages, body.input, body.contents, wireValue(body, "request.contents")];
   let currentAsk = "";
@@ -354,9 +359,7 @@ function hasPositiveComplexOperation(body: Record<string, unknown>): boolean {
   }
   // A narrow positive operation cue can support high effort; generic system
   // scaffolding, quoted labels and "do not analyze" are not such evidence.
-  return /^\s*(?:please\s+)?(?:analy[sz]e|debug|investigate|design|refactor|implement|migrate|compare|benchmark|architect)\b/i.test(
-    currentAsk
-  );
+  return COMPLEX_OPERATION_CUE_RE.test(currentAsk);
 }
 
 // ── Task signals ──────────────────────────────────────────────────────────────
@@ -419,6 +422,16 @@ export interface TaskClassification extends TaskSignals {
  */
 export function classifyTask(body: Record<string, unknown>): TaskClassification {
   const s = getTaskSignals(body ?? {});
+  const base = classifyFromSignals(body, s);
+  // ROUTING_LIGHT_BY_ASK (default off). Light only ever LOWERS a level: an already-light
+  // result is returned untouched, and anything the pre-check does not clearly accept falls
+  // through to the unchanged logic above.
+  if (base.level === "light" || !isLightByAskEnabled()) return base;
+  return classifyLightByAsk(body ?? {}, s, base) ?? base;
+}
+
+/** The original (pre-2026-11-16) classification, unchanged. Flag-off behaviour is this. */
+function classifyFromSignals(body: Record<string, unknown>, s: TaskSignals): TaskClassification {
   const reasons: string[] = [];
   const add = (condition: boolean, reason: string): boolean => {
     if (condition) reasons.push(reason);
@@ -502,6 +515,392 @@ export function classifyTask(body: Record<string, unknown>): TaskClassification 
     weight: taskWeight("standard"),
     ...s,
     reasons: reasons.length > 0 ? reasons : ["default"],
+  };
+}
+
+// ── Light by ask (ROUTING_LIGHT_BY_ASK, 2026-11-16) ───────────────────────────
+//
+// The legacy rules rate difficulty from the tool INVENTORY and total prompt size, so every
+// terminal-Codex turn (100+ tools, big system prompt) is `critical` even for "ok". This
+// pre-check rates the CURRENT ASK instead. It is flag-gated (default off), provider agnostic
+// (no model names) and can only LOWER a level to `light`.
+//
+// Flag mechanism: open-sse selector code must stay pure and DB-free (classifyTask runs in
+// plain unit tests), so the flag is read from process.env at call time, not from the
+// feature_flags DB table. Turn it on/off by setting ROUTING_LIGHT_BY_ASK=1 / unset in the
+// gateway process environment and restarting that process.
+//
+// Light requires ALL of:
+//   - ask (last real user message) is 1..400 chars;
+//   - ask has no heavy/critical keyword (regexes tested on the ASK ONLY, never on system
+//     prompt or history), no complex-operation cue, and no ask-risk/mutating-verb cue;
+//   - effort is not high/xhigh/max/maximum/hard/deep and no large thinking budget
+//     (Codex's default "medium" is not a signal);
+//   - <= 3 real user turns in the conversation;
+//   - no assistant WRITE/EXECUTE tool call earlier in the conversation (see
+//     classifyToolCallName for the rule table; unnamed or unrecognised calls count as
+//     write/execute);
+//   - conversation text (system prompt, instructions and tool inventory EXCLUDED) < 100k chars;
+//   - output limit < 8192 and no invalid/conflicting controls.
+// The tool inventory (`toolCount`) is deliberately NOT consulted: it stays a capability
+// requirement elsewhere (eligibility), not a difficulty signal.
+
+export const LIGHT_BY_ASK_FLAG = "ROUTING_LIGHT_BY_ASK";
+export const LIGHT_BY_ASK_MAX_ASK_CHARS = 400;
+export const LIGHT_BY_ASK_MAX_USER_TURNS = 3;
+export const LIGHT_BY_ASK_MAX_CONVERSATION_CHARS = 100_000;
+export const LIGHT_BY_ASK_MAX_OUTPUT_TOKENS = 8192;
+const LIGHT_BY_ASK_MAX_THINKING_BUDGET = 8192;
+
+export function isLightByAskEnabled(): boolean {
+  const raw = String(process.env[LIGHT_BY_ASK_FLAG] ?? "")
+    .trim()
+    .toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+// Injected, non-user scaffolding that clients put in user-role items/blocks. Fixed literals
+// under a start anchor: ReDoS safe. A slash command (<command-name>/<command-args>) is NOT
+// scaffolding: it is the user's real ask.
+// A closed wrapper is stripped on its own and any text after it is kept as the ask.
+const CLOSED_WRAPPER_RE = /^\s*<([a-z_-]+)>[\s\S]*?<\/\1>/i;
+const INJECTED_SCAFFOLDING_RE =
+  /^\s*(?:<environment_context>|<user_instructions>|<system-reminder>|<permissions instructions>|<user-prompt-submit-hook>|<turn_aborted>|<ide_context>|<local-command|<INSTRUCTIONS>|# AGENTS\.md instructions)/i;
+
+// Extra ask-only guard so a short but consequential ask is never "light": credentials,
+// production/deploy, money, destructive or mutating verbs. Fixed literals under \b: ReDoS safe.
+// Deliberately broad; narrowing it later is a safe direction, widening light is not.
+const LIGHT_BY_ASK_RISK_RE =
+  /\b(?:credential|secret|password|passcode|token|api[- ]?key|production|prod|deploy|delete|drop|rotate|revoke|wipe|sudo|force|payment|wire|billing|invoice|refund|transfer|purchase|buy|install|uninstall|commit|push|merge|rebase|reset|rm|kill|restart|reboot|shutdown|send|create|write|edit|patch|apply|run|execute|fix|update|change|modify|rename|move|remove|add|email|text|call|schedule|book|order|post|tweet|cancel|approve|publish|ship|release|enable|disable|grant|share|clean|build|generate|convert|optimi[sz]e|improve|review|check|audit|script|truncate|chmod|curl|make|resolve|upgrade|restore|unlock|pay|charge|invite|archive|forward|reply|respond|submit|upload)\w*\b/i;
+
+const WRITE_EXEC_SUBSTRING_RE =
+  /(exec|shell|bash|run|write|edit|patch|apply|delete|remove|create|update|send|commit|push|deploy|script|command|terminal|python|install|sudo|kill|mkdir|chmod|rename|upload|download|import|modify|rotate|revoke|cancel|respond|accept|decline|schedule|invite|archive|trash|label|share|approve|pay|charge|book|order|publish|forward|reply|merge|close|transition|trigger|dispatch|invoke|ban|kick|disable|enable|unlock|provision|mark)/i;
+const WRITE_EXEC_TOKENS = new Set([
+  "node",
+  "npm",
+  "git",
+  "mv",
+  "cp",
+  "rm",
+  "add",
+  "set",
+  "put",
+  "post",
+  "save",
+  "insert",
+  "append",
+  "submit",
+  "click",
+  "type",
+  "press",
+  "key",
+  "move",
+  "copy",
+  "replace",
+  "clear",
+  "reset",
+  "enable",
+  "disable",
+  "grant",
+  "open",
+  "launch",
+  "start",
+  "stop",
+  "restart",
+  "fix",
+  "build",
+  "test",
+  "make",
+  "cmd",
+]);
+const READ_ONLY_TOKENS = new Set([
+  "read",
+  "get",
+  "list",
+  "search",
+  "find",
+  "view",
+  "cat",
+  "ls",
+  "fetch",
+  "query",
+  "grep",
+  "glob",
+  "stat",
+  "lookup",
+  "describe",
+  "show",
+  "pwd",
+  "whoami",
+]);
+
+/**
+ * Tool-call rule table. A call is read-only ONLY when its name has a read-only token and no
+ * write/execute substring or token. Everything else, including unnamed/unrecognised calls
+ * and shells (bash, exec_command, osascript), counts as write-or-execute.
+ */
+export function classifyToolCallName(name: unknown): "read" | "write-or-execute" {
+  if (typeof name !== "string" || !name.trim()) return "write-or-execute";
+  if (WRITE_EXEC_SUBSTRING_RE.test(name)) return "write-or-execute";
+  const tokens = name
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  if (tokens.some((t) => WRITE_EXEC_TOKENS.has(t))) return "write-or-execute";
+  return tokens.some((t) => READ_ONLY_TOKENS.has(t)) ? "read" : "write-or-execute";
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/** Distinct conversation arrays across the supported wire dialects. */
+function conversationArrays(body: Record<string, unknown>): unknown[][] {
+  const out = new Set<unknown[]>();
+  for (const candidate of [
+    body.messages,
+    body.input,
+    body.contents,
+    wireValue(body, "request.contents"),
+  ]) {
+    if (Array.isArray(candidate)) out.add(candidate);
+  }
+  return [...out];
+}
+
+interface UserTurn {
+  /** Text with injected scaffolding removed. May be empty for a file/image-only message. */
+  text: string;
+  /** The message carries a non-text part (image, file, document, inline data, ...). */
+  hasNonText: boolean;
+}
+
+/** Strip leading injected wrappers. A closed wrapper is removed and trailing text is kept. */
+function stripInjectedScaffolding(piece: string): string {
+  let current = piece;
+  while (INJECTED_SCAFFOLDING_RE.test(current)) {
+    const closed = CLOSED_WRAPPER_RE.exec(current);
+    if (!closed) return ""; // unclosed or header-style scaffolding: drop the whole piece
+    current = current.slice(closed[0].length);
+  }
+  return current;
+}
+
+/**
+ * A real user turn, or null when the entry is not one: not user-role, only tool results, only
+ * injected scaffolding, or empty. A user message with only non-text parts (image/file) IS a
+ * turn with empty text, so it can never fall back to an earlier message as "the ask".
+ */
+function realUserTurn(entry: unknown): UserTurn | null {
+  const rec = asRecord(entry);
+  if (!rec || String(rec.role ?? "").toLowerCase() !== "user") return null;
+  const raw = rec.content ?? rec.parts ?? rec.text;
+  const pieces: string[] = [];
+  let hasNonText = false;
+  if (typeof raw === "string") pieces.push(raw);
+  else if (Array.isArray(raw)) {
+    for (const part of raw) {
+      if (typeof part === "string") {
+        pieces.push(part);
+        continue;
+      }
+      const p = asRecord(part);
+      if (!p) continue;
+      const type = String(p.type ?? "");
+      if (type === "tool_result" || type === "function_call_output" || p.functionResponse) continue;
+      const text = typeof p.text === "string" ? p.text : p.input_text;
+      if (typeof text === "string") pieces.push(text);
+      else hasNonText = true;
+    }
+  }
+  const text = pieces.map(stripInjectedScaffolding).join("\n").trim();
+  if (!text && !hasNonText) return null;
+  return { text, hasNonText };
+}
+
+function collectUserTurns(body: Record<string, unknown>): UserTurn[] {
+  for (const messages of conversationArrays(body ?? {})) {
+    const turns = messages.map(realUserTurn).filter((turn): turn is UserTurn => turn !== null);
+    if (turns.length > 0) return turns;
+  }
+  const value = typeof body?.input === "string" ? body.input : (body?.prompt ?? body?.query);
+  if (typeof value === "string" && value.trim()) {
+    return [{ text: value.trim(), hasNonText: false }];
+  }
+  return [];
+}
+
+/**
+ * The current ask (last real user message), the count of real user turns, and whether the
+ * last turn carries a non-text part. A last message with only an image/file yields ask "".
+ */
+export function extractCurrentAsk(body: Record<string, unknown>): {
+  ask: string;
+  userTurns: number;
+  askHasNonText: boolean;
+} {
+  const turns = collectUserTurns(body);
+  const last = turns[turns.length - 1];
+  return {
+    ask: last?.text ?? "",
+    userTurns: turns.length,
+    askHasNonText: last?.hasNonText ?? false,
+  };
+}
+
+/** Count assistant-side tool calls already in the conversation, by read-only vs write/execute. */
+export function scanPriorToolCalls(body: Record<string, unknown>): {
+  readOnly: number;
+  writeOrExecute: number;
+} {
+  const tally = { readOnly: 0, writeOrExecute: 0 };
+  const note = (kind: "read" | "write-or-execute") => {
+    if (kind === "read") tally.readOnly += 1;
+    else tally.writeOrExecute += 1;
+  };
+  for (const messages of conversationArrays(body ?? {})) {
+    for (const entry of messages) {
+      const rec = asRecord(entry);
+      if (!rec) continue;
+      // Responses API items.
+      const type = String(rec.type ?? "");
+      if (type === "web_search_call" || type === "file_search_call") note("read");
+      else if (type === "function_call" || type === "custom_tool_call" || type === "mcp_call") {
+        // Classify the whole identity: a read-looking `name` under a write namespace/server
+        // (e.g. name "list", namespace "mcp__codex_apps__calendar_create_event") is a write.
+        const identity = [rec.namespace, rec.server_label, rec.name]
+          .filter((part): part is string => typeof part === "string" && part.length > 0)
+          .join("__");
+        note(classifyToolCallName(identity));
+      } else if (type.endsWith("_call")) {
+        // local_shell_call, computer_call, code_interpreter_call, apply_patch_call, ...
+        note("write-or-execute");
+      }
+      // Chat completions.
+      if (Array.isArray(rec.tool_calls)) {
+        for (const call of rec.tool_calls) {
+          const c = asRecord(call);
+          note(classifyToolCallName(asRecord(c?.function)?.name ?? c?.name));
+        }
+      }
+      const legacyFn = asRecord(rec.function_call);
+      if (legacyFn) note(classifyToolCallName(legacyFn.name));
+      // Anthropic content blocks and Gemini parts.
+      for (const blocks of [rec.content, rec.parts]) {
+        if (!Array.isArray(blocks)) continue;
+        for (const block of blocks) {
+          const b = asRecord(block);
+          if (!b) continue;
+          const bt = String(b.type ?? "");
+          if (bt === "tool_use" || bt === "server_tool_use" || bt === "mcp_tool_use") {
+            note(classifyToolCallName(b.name));
+          }
+          const fc = asRecord(b.functionCall);
+          if (fc) note(classifyToolCallName(fc.name));
+          if (b.executableCode) note("write-or-execute");
+        }
+      }
+    }
+  }
+  return tally;
+}
+
+const CONFIRMATION_ASK_RE =
+  /^\s*(?:ok(?:ay)?|yes|yep|yeah|sure|y|go ahead|do it|go for it|proceed|continue|sounds good|looks good|lgtm|please do|go on|next|try again|retry|now do the rest)\b/i;
+
+const COMPACTED_HISTORY_PREFIX = "Another language model started to solve this problem";
+
+/** A compaction item, or a handoff summary as the first user text: earlier turns are not visible. */
+function hasCompactedHistory(body: Record<string, unknown>): boolean {
+  for (const messages of conversationArrays(body)) {
+    for (const entry of messages) {
+      if (asRecord(entry)?.type === "compaction") return true;
+    }
+  }
+  const first = collectUserTurns(body)[0];
+  return first !== undefined && first.text.trimStart().startsWith(COMPACTED_HISTORY_PREFIX);
+}
+
+/** Characters of real conversation: system prompt, instructions and the tool inventory excluded. */
+function conversationChars(body: Record<string, unknown>): number {
+  let total = 0;
+  try {
+    for (const messages of conversationArrays(body)) total += JSON.stringify(messages).length;
+  } catch {
+    return Number.POSITIVE_INFINITY; // unmeasurable: never light
+  }
+  for (const value of [body.input, body.prompt, body.query]) {
+    if (typeof value === "string") total += value.length;
+  }
+  return total;
+}
+
+/**
+ * Returns a `light` classification when the current ask is clearly simple, else null (the
+ * caller then keeps `base`). `base` is only used to log the level that was lowered.
+ */
+function classifyLightByAsk(
+  body: Record<string, unknown>,
+  s: TaskSignals,
+  base: TaskClassification
+): TaskClassification | null {
+  // History that this request does not carry (server-side state) or that was compacted away
+  // cannot be inspected, so the "few turns / no prior write" guards would be vacuous. Same
+  // trio as routingAttemptSafety.ts hardBound.
+  if (body.previous_response_id || body.conversation || body.container) return null;
+  if (hasCompactedHistory(body)) return null;
+
+  const { ask, userTurns, askHasNonText } = extractCurrentAsk(body);
+  if (ask.length === 0 || ask.length > LIGHT_BY_ASK_MAX_ASK_CHARS) return null;
+  // An image/file in the last message carries the question; the text alone is not the ask.
+  if (askHasNonText) return null;
+  if (userTurns > LIGHT_BY_ASK_MAX_USER_TURNS) return null;
+  // The keyword lexicon above is English only, so a non-English ask cannot be judged "simple".
+  // (ASCII non-English text such as Spanish is a known, documented limit.) \u0080-\uFFFF is the
+  // non-ASCII range, written this way to avoid a control-character regex.
+  if (/[\u0080-\uFFFF]/.test(ask)) return null;
+  // A bare confirmation after earlier turns continues whatever was proposed or running; the
+  // ask alone says nothing about its difficulty. A fresh single-turn "ok" is still light.
+  if (userTurns > 1 && CONFIRMATION_ASK_RE.test(ask)) return null;
+
+  const normalized = s.resourceNormalization;
+  const preferences = s.executionPreferences;
+  if (!normalized || !preferences) return null;
+  const controlsUnambiguous =
+    normalized.invalidOutputFields.length === 0 &&
+    normalized.outputLimitStatus !== "conflict" &&
+    !normalized.messageDialectConflict &&
+    preferences.effortStatus !== "conflict" &&
+    preferences.invalidFields.length === 0;
+  if (!controlsUnambiguous) return null;
+  if (s.outputTokens >= LIGHT_BY_ASK_MAX_OUTPUT_TOKENS) return null;
+  if (/^(high|xhigh|max|maximum|hard|deep)$/.test(s.effort)) return null;
+  if ((preferences.thinkingBudgetTokens ?? 0) >= LIGHT_BY_ASK_MAX_THINKING_BUDGET) return null;
+
+  // Keywords on the ASK ONLY (the legacy flags look at system prompt + history too).
+  if (HEAVY_TASK_RE.test(ask) || CRITICAL_TASK_RE.test(ask)) return null;
+  if (COMPLEX_OPERATION_CUE_RE.test(ask) || hasPositiveComplexOperation(body)) return null;
+  if (LIGHT_BY_ASK_RISK_RE.test(ask)) return null;
+
+  const calls = scanPriorToolCalls(body);
+  if (calls.writeOrExecute > 0) return null;
+  if (conversationChars(body) >= LIGHT_BY_ASK_MAX_CONVERSATION_CHARS) return null;
+
+  return {
+    level: "light",
+    weight: taskWeight("light"),
+    ...s,
+    reasons: [
+      "light-by-ask",
+      `ask-chars:${ask.length}`,
+      `user-turns:${userTurns}`,
+      `prior-readonly-tool-calls:${calls.readOnly}`,
+      `tool-inventory:${s.toolCount}`,
+      `was:${base.level}`,
+    ],
   };
 }
 
