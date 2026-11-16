@@ -273,20 +273,42 @@ for (const strategy of ["priority", "round-robin"])
     assert.equal(calls, 1);
     assert.deepEqual(request, before);
   });
-test("reasoning-only HTTP200 is rejected without dispatching a replacement answer", async () => {
+const reasoningOnly200 = () =>
+  Response.json({
+    choices: [
+      {
+        message: { role: "assistant", content: "", reasoning_content: "synthetic reasoning" },
+        finish_reason: "length",
+      },
+    ],
+    usage: { completion_tokens: 2000, completion_tokens_details: { reasoning_tokens: 2000 } },
+  });
+// QUALITY_FAILOVER_V1: this fixture is a plain, non-streaming, tool-free request, so a
+// reasoning-only HTTP200 is withheld and exactly ONE replacement is dispatched. A second
+// reasoning-only reply ends in the same 502 as before. (Previously calls was 1.)
+test("reasoning-only HTTP200 gets exactly one replacement dispatch, then the same 502", async () => {
   let calls = 0;
   const result = await handleComboChat(
     comboOptions(body(), async () => {
       calls++;
-      return Response.json({
-        choices: [
-          {
-            message: { role: "assistant", content: "", reasoning_content: "synthetic reasoning" },
-            finish_reason: "length",
-          },
-        ],
-        usage: { completion_tokens: 2000, completion_tokens_details: { reasoning_tokens: 2000 } },
-      });
+      return reasoningOnly200();
+    })
+  );
+  assert.equal(result.status, 502);
+  assert.equal((await result.json()).error.code, "response_contract_failed");
+  assert.equal(calls, 2);
+});
+// The original no-replacement contract still holds when replay is unsafe.
+test("reasoning-only HTTP200 with tools is rejected without dispatching a replacement answer", async () => {
+  let calls = 0;
+  const tooled = {
+    ...body(),
+    tools: [{ type: "function", function: { name: "lookup", parameters: { type: "object" } } }],
+  };
+  const result = await handleComboChat(
+    comboOptions(tooled, async () => {
+      calls++;
+      return reasoningOnly200();
     })
   );
   assert.equal(result.status, 502);
