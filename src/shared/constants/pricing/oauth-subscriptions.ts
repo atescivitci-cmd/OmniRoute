@@ -3,7 +3,10 @@
  * Pure data; merged by default-pricing.ts via spread (god-file decomposition; semantic split).
  */
 import {
+  CLAUDE_HAIKU_5_5_PRICING,
   CLAUDE_OPUS_5_PRICING,
+  CLAUDE_OPUS_5_5_PRICING,
+  CLAUDE_SONNET_5_5_PRICING,
   GPT_5_3_CODEX_PRICING,
   GPT_5_5_PRICING,
   GPT_5_6_LUNA_PRICING,
@@ -21,6 +24,9 @@ export const DEFAULT_PRICING_OAUTH = {
       cache_creation: 12.5,
     },
     "claude-opus-5": CLAUDE_OPUS_5_PRICING,
+    "claude-opus-5-5": CLAUDE_OPUS_5_5_PRICING,
+    "claude-sonnet-5-5": CLAUDE_SONNET_5_5_PRICING,
+    "claude-haiku-5-5": CLAUDE_HAIKU_5_5_PRICING,
     "claude-opus-4-8": {
       input: 5.0,
       output: 25.0,

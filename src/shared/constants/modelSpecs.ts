@@ -274,6 +274,57 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     aliases: BEDROCK_CLAUDE_ALIASES("claude-sonnet-4-6", "claude-sonnet-4.6"),
   },
 
+  // ── Claude 5.5 family (Haiku / Sonnet / Opus) ───────────────────
+  // Sources: platform.claude.com model overviews, effort and "what's new" pages (2026-11-16).
+  // Released: Opus 5.5 2026-09-22, Sonnet 5.5 2026-09-28, Haiku 5.5 2026-10-07.
+  // All three: 1M context, 128K sync max output (300K on the Batches API beta, not modelled),
+  // text+image input, adaptive thinking only (manual budget_tokens / type:"enabled" error),
+  // sampling params (temperature/top_p/top_k) rejected, xhigh effort supported.
+  // supportsTools is unverified (overview pages do not list it); sibling models all support tools.
+  // Keep these BEFORE "claude-sonnet-5" / "claude-opus-5": getCanonicalModelSpecId falls back to
+  // prefix matching in insertion order, and dated ids such as claude-opus-5-5-2026xxxx would
+  // otherwise resolve to the shorter 5.x key.
+  "claude-opus-5-5": {
+    maxOutputTokens: 128000,
+    contextWindow: 1000000,
+    defaultThinkingBudget: 32000,
+    thinkingBudgetCap: 120000,
+    supportsThinking: true,
+    supportsTools: true,
+    supportsVision: true,
+    adaptiveThinkingOnly: true,
+    // Adaptive thinking is always on and cannot be turned off (official overview).
+    rejectsThinkingDisabled: true,
+    aliases: BEDROCK_CLAUDE_ALIASES("claude-opus-5-5", "claude-opus-5.5"),
+  },
+  "claude-sonnet-5-5": {
+    maxOutputTokens: 128000,
+    contextWindow: 1000000,
+    defaultThinkingBudget: 32000,
+    thinkingBudgetCap: 120000,
+    supportsThinking: true,
+    supportsTools: true,
+    supportsVision: true,
+    adaptiveThinkingOnly: true,
+    // Unlike Sonnet 5, thinking:{type:"disabled"} returns 400 on Sonnet 5.5; the lowest setting
+    // is thinking:{type:"between_tools"} (not modelled here).
+    rejectsThinkingDisabled: true,
+    aliases: BEDROCK_CLAUDE_ALIASES("claude-sonnet-5-5", "claude-sonnet-5.5"),
+  },
+  "claude-haiku-5-5": {
+    maxOutputTokens: 128000,
+    contextWindow: 1000000,
+    defaultThinkingBudget: 32000,
+    thinkingBudgetCap: 120000,
+    supportsThinking: true,
+    supportsTools: true,
+    supportsVision: true,
+    adaptiveThinkingOnly: true,
+    // Haiku 5.5 still accepts thinking:{type:"disabled"} at high effort or below.
+    maxEffortWhenThinkingDisabled: "high",
+    aliases: BEDROCK_CLAUDE_ALIASES("claude-haiku-5-5", "claude-haiku-5.5"),
+  },
+
   // ── Claude Sonnet 5 ─────────────────────────────────────────────
   "claude-sonnet-5": {
     // 1M context, 128K max output. Adaptive-thinking-only (manual
