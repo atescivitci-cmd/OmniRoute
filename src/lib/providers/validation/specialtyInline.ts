@@ -9,6 +9,7 @@ import { resolveNvidiaValidationModel } from "@/lib/providers/nvidiaValidationMo
 import { normalizeBaseUrl } from "./urlHelpers";
 import { buildBearerHeaders, directHttpsRequest } from "./headers";
 import { toValidationErrorResult, validationRead, validationWrite } from "./transport";
+import { credentialRejection400 } from "./credentialRejection";
 import { validateKiroApiKeyRuntimeProbe } from "./kiro";
 
 export async function validateV0VercelProvider({ apiKey, providerSpecificData, isLocal }: any) {
@@ -194,6 +195,8 @@ export async function validateLongcatProvider({ apiKey, providerSpecificData, is
     if (res.status === 401 || res.status === 403) {
       return { valid: false, error: "Invalid API key" };
     }
+    const rejected = await credentialRejection400(res, { apiKey });
+    if (rejected) return rejected;
     // Any non-auth response (200, 400, 422) means auth passed
     return { valid: true, error: null };
   } catch (error: any) {
@@ -237,6 +240,8 @@ export async function validateNvidiaProvider({ apiKey, providerSpecificData }: a
     if (res.status === 401 || res.status === 403) {
       return { valid: false, error: "Invalid API key" };
     }
+    const rejected = await credentialRejection400(res, { apiKey });
+    if (rejected) return rejected;
     // Any non-auth response (200, 400, 422, 429) means auth passed
     return { valid: true, error: null };
   } catch (error: any) {
@@ -283,6 +288,8 @@ export async function validateZaiProvider({ apiKey, providerSpecificData }: any)
     if (res.status >= 500 && res.status !== 502) {
       return { valid: false, error: `Provider unavailable (${res.status})` };
     }
+    const rejected = await credentialRejection400(res, { apiKey });
+    if (rejected) return rejected;
     // Any non-auth response (200, 400, 422, 429, 502) means auth passed;
     // 502 "job timed out" is z.ai's own server-side queue limit, not an auth error.
     return { valid: true, error: null };
@@ -316,6 +323,8 @@ export async function validateXiaomiMimoProvider({ apiKey, providerSpecificData,
     if (res.status === 401 || res.status === 403) {
       return { valid: false, error: "Invalid API key" };
     }
+    const rejected = await credentialRejection400(res, { apiKey });
+    if (rejected) return rejected;
     // Any non-auth response (200, 400, 422, 429) means auth passed
     return { valid: true, error: null };
   } catch (error: any) {
@@ -349,6 +358,8 @@ export function buildOpengatewayValidator(defaultBaseUrl: string, model: string)
       if (res.status === 401 || res.status === 403) {
         return { valid: false, error: "Invalid API key" };
       }
+      const rejected = await credentialRejection400(res, { apiKey });
+      if (rejected) return rejected;
       // Any non-auth response (200, 400, 422, 429) means auth passed
       return { valid: true, error: null };
     } catch (error: any) {

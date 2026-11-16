@@ -4,6 +4,7 @@
 import { normalizeBaseUrl, addModelsSuffix, resolveChatUrl } from "./urlHelpers";
 import { buildBearerHeaders, buildClarifaiHeaders } from "./headers";
 import { toValidationErrorResult, validationRead, validationWrite } from "./transport";
+import { credentialRejection400 } from "./credentialRejection";
 
 export async function validateClarifaiProvider({ apiKey, providerSpecificData = {} }: any) {
   const baseUrl =
@@ -35,6 +36,9 @@ export async function validateClarifaiProvider({ apiKey, providerSpecificData = 
         max_tokens: 1,
       }),
     });
+
+    const rejected = await credentialRejection400(chatRes, { apiKey });
+    if (rejected) return rejected;
 
     if (chatRes.ok || chatRes.status === 400 || chatRes.status === 422 || chatRes.status === 429) {
       return { valid: true, error: null, method: "clarifai_chat_probe" };
@@ -82,6 +86,9 @@ export async function validateEmbeddingApiProvider({
       return { valid: false, error: "Invalid API key" };
     }
 
+    const rejected = await credentialRejection400(response, { apiKey });
+    if (rejected) return rejected;
+
     if (
       response.ok ||
       response.status === 400 ||
@@ -101,7 +108,12 @@ export async function validateEmbeddingApiProvider({
   }
 }
 
-export async function validateRerankApiProvider({ apiKey, providerSpecificData = {}, url, modelId }: any) {
+export async function validateRerankApiProvider({
+  apiKey,
+  providerSpecificData = {},
+  url,
+  modelId,
+}: any) {
   if (!url) {
     return { valid: false, error: "Missing rerank endpoint" };
   }
@@ -122,6 +134,9 @@ export async function validateRerankApiProvider({ apiKey, providerSpecificData =
     if (response.status === 401 || response.status === 403) {
       return { valid: false, error: "Invalid API key" };
     }
+
+    const rejected = await credentialRejection400(response, { apiKey });
+    if (rejected) return rejected;
 
     if (
       response.ok ||

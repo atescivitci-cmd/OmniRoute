@@ -13,6 +13,7 @@ import {
   buildTokenHeaders,
 } from "./headers";
 import { toValidationErrorResult, validationRead, validationWrite } from "./transport";
+import { credentialRejection400 } from "./credentialRejection";
 import { validateDirectChatProvider } from "./directChatProbe";
 import {
   buildRunwayApiUrl,
@@ -332,6 +333,8 @@ export async function validateQwenCloudTokenPlanProvider({
         warning: "Provider accepted the key but is rate limited (429)",
       };
     }
+    const rejected = await credentialRejection400(response, { apiKey });
+    if (rejected) return rejected;
     if (response.ok || response.status === 400 || response.status === 422) {
       return { valid: true, error: null };
     }
@@ -381,6 +384,9 @@ export async function validateRekaProvider({ apiKey, providerSpecificData = {} }
         max_tokens: 1,
       }),
     });
+
+    const rejected = await credentialRejection400(response, { apiKey });
+    if (rejected) return rejected;
 
     if (
       response.ok ||
@@ -478,6 +484,9 @@ export async function validateNlpCloudProvider({ apiKey, providerSpecificData = 
         history: [],
       }),
     });
+
+    const rejected = await credentialRejection400(response, { apiKey });
+    if (rejected) return rejected;
 
     if (
       response.ok ||
