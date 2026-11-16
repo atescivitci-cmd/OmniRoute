@@ -8,6 +8,7 @@
  */
 
 import { isFlatRateProvider } from "./flatRateProviders";
+import { getPromptCacheCreationTokens, getPromptCacheReadTokens } from "./tokenAccounting";
 
 /**
  * Normalize model name — strip provider path prefixes.
@@ -147,9 +148,19 @@ export function computeCostFromPricing(
 
   let cost = 0;
   const inputTokens = tokens.input ?? tokens.prompt_tokens ?? tokens.input_tokens ?? 0;
+  // Flat fields keep their historical precedence. When none is present, fall back to the
+  // tokenAccounting helpers (the same ones the call-log writer uses) so the nested OpenAI shapes
+  // (prompt_tokens_details / input_tokens_details, e.g. Responses API usage) are priced at the
+  // cached rate instead of the full input rate.
   const cachedTokens =
-    tokens.cacheRead ?? tokens.cached_tokens ?? tokens.cache_read_input_tokens ?? 0;
-  const cacheCreationTokens = tokens.cacheCreation ?? tokens.cache_creation_input_tokens ?? 0;
+    tokens.cacheRead ??
+    tokens.cached_tokens ??
+    tokens.cache_read_input_tokens ??
+    getPromptCacheReadTokens(tokens);
+  const cacheCreationTokens =
+    tokens.cacheCreation ??
+    tokens.cache_creation_input_tokens ??
+    getPromptCacheCreationTokens(tokens);
 
   // prompt_tokens from extractors already includes cache_read + cache_creation,
   // so we must subtract BOTH cache types to avoid pricing cache at the full
