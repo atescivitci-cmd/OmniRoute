@@ -259,9 +259,12 @@ export interface SingleModelTestResult {
   isTransient?: boolean;
   isTimeout?: boolean;
   /**
-   * The deadline fired before the pipeline returned any response. The abort then cancels the
-   * upstream request and the pipeline writes a call log but no usage_history row, so a caller
-   * that needs the timeout recorded as evidence has to record it itself.
+   * The request was handed to the pipeline and the deadline fired before it returned any
+   * response. The abort then cancels the upstream request, and the pipeline may or may not write
+   * a usage_history row of its own (it does when the stall is in the stream readiness read, it
+   * does not when no headers ever arrived), so a caller that needs the timeout recorded as
+   * evidence must check before recording it. False when the deadline hit while the call was still
+   * waiting in the local rate-limit queue, which says nothing about the provider.
    */
   responseNotReceived?: boolean;
   retryAfter?: number;
@@ -376,6 +379,10 @@ export async function runSingleModelTest(
     controller.abort();
   }, effectiveTimeoutMs);
 
+  // True once the request has been handed to the pipeline. A deadline that fires while the call
+  // is still waiting in the local rate-limit queue says nothing about the provider.
+  let dispatched = false;
+
   const runInner = async (signal: AbortSignal): Promise<Response> => {
     if (isEmbedding) {
       return handleValidatedEmbeddingRequestBody(
@@ -383,6 +390,7 @@ export async function runSingleModelTest(
         { connectionId: connectionId || undefined }
       );
     }
+    dispatched = true;
     if (isRerank) {
       const request = buildInternalRerankRequest(testBody, signal, connectionId);
       return holdRequestWhilePending(request, postRerank(request));
@@ -460,7 +468,7 @@ export async function runSingleModelTest(
           httpStatus: 504,
           error: `No model output within ${Math.round(effectiveTimeoutMs / 1000)}s`,
           isTimeout: true,
-          responseNotReceived: true,
+          responseNotReceived: dispatched,
         };
       }
       // AbortError without timeout = withRateLimit queue rejection / abort.
