@@ -177,13 +177,29 @@ export async function executeWithUpstreamStartTimeout<T>({
     signal.addEventListener("abort", () => reject(createAbortError(signal)), { once: true });
   });
 
+  let started = false;
   try {
-    return await Promise.race([execute(combinedController.signal), timeoutPromise, abortPromise]);
+    const result = await Promise.race([
+      execute(combinedController.signal),
+      timeoutPromise,
+      abortPromise,
+    ]);
+    started = true;
+    return result;
   } finally {
+    // The start timeout only covers the wait for the response to begin, so its timer and its
+    // own abort listener are done either way.
     if (timeoutId) clearTimeout(timeoutId);
-    if (abortListener) signal.removeEventListener("abort", abortListener);
     if (timeoutAbortListener) {
       timeoutController.signal.removeEventListener("abort", timeoutAbortListener);
     }
+    // The caller's abort listener is different. Once the response has started, the caller's
+    // signal (a client disconnect, a probe deadline) must still reach the upstream connection:
+    // `combinedController.signal` is the signal the fetch and its response body hold. Detaching
+    // the listener here meant a provider that sends its headers and then stays silent kept the
+    // connection open until it finally answered (164 s seen live on a stalled NVIDIA stream),
+    // however early the caller gave up. It stays attached on success and is removed only when
+    // the start failed, where nothing is left to abort.
+    if (!started && abortListener) signal.removeEventListener("abort", abortListener);
   }
 }
