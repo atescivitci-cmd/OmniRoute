@@ -122,7 +122,7 @@ function buildComboTestPrompt() {
 export function buildComboTestRequestBody(
   modelStr: string,
   isEmbedding: boolean = false,
-  options: { stream?: boolean; maxTokens?: number } = {}
+  options: { stream?: boolean; maxTokens?: number; prompt?: string } = {}
 ) {
   if (isEmbedding) {
     return {
@@ -135,7 +135,8 @@ export function buildComboTestRequestBody(
     model: modelStr,
     // Randomize the arithmetic prompt so upstream providers are less likely to
     // satisfy the smoke test with cached completions.
-    messages: [{ role: "user", content: buildComboTestPrompt() }],
+    // An explicit prompt (the routing evidence canary) keeps every probe byte-identical.
+    messages: [{ role: "user", content: options.prompt ?? buildComboTestPrompt() }],
     // Give reasoning-heavy models enough headroom to finish the request and
     // still emit a visible answer without immediate truncation.
     max_tokens:

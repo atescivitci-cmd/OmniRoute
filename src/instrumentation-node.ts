@@ -348,6 +348,9 @@ export async function registerNodejs(): Promise<void> {
     const { startQuotaAutoPing } = await import("@/lib/services/quotaAutoPing");
     startQuotaAutoPing();
     console.log("[STARTUP] Quota auto-ping scheduler started (opt-in, no-op until enabled)");
+    const { startRoutingEvidenceCanary } = await import("@/lib/services/routingEvidenceCanary");
+    startRoutingEvidenceCanary();
+    console.log("[STARTUP] Routing evidence canary started (opt-in, no-op until enabled)");
     const cloudSyncInitialized = await ensureCloudSyncInitialized();
     console.log(
       `[STARTUP] Cloud/model sync background bootstrap ${cloudSyncInitialized ? "initialized" : "skipped"}`

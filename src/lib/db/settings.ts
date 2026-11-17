@@ -241,6 +241,10 @@ export async function getSettings() {
     // connection on, since pinging burns a small amount of real quota (Hard Rule #20
     // spirit: never mutate/consume on the operator's behalf by default).
     codexAutoPing: { connections: {} },
+    // Opt-in routing evidence canary (see src/lib/services/routingEvidenceCanary.ts). Probes
+    // spend a little real quota, so nothing is probed until an operator enables it and lists
+    // specific connections.
+    routingCanary: { enabled: false, connections: {} },
   };
   for (const row of rows) {
     const record = toRecord(row);
@@ -296,10 +300,7 @@ export async function updateSettings(
   );
   const tx = db.transaction(() => {
     const currentRevision = readSettingsRevision(db);
-    if (
-      options?.expectedRevision !== undefined &&
-      options.expectedRevision !== currentRevision
-    ) {
+    if (options?.expectedRevision !== undefined && options.expectedRevision !== currentRevision) {
       throw new SettingsRevisionConflictError(currentRevision);
     }
     for (const [key, value] of Object.entries(updates)) {

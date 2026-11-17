@@ -202,6 +202,22 @@ export const updateSettingsSchema = z.object({
       connections: z.record(z.string().max(100), z.boolean()).optional(),
     })
     .optional(),
+  // Opt-in neutral routing evidence canary: periodic identical probes to candidates that
+  // real traffic rarely reaches, so the selector has measured latency and reliability for
+  // them. Off unless `enabled` is true AND a connection is listed in `connections`.
+  routingCanary: z
+    .object({
+      enabled: z.boolean().optional(),
+      connections: z.record(z.string().max(100), z.boolean()).optional(),
+      combos: z.array(z.string().min(1).max(200)).max(50).optional(),
+      includeLocal: z.boolean().optional(),
+      dailyBudgetUsd: z.number().min(0).max(50).optional(),
+      targetSamples: z.number().int().min(10).max(50).optional(),
+      minSpacingMinutes: z.number().int().min(5).max(1440).optional(),
+      maxProbesPerTick: z.number().int().min(1).max(20).optional(),
+      bucket: z.enum(["small", "medium"]).optional(),
+    })
+    .optional(),
   responsesPreviousResponseIdMode: z.enum(RESPONSES_PREVIOUS_RESPONSE_ID_MODES).optional(),
   // Routing settings (#134)
   fallbackStrategy: z.enum(ACCOUNT_FALLBACK_STRATEGY_VALUES).optional(),
