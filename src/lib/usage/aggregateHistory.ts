@@ -7,6 +7,7 @@
 
 import { getDbInstance } from "../db/core";
 import { getUserDatabaseSettings } from "../db/databaseSettings";
+import { EXCLUDE_ROUTING_CANARY_SQL } from "@/shared/constants/usageSource";
 
 interface AggregationResult {
   processed: number;
@@ -165,6 +166,7 @@ export async function rollupUsageHistoryBeforeDate(beforeDate: string): Promise<
       WHERE timestamp < ?
         AND provider IS NOT NULL AND provider != ''
         AND model IS NOT NULL AND model != ''
+        AND ${EXCLUDE_ROUTING_CANARY_SQL}
       GROUP BY LOWER(provider), LOWER(model), DATE(timestamp)
       ON CONFLICT(provider, model, date) DO UPDATE SET
         total_requests = daily_usage_summary.total_requests + excluded.total_requests,

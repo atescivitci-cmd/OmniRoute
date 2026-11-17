@@ -1,0 +1,13 @@
+-- Migration 137: provenance column on usage_history and call_logs
+-- NULL = ordinary client traffic. Non-null marks rows OmniRoute generated itself (for example
+-- the routing evidence canary's synthetic probes) so cost and usage reports can separate them.
+-- Backward compatible: existing rows stay NULL and keep counting as client traffic.
+-- No index: the column is almost always NULL and the exclusion predicate cannot use one, so an
+-- index would only add a startup build and a write cost on every insert.
+--
+-- NOTE: the runner applies this migration in code (applyUsageSourceMigration in
+-- migrationRunner.ts), one table at a time, so a half-present state cannot lose a column. This
+-- file is the readable record of the change and is not executed as-is.
+--   ALTER TABLE usage_history ADD COLUMN source TEXT DEFAULT NULL;
+--   ALTER TABLE call_logs ADD COLUMN source TEXT DEFAULT NULL;
+SELECT 1;

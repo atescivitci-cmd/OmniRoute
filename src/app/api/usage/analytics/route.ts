@@ -24,6 +24,7 @@ import {
 import { getFallbackStats } from "@/lib/db/callLogStats";
 import { buildByProviderRows } from "@/lib/usage/providerDisplayNames";
 import { toNumber } from "@/shared/utils/numeric";
+import { EXCLUDE_ROUTING_CANARY_SQL } from "@/shared/constants/usageSource";
 
 function getRangeStartIso(range: string): string | null {
   const end = new Date();
@@ -355,7 +356,9 @@ export async function GET(request: Request) {
     rawCutoff.setDate(rawCutoff.getDate() - rawRetentionDays);
     const rawCutoffIso = rawCutoff.toISOString();
 
-    const conditions = [];
+    // Canary probes are OmniRoute's own traffic, not what clients asked for. This one condition
+    // reaches every query built from `whereClause` below (account, API-key and fallback rows).
+    const conditions: string[] = [EXCLUDE_ROUTING_CANARY_SQL];
     const params: Record<string, string> = {};
 
     if (sinceIso) {
@@ -428,7 +431,7 @@ export async function GET(request: Request) {
     }
 
     // Heatmap needs its own whereClause if api keys are filtered
-    const heatmapConditions = ["timestamp >= @heatmapStart"];
+    const heatmapConditions = ["timestamp >= @heatmapStart", EXCLUDE_ROUTING_CANARY_SQL];
     if (apiKeyWhere) heatmapConditions.push(apiKeyWhere);
     const heatmapParams: Record<string, string> = { heatmapStart: heatmapStart.toISOString() };
     if (apiKeyIds.length > 0) {

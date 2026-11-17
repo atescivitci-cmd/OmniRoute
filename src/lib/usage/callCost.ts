@@ -11,6 +11,7 @@
  * Recording is best effort and never changes how a request is served.
  */
 import { calculateCost, extractExactCostUsd } from "./costCalculator";
+import { EXCLUDE_ROUTING_CANARY_SQL } from "@/shared/constants/usageSource";
 
 export type CallCostSource = "provider_reported" | "pricing_table" | "unpriced" | "no_usage";
 
@@ -69,6 +70,7 @@ export function getCostByModel(db: SqlDb, sinceIso: string): ModelCostRow[] {
               COALESCE(SUM(cost_usd), 0) AS costUsd
          FROM call_logs
         WHERE timestamp >= ? AND model != 'connection-test'
+          AND ${EXCLUDE_ROUTING_CANARY_SQL}
         GROUP BY provider, model
         ORDER BY costUsd DESC, calls DESC`
     )

@@ -14,6 +14,7 @@ import { collectReferencedArtifacts, selectCallLogIdsBefore } from "./callLogsBo
 import { getRequestDetailLogByCallLogId } from "../db/detailedLogs";
 import { shouldPersistToDisk } from "./migrations";
 import { getCallLogApiKeyContext } from "./callLogApiKeyContext";
+import { getUsageSource } from "./usageSourceContext";
 import {
   getLoggedInputTokens,
   getLoggedOutputTokens,
@@ -639,6 +640,9 @@ export async function saveCallLog(entry: any) {
       correlationId: entry.correlationId || null,
       modelPinned: entry.modelPinned ? 1 : 0,
       sessionTag: entry.sessionTag || null,
+      // Provenance comes only from the request-scoped context, never from client input, so a
+      // client cannot mark (or hide) its own rows.
+      source: getUsageSource(),
       costUsd: callCost.costUsd,
       costSource: callCost.costSource,
     };
@@ -689,7 +693,7 @@ export async function saveCallLog(entry: any) {
         combo_name, combo_step_id, combo_execution_key, error_summary, detail_state,
         artifact_relpath, artifact_size_bytes, artifact_sha256,
         has_request_body, has_response_body, has_pipeline_details, request_summary,
-        correlation_id, model_pinned, session_tag, cost_usd, cost_source
+        correlation_id, model_pinned, session_tag, source, cost_usd, cost_source
       )
       VALUES (
         @id, @timestamp, @method, @path, @status, @model, @requestedModel, @provider,
@@ -700,7 +704,7 @@ export async function saveCallLog(entry: any) {
         @comboName, @comboStepId, @comboExecutionKey, @errorSummary, @detailState,
         @artifactRelPath, @artifactSizeBytes, @artifactSha256,
         @hasRequestBody, @hasResponseBody, @hasPipelineDetails, @requestSummary,
-        @correlationId, @modelPinned, @sessionTag, @costUsd, @costSource
+        @correlationId, @modelPinned, @sessionTag, @source, @costUsd, @costSource
       )
     `
     ).run({

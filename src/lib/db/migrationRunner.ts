@@ -414,6 +414,8 @@ function isSchemaAlreadyApplied(
       return !hasColumn(db, "files", "status");
     case "054":
       return hasColumn(db, "usage_history", "service_tier");
+    case "137":
+      return hasColumn(db, "usage_history", "source") && hasColumn(db, "call_logs", "source");
     case "062":
       return hasColumn(db, "usage_history", "combo_strategy");
     case "070":
@@ -482,6 +484,25 @@ function applyApiKeyLifecycleMigration(db: SqliteAdapter): void {
     CREATE INDEX IF NOT EXISTS idx_api_keys_revoked_at ON api_keys(revoked_at);
     CREATE INDEX IF NOT EXISTS idx_api_keys_expires_at ON api_keys(expires_at);
   `);
+}
+
+// Migration 137 adds the same column to two tables. As a plain SQL file the first ALTER that hit
+// an existing column would roll the whole file back and still mark it applied, so a table that
+// lacked the column would never get it. Doing each table on its own keeps a half-present state
+// (for example after a transient lock during the startup column repair) from losing a column.
+function applyUsageSourceMigration(db: SqliteAdapter): void {
+  ensureColumn(
+    db,
+    "usage_history",
+    "source",
+    "ALTER TABLE usage_history ADD COLUMN source TEXT DEFAULT NULL"
+  );
+  ensureColumn(
+    db,
+    "call_logs",
+    "source",
+    "ALTER TABLE call_logs ADD COLUMN source TEXT DEFAULT NULL"
+  );
 }
 
 function isSearchRequestTypeMigration(migration: { version: string; name: string }): boolean {
@@ -975,6 +996,8 @@ export function runMigrations(db: SqliteAdapter, options?: { isNewDb?: boolean }
         );
       } else if (migration.version === "032") {
         applyApiKeyLifecycleMigration(db);
+      } else if (migration.version === "137" && migration.name === "usage_history_source") {
+        applyUsageSourceMigration(db);
       } else if (migration.version === "041" && migration.name === "compression_receipts") {
         applyCompressionReceiptsMigration(db);
       } else if (migration.version === "042") {

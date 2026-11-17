@@ -14,6 +14,7 @@ import { getAccountDisplayName } from "@/lib/display/names";
 import { calculateCost } from "./costCalculator";
 import { getRawDataCutoffDate, isAggregationEnabled } from "./aggregateHistory";
 import { toNumber } from "@/shared/utils/numeric";
+import { EXCLUDE_ROUTING_CANARY_SQL } from "@/shared/constants/usageSource";
 
 type JsonRecord = Record<string, unknown>;
 type UsageBucket = {
@@ -73,6 +74,7 @@ function buildUsageSourceSql(aggregationEnabled: boolean) {
         COALESCE(service_tier, 'standard') as service_tier,
         1 as request_count
       FROM usage_history
+      WHERE ${EXCLUDE_ROUTING_CANARY_SQL}
     `;
   }
 
@@ -98,7 +100,7 @@ function buildUsageSourceSql(aggregationEnabled: boolean) {
       COALESCE(service_tier, 'standard') as service_tier,
       1 as request_count
     FROM usage_history
-    WHERE DATE(timestamp) >= ?
+    WHERE DATE(timestamp) >= ? AND ${EXCLUDE_ROUTING_CANARY_SQL}
 
     UNION ALL
 
@@ -550,7 +552,7 @@ export async function getUsageStats() {
           COALESCE(SUM(tokens_cache_creation), 0) as tokens_cache_creation,
           COALESCE(SUM(tokens_reasoning), 0) as tokens_reasoning
         FROM usage_history
-        WHERE timestamp >= ? AND timestamp <= ?
+        WHERE timestamp >= ? AND timestamp <= ? AND ${EXCLUDE_ROUTING_CANARY_SQL}
         GROUP BY minute, provider, model, service_tier
       `
     )

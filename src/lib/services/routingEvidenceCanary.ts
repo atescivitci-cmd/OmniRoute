@@ -37,6 +37,8 @@ import {
 import { getCircuitBreaker } from "@/shared/utils/circuitBreaker";
 import { isLocalProvider } from "@/shared/constants/providers";
 import { toNumberOrNull } from "@/shared/utils/numeric";
+import { USAGE_SOURCE_ROUTING_CANARY } from "@/shared/constants/usageSource";
+import { runWithUsageSource } from "@/lib/usage/usageSourceContext";
 import {
   ROUTING_CANARY_BUCKET_TOKENS,
   ROUTING_CANARY_CHARS_PER_TOKEN,
@@ -610,16 +612,20 @@ export function createDefaultRoutingEvidenceCanaryDeps(): RoutingEvidenceCanaryD
     },
     runProbe: async (args) => {
       const { runSingleModelTest } = await import("@/lib/api/modelTestRunner");
-      const outcome = await runSingleModelTest({
-        providerId: args.provider,
-        modelId: args.modelStr,
-        connectionId: args.connectionId,
-        timeoutMs: args.timeoutMs,
-        streamChat: true,
-        prompt: args.prompt,
-        maxTokens: args.maxTokens,
-        hardDeadline: true,
-      });
+      // Tag every usage row the pipeline writes for this probe, so cost and usage reports can
+      // tell synthetic probes from client traffic. The selector still reads these rows.
+      const outcome = await runWithUsageSource(USAGE_SOURCE_ROUTING_CANARY, () =>
+        runSingleModelTest({
+          providerId: args.provider,
+          modelId: args.modelStr,
+          connectionId: args.connectionId,
+          timeoutMs: args.timeoutMs,
+          streamChat: true,
+          prompt: args.prompt,
+          maxTokens: args.maxTokens,
+          hardDeadline: true,
+        })
+      );
       return {
         ok: outcome.status === "ok",
         latencyMs: outcome.latencyMs,

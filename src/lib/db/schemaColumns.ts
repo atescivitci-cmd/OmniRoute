@@ -138,6 +138,10 @@ export function ensureUsageHistoryColumns(db: SqliteDatabase) {
       console.log("[DB] Added usage_history.combo_strategy column");
     }
     db.exec("CREATE INDEX IF NOT EXISTS idx_uh_combo_strategy ON usage_history(combo_strategy)");
+    if (!columnNames.has("source")) {
+      db.exec("ALTER TABLE usage_history ADD COLUMN source TEXT DEFAULT NULL");
+      console.log("[DB] Added usage_history.source column");
+    }
     if (!columnNames.has("account_key")) {
       db.exec("ALTER TABLE usage_history ADD COLUMN account_key TEXT");
       console.log("[DB] Added usage_history.account_key column");
@@ -256,6 +260,10 @@ export function ensureCallLogsColumns(db: SqliteDatabase) {
     if (!columnNames.has("session_tag")) {
       db.exec("ALTER TABLE call_logs ADD COLUMN session_tag TEXT DEFAULT NULL");
       console.log("[DB] Added call_logs.session_tag column");
+    }
+    if (!columnNames.has("source")) {
+      db.exec("ALTER TABLE call_logs ADD COLUMN source TEXT DEFAULT NULL");
+      console.log("[DB] Added call_logs.source column");
     }
     if (!columnNames.has("cost_usd")) {
       db.exec("ALTER TABLE call_logs ADD COLUMN cost_usd REAL DEFAULT NULL");

@@ -32,6 +32,7 @@ import {
   storeCompletedDetail,
 } from "./completedRequestDetails";
 import { shouldPersistToDisk } from "./migrations";
+import { getUsageSource } from "./usageSourceContext";
 import { emitUsageRecorded } from "./usageEvents";
 import {
   getLoggedInputTokens,
@@ -606,6 +607,11 @@ export interface UsageEntry {
   /** @deprecated legacy snake_case fallback, read only if `comboStrategy` is unset. */
   combo_strategy?: string | null;
   endpoint?: string | null;
+  /**
+   * Provenance of the row. Omit for ordinary client traffic; when unset the request-scoped
+   * usage source (see usageSourceContext) is used, so pipeline writers need no extra plumbing.
+   */
+  source?: string | null;
 }
 
 /**
@@ -677,8 +683,8 @@ export async function saveRequestUsage(entry: UsageEntry) {
         INSERT INTO usage_history (provider, model, connection_id, account_key, account_label,
           account_label_priority, api_key_id, api_key_name, tokens_input, tokens_output,
           tokens_cache_read, tokens_cache_creation, tokens_reasoning, service_tier, status, success,
-          latency_ms, ttft_ms, error_code, combo_strategy, endpoint, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          latency_ms, ttft_ms, error_code, combo_strategy, endpoint, source, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       ).run(
         entry.provider || null,
@@ -706,6 +712,7 @@ export async function saveRequestUsage(entry: UsageEntry) {
         entry.errorCode || null,
         entry.comboStrategy || entry.combo_strategy || null,
         entry.endpoint || null,
+        entry.source || getUsageSource() || null,
         timestamp
       );
 
