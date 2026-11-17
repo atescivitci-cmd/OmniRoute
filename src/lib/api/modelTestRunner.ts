@@ -217,6 +217,10 @@ export interface RunSingleModelTestOptions {
   connectionId?: string;
   timeoutMs?: number;
   streamChat?: boolean;
+  /** Fixed user prompt for chat tests (routing evidence canary). Default: randomized arithmetic. */
+  prompt?: string;
+  /** Output token cap for chat tests. Default: the streaming test cap. */
+  maxTokens?: number;
 }
 
 export interface SingleModelTestResult {
@@ -272,6 +276,8 @@ export async function runSingleModelTest(
     connectionId,
     timeoutMs = DEFAULT_MODEL_TEST_TIMEOUT_MS,
     streamChat = true,
+    prompt,
+    maxTokens,
   } = options;
 
   let fullModelStr = modelId;
@@ -297,7 +303,9 @@ export async function runSingleModelTest(
       }
     : buildComboTestRequestBody(fullModelStr, isEmbedding, {
         stream: !isEmbedding && streamChat,
-        maxTokens: !isEmbedding && streamChat ? STREAMING_CHAT_TEST_MAX_TOKENS : undefined,
+        maxTokens:
+          maxTokens ?? (!isEmbedding && streamChat ? STREAMING_CHAT_TEST_MAX_TOKENS : undefined),
+        ...(prompt ? { prompt } : {}),
       });
 
   // Per-model AbortController. We track whether the timeout fired so we can
