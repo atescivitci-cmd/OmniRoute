@@ -5267,7 +5267,16 @@ export async function handleChatCore({
   // though it carried valid content/reasoning_content. Detect a JSON (non-SSE)
   // upstream body and synthesize an equivalent OpenAI SSE stream so the
   // streaming pipeline (and the client) get a valid stream.
-  providerResponse = await maybeConvertJsonBodyToSse(providerResponse, { log, provider, model });
+  try {
+    providerResponse = await maybeConvertJsonBodyToSse(providerResponse, { log, provider, model });
+  } catch (error) {
+    if (!isLocalStreamLifecycleError(error)) throw error;
+    // The server reads this plain JSON body itself, after the handler above that maps an abort to
+    // a 499. Now that a streaming client's disconnect (or a probe deadline) also aborts the
+    // upstream body, an abort during this read must end the same way instead of escaping.
+    streamController.handleError(error);
+    return createErrorResult(499, "Request aborted");
+  }
   const streamReadinessPolicy = resolveStreamReadinessTimeout({
     baseTimeoutMs: STREAM_READINESS_TIMEOUT_MS,
     provider,

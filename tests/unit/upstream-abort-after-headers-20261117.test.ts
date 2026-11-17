@@ -13,6 +13,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { getEventListeners } from "node:events";
+import { POST as postChatCompletion } from "@/app/api/v1/chat/completions/route";
+import { buildInternalChatRequest } from "@/lib/api/modelTestRunner.ts";
 import { executeWithUpstreamStartTimeout } from "../../open-sse/handlers/chatCore/upstreamTimeouts.ts";
 import { createProviderConnection } from "@/lib/db/providers";
 import { getDbInstance } from "@/lib/db/core";
@@ -123,7 +125,7 @@ test("an abort before the start still rejects with an abort error", async () => 
   await assert.rejects(pending, (error: Error) => error.name === "AbortError");
 });
 
-type Mode = "hold-headers" | "headers-silent" | "headers-trickle";
+type Mode = "hold-headers" | "headers-silent" | "headers-trickle" | "json-silent";
 
 async function runAgainstRealServer(mode: Mode) {
   const startedAt = Date.now();
@@ -133,7 +135,12 @@ async function runAgainstRealServer(mode: Mode) {
       if (closedAfterMs === null) closedAfterMs = Date.now() - startedAt;
     });
     if (mode === "hold-headers") return; // never answers
-    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+    // json-silent: a provider that ignores stream:true and answers with a plain JSON body that
+    // the server reads itself, here a body that never arrives.
+    res.writeHead(200, {
+      "content-type": mode === "json-silent" ? "application/json" : "text/event-stream",
+      "cache-control": "no-cache",
+    });
     res.flushHeaders();
     if (mode === "headers-trickle") {
       const timer = setInterval(
@@ -191,7 +198,7 @@ async function runAgainstRealServer(mode: Mode) {
   }
 }
 
-for (const mode of ["hold-headers", "headers-silent", "headers-trickle"] as const) {
+for (const mode of ["hold-headers", "headers-silent", "headers-trickle", "json-silent"] as const) {
   test(`real network, upstream ${mode}: the deadline closes the connection and one failure row is written`, async () => {
     const { closedAfterMs, rows } = await runAgainstRealServer(mode);
     assert.notEqual(closedAfterMs, null, `${mode}: the upstream connection was never closed`);
@@ -211,6 +218,9 @@ for (const mode of ["hold-headers", "headers-silent", "headers-trickle"] as cons
       "hold-headers": ["probe_deadline"],
       "headers-silent": ["STREAM_READINESS_TIMEOUT", "probe_deadline"],
       "headers-trickle": ["client_disconnected"],
+      // The server's own read of a JSON body is aborted and ends as a 499, which writes no
+      // usage row, so the probe records its own deadline row.
+      "json-silent": ["probe_deadline"],
     };
     assert.ok(
       accepted[mode].includes(String(rows[0].error_code)),
@@ -222,3 +232,56 @@ for (const mode of ["hold-headers", "headers-silent", "headers-trickle"] as cons
     );
   });
 }
+
+test("a streaming client that aborts while the server reads a plain JSON body gets a 499, not an error", async () => {
+  // A provider that ignores stream:true and answers with a JSON body the server reads itself.
+  // That read sits outside the handler that maps an abort to a 499, so with the caller's abort
+  // now reaching the upstream body it needs its own mapping. The route's own result is what is
+  // checked, because a probe that has given up would swallow an escaped error.
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.flushHeaders(); // headers, then no body
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  const connection = await createProviderConnection({
+    provider: "openai",
+    authType: "apikey",
+    name: "json-silent-route",
+    apiKey: `sk-json-silent-route-${Date.now()}`,
+    isActive: true,
+    testStatus: "active",
+    providerSpecificData: { baseUrl: `http://127.0.0.1:${port}/v1` },
+  });
+  const client = new AbortController();
+  const request = buildInternalChatRequest(
+    {
+      model: "openai/gpt-4o",
+      stream: true,
+      max_tokens: 16,
+      messages: [{ role: "user", content: "Routing probe." }],
+    },
+    client.signal,
+    String(connection.id)
+  );
+  try {
+    setTimeout(() => client.abort(), 1000);
+    const outcome = await Promise.race([
+      postChatCompletion(request).then(
+        (response) => ({ settled: "response" as const, status: response.status }),
+        (error: unknown) => ({ settled: "threw" as const, status: String(error) })
+      ),
+      new Promise<{ settled: "hung"; status: string }>((resolve) =>
+        setTimeout(() => resolve({ settled: "hung", status: "" }), 6000)
+      ),
+    ]);
+    assert.deepEqual(
+      { settled: outcome.settled, status: outcome.status },
+      { settled: "response", status: 499 },
+      `the route must end an aborted request as a 499 response, got ${JSON.stringify(outcome)}`
+    );
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(() => resolve(null)));
+  }
+});
