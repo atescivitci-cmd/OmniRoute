@@ -13,7 +13,18 @@ import { noThinkingIntent, noThinkingHandling } from "../reasoningEffortCompatib
 
 import type { ComboLike } from "../combo/types.ts";
 import { getResolvedModelCapabilities } from "../modelCapabilities.ts";
-import { classifyTask, scoreModelForTask, TASK_LEVEL_WEIGHT } from "../taskAwareRouting.ts";
+import {
+  classifyTask,
+  isLightByAskEnabled,
+  scoreModelForTask,
+  TASK_LEVEL_WEIGHT,
+} from "../taskAwareRouting.ts";
+import {
+  latencyEvidenceFit,
+  lightEvidenceWeights,
+  type LightEvidenceCoverage,
+  type LightWeights,
+} from "./lightEvidenceProfile.ts";
 import { getTaskFitnessWithSource } from "./taskFitness.ts";
 import type { ProviderCandidate } from "./scoring.ts";
 import { quotaRankingFactor } from "./scoring.ts";
@@ -73,6 +84,19 @@ export interface FitFirstFactors {
   latencyEvidence: "observed" | "neutral_prior";
   latencyFit: number;
   score: number;
+  /**
+   * Present only for `light` asks while ROUTING_LIGHT_BY_ASK is on. Raw inputs behind the
+   * evidence-weighted light profile, so every decision shows why it ranked as it did.
+   */
+  lightProfile?: "evidence-weighted";
+  lightWeights?: LightWeights;
+  lightCoverage?: LightEvidenceCoverage;
+  latencySamples?: number;
+  latencyP95Ms?: number | null;
+  latencyShrink?: number;
+  reliabilityMeasured?: boolean;
+  /** Where the task-fitness value came from: a measurement, a capability tier, or a prior table. */
+  qualityEvidence?: "measured" | "capability_tier" | "table_prior";
 }
 
 export interface RankedFitFirstCandidate {
@@ -723,6 +747,14 @@ function neutralTieBreaker(fingerprint: string, candidate: FitFirstCandidate): s
 // confidence = n / (n + 20), so 0.5 means at least 20 observed samples.
 const CONFIDENT_FAILURE_MIN_CONFIDENCE = 0.5;
 
+/** Classify the task-fitness source tag; reads a provenance label, never a model id. */
+function qualityEvidenceKind(source: string): "measured" | "capability_tier" | "table_prior" {
+  if (source === "user_override" || source === "arena_elo" || source === "arena_elo_free_alias") {
+    return "measured";
+  }
+  return source === "models_dev_tier" ? "capability_tier" : "table_prior";
+}
+
 function weightProfile(level: ReturnType<typeof classifyTask>["level"]) {
   // Preserve each profile's existing operational weight budget. Reliability
   // receives four parts to speed's one, so a speed-only advantage cannot
@@ -859,7 +891,20 @@ export function rankFitFirstFreeCandidates(args: {
   const required = new Set(
     requiredCapabilities.map((capability) => (capability === "tools" ? "search" : capability))
   );
-  const weights = weightProfile(task.level);
+  const legacyWeights = weightProfile(task.level);
+  // Light asks, flag on only: weight moves from the size-closeness term to the measured
+  // latency and reliability terms, and only for terms with measured evidence in this pool.
+  const lightEvidence = task.level === "light" && isLightByAskEnabled();
+  const lightCoverage: LightEvidenceCoverage = {
+    latencyMeasured: lightEvidence ? eligible.filter(validLatency).length : 0,
+    reliabilityMeasured: lightEvidence
+      ? eligible.filter((candidate) => evidence.get(candidate)!.reason === "observed").length
+      : 0,
+    total: eligible.length,
+  };
+  const weights = lightEvidence
+    ? lightEvidenceWeights(legacyWeights, lightCoverage)
+    : legacyWeights;
   const fingerprint = requestFingerprint(args.body);
   const ranked = eligible
     .map((candidate): RankedFitFirstCandidate => {
@@ -885,9 +930,18 @@ export function rankFitFirstFreeCandidates(args: {
           : 0.5;
       const quota = quotaRankingFactor(candidate);
       const reliability = operational.score;
-      const latencyFit = validLatency(candidate)
-        ? clamp01(1 - candidate.p95LatencyMs / maxLatency)
-        : 0.5;
+      const lightLatency = lightEvidence
+        ? latencyEvidenceFit(
+            validLatency(candidate) ? candidate.p95LatencyMs : null,
+            candidate.successfulLatencySampleCount,
+            operational.reason === "observed" ? operational.score : undefined
+          )
+        : null;
+      const latencyFit = lightLatency
+        ? lightLatency.fit
+        : validLatency(candidate)
+          ? clamp01(1 - candidate.p95LatencyMs / maxLatency)
+          : 0.5;
       const score = clamp01(
         fitness.score * weights.task +
           complexityFit * weights.complexity +
@@ -913,6 +967,16 @@ export function rankFitFirstFreeCandidates(args: {
           latencyEvidence: validLatency(candidate) ? "observed" : "neutral_prior",
           latencyFit,
           score,
+          ...(lightLatency && {
+            lightProfile: "evidence-weighted" as const,
+            lightWeights: weights,
+            lightCoverage,
+            latencySamples: lightLatency.measured ? candidate.successfulLatencySampleCount! : 0,
+            latencyP95Ms: lightLatency.measured ? candidate.p95LatencyMs : null,
+            latencyShrink: lightLatency.shrink,
+            reliabilityMeasured: operational.reason === "observed",
+            qualityEvidence: qualityEvidenceKind(fitness.source),
+          }),
         },
         tieBreaker: neutralTieBreaker(fingerprint, candidate),
       };
