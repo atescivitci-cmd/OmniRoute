@@ -33,7 +33,7 @@ import {
 import { runWithHostedTrialUsage } from "../../../open-sse/services/autoCombo/hostedTrialUsage.ts";
 import { resolveFitFirstFreeConfig } from "../../../open-sse/services/autoCombo/fitFirstPolicy.ts";
 import {
-  hasCurrentZeroCostAdmission,
+  hasCurrentCostAdmission,
   intersectStrictConnectionScope,
   selectedConnectionIsInScope,
   zeroCostErrorResponse,
@@ -790,7 +790,7 @@ export async function handleChat(
         if (
           !target?.connectionId ||
           !selectedConnectionIsInScope(target.connectionId, allowedConnections) ||
-          !(await hasCurrentZeroCostAdmission({
+          !(await hasCurrentCostAdmission({
             provider,
             model: resolvedModel,
             connectionId: target.connectionId,
@@ -1645,7 +1645,7 @@ async function handleSingleModelChat(
 
   if (
     runtimeOptions.requireZeroCostAdmission === true &&
-    !(await hasCurrentZeroCostAdmission({
+    !(await hasCurrentCostAdmission({
       provider,
       model,
       connectionId: runtimeOptions.forcedConnectionId!,
@@ -1890,7 +1890,7 @@ async function handleSingleModelChat(
       }
       if (
         runtimeOptions.requireZeroCostAdmission === true &&
-        !(await hasCurrentZeroCostAdmission({
+        !(await hasCurrentCostAdmission({
           provider,
           model: effectiveModel,
           connectionId: credentials.connectionId,
@@ -1950,7 +1950,7 @@ async function handleSingleModelChat(
         runtimeOptions.requireZeroCostAdmission === true &&
         ((refreshedCredentials?.connectionId &&
           refreshedCredentials.connectionId !== credentials.connectionId) ||
-          !(await hasCurrentZeroCostAdmission({
+          !(await hasCurrentCostAdmission({
             provider,
             model: effectiveModel,
             connectionId: credentials.connectionId,

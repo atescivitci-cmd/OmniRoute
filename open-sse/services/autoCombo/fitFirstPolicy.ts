@@ -794,6 +794,7 @@ export function rankFitFirstFreeCandidates(args: {
   body: Record<string, unknown>;
   fallbackIntent?: string;
   zeroAdditionalCostProviders: string[];
+  configuredAccounts?: boolean;
   localFallbackPolicy?: "last" | null;
   taskProfile?: TaskProfileResolution;
   now?: number;
@@ -823,7 +824,9 @@ export function rankFitFirstFreeCandidates(args: {
   const eligible = args.candidates.filter((candidate) => {
     let reason = "";
     if (allowedProviders.size === 0 || !allowedProviders.has(candidate.provider.toLowerCase())) {
-      reason = "not_verified_zero_additional_cost";
+      reason = args.configuredAccounts
+        ? "provider_outside_configured_scope"
+        : "not_verified_zero_additional_cost";
     } else if (isNonGenerativeSpecialtyModel(candidate)) {
       reason = "non_generative_specialty_model";
     } else if (

@@ -1,3 +1,7 @@
+import {
+  captureConfiguredAccountPolicy,
+  configuredAccountProviderAllowed,
+} from "../autoCombo/hostedTrialUsage.ts";
 /**
  * Combo dispatch prelude — the branches `handleComboChat` evaluates BEFORE it
  * falls through to target resolution and the sequential attempt loop.
@@ -388,8 +392,15 @@ export async function tryPinnedModelDispatch(args: {
     const required = inferRequiredCapabilities(body);
     let reason = "";
     try {
-      if (!provider || !fitFirst.zeroAdditionalCostProviders.includes(provider.toLowerCase())) {
-        reason = "not_verified_zero_additional_cost";
+      if (
+        !provider ||
+        !(captureConfiguredAccountPolicy().enabled
+          ? configuredAccountProviderAllowed(provider)
+          : fitFirst.zeroAdditionalCostProviders.includes(provider.toLowerCase()))
+      ) {
+        reason = captureConfiguredAccountPolicy().enabled
+          ? "provider_outside_configured_scope"
+          : "not_verified_zero_additional_cost";
       } else if (
         required.includes("vision") &&
         getResolvedModelCapabilities(pinnedModel).supportsVision !== true

@@ -1,4 +1,8 @@
 import {
+  assertFinalCostDispatch,
+  isCostDispatchRequired,
+} from "../services/autoCombo/zeroCostAdmission.ts";
+import {
   assertRoutingTransportDispatch,
   assertRoutingTransportOutcome,
   getCurrentRoutingTransportAttempt,
@@ -1111,6 +1115,21 @@ export class CodexExecutor extends BaseExecutor {
 
         try {
           if (transportAttempt) assertRoutingTransportOutcome(transportAttempt);
+          if (isCostDispatchRequired())
+            await assertFinalCostDispatch(
+              {
+                provider: "codex",
+                model:
+                  typeof transformedBody.model === "string"
+                    ? transformedBody.model
+                    : nextInput.model,
+                connectionId: nextInput.credentials?.connectionId ?? "",
+                body: transformedBody,
+                effectiveChatUrl: url,
+                signal: nextInput.signal ?? undefined,
+              },
+              {}
+            );
           ws = await websocketFn(toWebSocketUrl(url), {
             browser: "chrome_142",
             os: "windows",

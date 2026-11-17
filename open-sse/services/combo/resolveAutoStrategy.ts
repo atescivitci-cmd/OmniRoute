@@ -1,3 +1,4 @@
+import { captureConfiguredAccountPolicy } from "../autoCombo/hostedTrialUsage.ts";
 import {
   resolveDeadlineRoutingPolicy,
   applyDeadlineAwareRouting,
@@ -8,10 +9,7 @@ import { probeRequestCompatibility, RequestCompatibilityError } from "../request
 import { resolveRequestCompatibilityTarget } from "../requestCompatibilityTarget.ts";
 import { requestCompatibilityErrorResult } from "../requestCompatibilityResponse.ts";
 import { inferFitFirstTaskType, inferRequiredCapabilities } from "../autoCombo/fitFirstPolicy.ts";
-import {
-  hasCurrentZeroCostAdmission,
-  zeroCostErrorResponse,
-} from "../autoCombo/zeroCostAdmission.ts";
+import { hasCurrentCostAdmission, zeroCostErrorResponse } from "../autoCombo/zeroCostAdmission.ts";
 import { resolveFitFirstFreeConfig } from "../autoCombo/fitFirstPolicy.ts";
 import { randomUUID } from "node:crypto";
 import {
@@ -445,7 +443,7 @@ export async function resolveAutoStrategyOrder(
           (Array.isArray(target.allowedConnectionIds) && !target.allowedConnectionIds.includes(id))
         )
           return false;
-        return hasCurrentZeroCostAdmission({
+        return hasCurrentCostAdmission({
           provider: candidate.provider,
           model: candidate.model,
           connectionId: id,
@@ -458,7 +456,9 @@ export async function resolveAutoStrategyOrder(
       return {
         earlyResponse: zeroCostErrorResponse(
           503,
-          "No current account-specific zero-additional-cost admission is available",
+          captureConfiguredAccountPolicy().enabled
+            ? "No active configured account is admitted for this request"
+            : "No current account-specific zero-additional-cost admission is available",
           { code: "zero_cost_admission_unavailable" }
         ),
       };
@@ -518,7 +518,7 @@ export async function resolveAutoStrategyOrder(
     let structuralTask: ReturnType<typeof classifyTask> | null = null;
 
     if (selectionPolicy === "fit-first-free") {
-      if (zeroAdditionalCostProviders.length === 0) {
+      if (!captureConfiguredAccountPolicy().enabled && zeroAdditionalCostProviders.length === 0) {
         return {
           earlyResponse: unavailableResponse(
             503,
@@ -572,7 +572,10 @@ export async function resolveAutoStrategyOrder(
         candidates: availableCandidates,
         body,
         fallbackIntent: intent,
-        zeroAdditionalCostProviders,
+        zeroAdditionalCostProviders: captureConfiguredAccountPolicy().enabled
+          ? [...new Set(candidates.map((c) => c.provider))]
+          : zeroAdditionalCostProviders,
+        configuredAccounts: captureConfiguredAccountPolicy().enabled,
         localFallbackPolicy: strictCentralPolicy.localFallbackPolicy,
       });
       if (isPressedTextRequest(combo.name, body)) {
@@ -624,7 +627,9 @@ export async function resolveAutoStrategyOrder(
               .filter((candidate) => !admitted.has(candidate))
               .map((candidate) => ({
                 model: candidate.modelStr,
-                reason: "zero_cost_admission",
+                reason: captureConfiguredAccountPolicy().enabled
+                  ? "configured_account_admission"
+                  : "zero_cost_admission",
               })),
             ...candidates
               .filter((candidate) => !routable.has(candidate))
@@ -678,9 +683,11 @@ export async function resolveAutoStrategyOrder(
           // existing sanitized candidate identifiers and enumerated exclusions.
           earlyResponse: errorResponseWithComboDiagnostics(
             503,
-            incompatible
-              ? "No verified zero-additional-cost model is currently eligible: some targets cannot preserve required request features; the remaining targets are unavailable or excluded. See candidate diagnostics."
-              : "No verified zero-additional-cost model is currently eligible for this request. See candidate diagnostics.",
+            captureConfiguredAccountPolicy().enabled
+              ? "No configured-account model is currently eligible for this request. See candidate diagnostics."
+              : incompatible
+                ? "No verified zero-additional-cost model is currently eligible: some targets cannot preserve required request features; the remaining targets are unavailable or excluded. See candidate diagnostics."
+                : "No verified zero-additional-cost model is currently eligible for this request. See candidate diagnostics.",
             {
               poolSize: routableCandidates.length,
               attempted: 0,
@@ -689,7 +696,9 @@ export async function resolveAutoStrategyOrder(
                 ...fitFirstDecision.excluded.filter((entry) => !representatives.has(entry)),
               ],
               attemptOrder: [],
-              terminalReason: "no_eligible_zero_cost_model",
+              terminalReason: captureConfiguredAccountPolicy().enabled
+                ? "no_eligible_configured_account_model"
+                : "no_eligible_zero_cost_model",
             }
           ),
         };
@@ -927,6 +936,9 @@ export async function resolveAutoStrategyOrder(
         score: winner.factors.score,
         factors: {
           policy: "fit-first-free",
+          costAdmissionMode: captureConfiguredAccountPolicy().enabled
+            ? "configured-accounts"
+            : "zero-cost",
           taskSource: fitFirstDecision.taskSource,
           taskProfileSource: fitFirstDecision.taskProfileSource,
           taskProfileFallbackReason: fitFirstDecision.taskProfileFallbackReason,

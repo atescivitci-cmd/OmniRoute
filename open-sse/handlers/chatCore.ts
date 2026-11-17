@@ -1,3 +1,4 @@
+import { captureConfiguredAccountPolicy } from "../services/autoCombo/hostedTrialUsage.ts";
 import { estimateFullInputTokens, retainsFullContext } from "../services/fullContextAdmission.ts";
 import {
   describeRequestCompatibilityRefusal,
@@ -492,6 +493,7 @@ export async function handleChatCore({
   // This trusted per-call option is never serialized onto the provider wire.
   const requiredNoThinking = noThinkingIntent(body).genericRequested;
   let { provider, model, extendedContext } = modelInfo;
+  const immutableConfiguredAccountPolicy = captureConfiguredAccountPolicy();
   const immutableCostRequired = requireZeroCostAdmission === true;
   const immutableCostScope = Array.isArray(costAdmissionConnectionIds)
     ? Object.freeze([...costAdmissionConnectionIds])
@@ -2969,7 +2971,8 @@ export async function handleChatCore({
         // control to the shared request owner, not launch unaccounted work.
         routingAttemptToken?.enter();
         return executor.execute(args);
-      }
+      },
+      immutableConfiguredAccountPolicy
     );
   };
 
