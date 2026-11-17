@@ -614,8 +614,9 @@ export function createDefaultRoutingEvidenceCanaryDeps(): RoutingEvidenceCanaryD
       const { runSingleModelTest } = await import("@/lib/api/modelTestRunner");
       // Tag every usage row the pipeline writes for this probe, so cost and usage reports can
       // tell synthetic probes from client traffic. The selector still reads these rows.
-      const outcome = await runWithUsageSource(USAGE_SOURCE_ROUTING_CANARY, () =>
-        runSingleModelTest({
+      const outcome = await runWithUsageSource(USAGE_SOURCE_ROUTING_CANARY, async () => {
+        const probeStartedAt = new Date().toISOString();
+        const result = await runSingleModelTest({
           providerId: args.provider,
           modelId: args.modelStr,
           connectionId: args.connectionId,
@@ -624,8 +625,33 @@ export function createDefaultRoutingEvidenceCanaryDeps(): RoutingEvidenceCanaryD
           prompt: args.prompt,
           maxTokens: args.maxTokens,
           hardDeadline: true,
-        })
-      );
+        });
+        // A deadline that fires before any response cancels the upstream request, and the
+        // pipeline then writes no usage_history row. That timeout is the reliability evidence
+        // the probe exists to collect, so record it here, tagged like the rest of the probe.
+        // The pipeline writes its own failure row when the stall is in the stream readiness read
+        // (headers arrived, no first frame), so give its fire-and-forget write a moment, then
+        // record only when no probe row exists, to count one timeout once.
+        if (result.responseNotReceived) {
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          const { hasUsageRowSince } = await import("@/lib/usage/usageHistory");
+          const { saveRequestUsage } = await import("@/lib/usageDb");
+          if (hasUsageRowSince(args.connectionId, USAGE_SOURCE_ROUTING_CANARY, probeStartedAt)) {
+            return result;
+          }
+          await saveRequestUsage({
+            provider: args.provider,
+            model: args.model,
+            connectionId: args.connectionId,
+            status: String(result.httpStatus),
+            success: false,
+            latencyMs: result.latencyMs,
+            errorCode: "probe_deadline",
+            endpoint: "/v1/chat/completions",
+          });
+        }
+        return result;
+      });
       return {
         ok: outcome.status === "ok",
         latencyMs: outcome.latencyMs,

@@ -124,6 +124,23 @@ async function findCustomModelMetadata(providerId: string, modelId: string) {
   }
 }
 
+// Node makes a Request follow its input AbortSignal through a WeakRef to the original Request's
+// controller. The chat routes rebuild the request in their body admission step and drop the
+// original, so once the original is garbage collected a later abort never reaches the pipeline.
+// A slow upstream then keeps the connection open until it finally answers (127 to 288 s seen
+// live), long after the deadline. Keeping the original reachable until the call settles keeps the
+// abort chain intact.
+const inFlightRequests = new Set<Request>();
+
+function holdRequestWhilePending<T>(request: Request, work: Promise<T>): Promise<T> {
+  inFlightRequests.add(request);
+  const release = () => {
+    inFlightRequests.delete(request);
+  };
+  work.then(release, release);
+  return work;
+}
+
 export function buildInternalChatRequest(
   testBody: Record<string, unknown>,
   signal: AbortSignal,
@@ -241,6 +258,15 @@ export interface SingleModelTestResult {
   rateLimited?: boolean;
   isTransient?: boolean;
   isTimeout?: boolean;
+  /**
+   * The request was handed to the pipeline and the deadline fired before it returned any
+   * response. The abort then cancels the upstream request, and the pipeline may or may not write
+   * a usage_history row of its own (it does when the stall is in the stream readiness read, it
+   * does not when no headers ever arrived), so a caller that needs the timeout recorded as
+   * evidence must check before recording it. False when the deadline hit while the call was still
+   * waiting in the local rate-limit queue, which says nothing about the provider.
+   */
+  responseNotReceived?: boolean;
   retryAfter?: number;
 }
 
@@ -353,6 +379,10 @@ export async function runSingleModelTest(
     controller.abort();
   }, effectiveTimeoutMs);
 
+  // True once the request has been handed to the pipeline. A deadline that fires while the call
+  // is still waiting in the local rate-limit queue says nothing about the provider.
+  let dispatched = false;
+
   const runInner = async (signal: AbortSignal): Promise<Response> => {
     if (isEmbedding) {
       return handleValidatedEmbeddingRequestBody(
@@ -360,10 +390,13 @@ export async function runSingleModelTest(
         { connectionId: connectionId || undefined }
       );
     }
+    dispatched = true;
     if (isRerank) {
-      return postRerank(buildInternalRerankRequest(testBody, signal, connectionId));
+      const request = buildInternalRerankRequest(testBody, signal, connectionId);
+      return holdRequestWhilePending(request, postRerank(request));
     }
-    return postChatCompletion(buildInternalChatRequest(testBody, signal, connectionId));
+    const request = buildInternalChatRequest(testBody, signal, connectionId);
+    return holdRequestWhilePending(request, postChatCompletion(request));
   };
 
   const readJsonBody = async (response: Response): Promise<unknown> =>
@@ -412,7 +445,10 @@ export async function runSingleModelTest(
           providerId,
           connectionId,
           fullModelStr,
-          (signal) => runInner(signal),
+          // withRateLimit calls this with no argument, so use the controller's signal directly.
+          // Taking it as a parameter left the request without any abort signal, and a deadline
+          // never reached the upstream request.
+          () => runInner(controller.signal),
           controller.signal
         )
       );
@@ -432,6 +468,7 @@ export async function runSingleModelTest(
           httpStatus: 504,
           error: `No model output within ${Math.round(effectiveTimeoutMs / 1000)}s`,
           isTimeout: true,
+          responseNotReceived: dispatched,
         };
       }
       // AbortError without timeout = withRateLimit queue rejection / abort.

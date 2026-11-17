@@ -615,6 +615,24 @@ export interface UsageEntry {
 }
 
 /**
+ * Whether a usage row with the given provenance exists for a connection at or after `sinceIso`.
+ * Lets a caller that records its own failure row avoid doubling one the pipeline already wrote.
+ */
+export function hasUsageRowSince(connectionId: string, source: string, sinceIso: string): boolean {
+  try {
+    const row = getDbInstance()
+      .prepare(
+        "SELECT 1 AS found FROM usage_history WHERE connection_id = ? AND source = ? AND timestamp >= ? LIMIT 1"
+      )
+      .get(connectionId, source, sinceIso);
+    return Boolean(row);
+  } catch {
+    // Unknown means do not assume a row exists: the caller then records its own.
+    return false;
+  }
+}
+
+/**
  * Save request usage entry to SQLite.
  */
 export async function saveRequestUsage(entry: UsageEntry) {

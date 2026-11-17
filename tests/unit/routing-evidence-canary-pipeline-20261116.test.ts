@@ -282,6 +282,11 @@ test("default probe runner returns at its deadline even while the upstream keeps
       logs.every((r) => r.source === USAGE_SOURCE_ROUTING_CANARY),
       `untagged call log on the streaming path: ${JSON.stringify(logs)}`
     );
+    assert.equal(
+      usage.filter((r) => !r.success).length,
+      1,
+      `the cut-off stream must leave exactly one failure row: ${JSON.stringify(usage)}`
+    );
     console.log(
       `[tag-check] streaming path rows: usage=${usage.length} calllogs=${logs.length} failures=${usage.filter((r) => !r.success).length}`
     );
