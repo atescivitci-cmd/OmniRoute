@@ -221,6 +221,13 @@ export interface RunSingleModelTestOptions {
   prompt?: string;
   /** Output token cap for chat tests. Default: the streaming test cap. */
   maxTokens?: number;
+  /**
+   * Treat timeoutMs as a hard total deadline. By default the timeout means "no output within N
+   * seconds": a stream that keeps delivering data after the deadline is read to the end and
+   * reported ok. With a hard deadline the stream is cancelled and the result is "slow", so a
+   * caller that runs probes in sequence is never held by a slow upstream.
+   */
+  hardDeadline?: boolean;
 }
 
 export interface SingleModelTestResult {
@@ -253,6 +260,33 @@ export async function extractModelTestResponseText(
   return { text: extractComboTestResponseText(await response.json()) };
 }
 
+/**
+ * Read a response body to the end, or until `signal` aborts, whichever comes first. On abort the
+ * reader is cancelled, which releases the upstream connection instead of leaving it streaming to
+ * nobody. The caller decides what a partial read means.
+ */
+async function readBodyUntilDeadline(res: Response, signal: AbortSignal): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return res.text();
+  const decoder = new TextDecoder();
+  const cancel = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  if (signal.aborted) cancel();
+  else signal.addEventListener("abort", cancel, { once: true });
+  let text = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    signal.removeEventListener("abort", cancel);
+  }
+}
+
 function isRateLimitMessage(message: string): boolean {
   return /rate[ -]?limit|too many requests|quota exceeded/i.test(message);
 }
@@ -278,6 +312,7 @@ export async function runSingleModelTest(
     streamChat = true,
     prompt,
     maxTokens,
+    hardDeadline = false,
   } = options;
 
   let fullModelStr = modelId;
@@ -331,18 +366,58 @@ export async function runSingleModelTest(
     return postChatCompletion(buildInternalChatRequest(testBody, signal, connectionId));
   };
 
+  const readJsonBody = async (response: Response): Promise<unknown> =>
+    hardDeadline
+      ? JSON.parse(await readBodyUntilDeadline(response, controller.signal))
+      : response.json();
+
+  // With a hard deadline, do not rely on every layer below honouring the abort signal: stop
+  // waiting at the deadline, and release the response if it arrives late.
+  const raceDeadline = (work: Promise<Response>): Promise<Response> => {
+    if (!hardDeadline) return work;
+    return new Promise<Response>((resolve, reject) => {
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        reject(Object.assign(new Error("deadline"), { name: "AbortError" }));
+      };
+      if (controller.signal.aborted) onAbort();
+      else controller.signal.addEventListener("abort", onAbort, { once: true });
+      work.then(
+        (response) => {
+          controller.signal.removeEventListener("abort", onAbort);
+          if (settled) {
+            void response.body?.cancel().catch(() => undefined);
+            return;
+          }
+          settled = true;
+          resolve(response);
+        },
+        (error) => {
+          controller.signal.removeEventListener("abort", onAbort);
+          if (settled) return;
+          settled = true;
+          reject(error);
+        }
+      );
+    });
+  };
+
   let res: Response;
   try {
     if (connectionId) {
-      res = await withRateLimit(
-        providerId,
-        connectionId,
-        fullModelStr,
-        (signal) => runInner(signal),
-        controller.signal
+      res = await raceDeadline(
+        withRateLimit(
+          providerId,
+          connectionId,
+          fullModelStr,
+          (signal) => runInner(signal),
+          controller.signal
+        )
       );
     } else {
-      res = await runInner(controller.signal);
+      res = await raceDeadline(runInner(controller.signal));
     }
   } catch (error: unknown) {
     clearTimeout(timeoutHandle);
@@ -397,7 +472,7 @@ export async function runSingleModelTest(
 
     let errorMsg = "Rate limited";
     try {
-      const errBody = await res.json();
+      const errBody = await readJsonBody(res);
       errorMsg = extractProviderErrorMessage(errBody, res.statusText || errorMsg);
     } catch {
       errorMsg = res.statusText || errorMsg;
@@ -420,10 +495,17 @@ export async function runSingleModelTest(
     let responseText = "";
     let streamError: ModelTestResponseText["error"];
     try {
-      const parsedResponse = await extractModelTestResponseText(
-        res,
-        !isEmbedding && !isRerank && streamChat
-      );
+      const streaming = !isEmbedding && !isRerank && streamChat;
+      const parsedResponse = hardDeadline
+        ? await extractModelTestResponseText(
+            // Read with a reader we can cancel at the deadline; cancelling releases the upstream.
+            new Response(await readBodyUntilDeadline(res, controller.signal), {
+              status: res.status,
+              headers: res.headers,
+            }),
+            streaming
+          )
+        : await extractModelTestResponseText(res, streaming);
       responseText = parsedResponse.text;
       streamError = parsedResponse.error;
     } catch {
@@ -432,6 +514,16 @@ export async function runSingleModelTest(
       clearTimeout(timeoutHandle);
     }
     latencyMs = Date.now() - startTime;
+    if (timedOut && hardDeadline) {
+      return {
+        modelId: fullModelStr,
+        status: "slow",
+        latencyMs,
+        httpStatus: 504,
+        error: `No complete answer within ${Math.round(effectiveTimeoutMs / 1000)}s`,
+        isTimeout: true,
+      };
+    }
     if (streamError) {
       const error = sanitizeErrorMessage(streamError.message) || "Upstream stream failed";
       const rateLimited = streamError.statusCode === 429 || isRateLimitMessage(error);
@@ -447,7 +539,7 @@ export async function runSingleModelTest(
         ...(rateLimited || isBotBlock ? { isTransient: true } : {}),
       };
     }
-    if (timedOut && !responseText) {
+    if (timedOut && (hardDeadline || !responseText)) {
       return {
         modelId: fullModelStr,
         status: "slow",
@@ -487,7 +579,7 @@ export async function runSingleModelTest(
 
   let errorMsg = "";
   try {
-    const errBody = await res.json();
+    const errBody = await readJsonBody(res);
     errorMsg = extractProviderErrorMessage(errBody, res.statusText);
   } catch {
     errorMsg = res.statusText;

@@ -167,3 +167,66 @@ test("a synced record that declares nothing is not assumed to be chat", async ()
   assert.equal(await deps.isChatCapable("openai", "canary-sync-chat"), true);
   assert.equal(await deps.isChatCapable("openai", "canary-sync-speech"), false);
 });
+
+test("default probe runner returns at its deadline even while the upstream keeps streaming", async () => {
+  const connection = await createProviderConnection({
+    provider: "openai",
+    authType: "apikey",
+    name: "canary-deadline-test",
+    apiKey: "sk-canary-deadline-test",
+    isActive: true,
+    testStatus: "active",
+  });
+  const original = globalThis.fetch;
+  const fast = () =>
+    new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "OK" } }] }), {
+      headers: { "content-type": "application/json" },
+    });
+  globalThis.fetch = (async () => fast()) as typeof fetch;
+  const deps = createDefaultRoutingEvidenceCanaryDeps();
+  const args = {
+    provider: "openai",
+    model: "gpt-4o",
+    modelStr: "openai/gpt-4o",
+    connectionId: String(connection.id),
+    prompt: "Routing probe.",
+    maxTokens: 64,
+    timeoutMs: 10_000,
+  };
+  await deps.runProbe(args); // warm the pipeline
+
+  let cancelled = false;
+  globalThis.fetch = (async () => {
+    const encoder = new TextEncoder();
+    let timer: ReturnType<typeof setInterval>;
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          timer = setInterval(
+            () =>
+              controller.enqueue(
+                encoder.encode('data: {"choices":[{"delta":{"reasoning_content":"t"}}]}\n\n')
+              ),
+            100
+          );
+        },
+        cancel() {
+          cancelled = true;
+          clearInterval(timer);
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" } }
+    );
+  }) as typeof fetch;
+  try {
+    const started = Date.now();
+    const outcome = await deps.runProbe({ ...args, timeoutMs: 800 });
+    const elapsed = Date.now() - started;
+    assert.equal(outcome.ok, false, "a probe that hit its deadline is not ok");
+    assert.ok(elapsed < 2_500, `probe held the caller for ${elapsed} ms (deadline 800 ms)`);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(cancelled, true, "the upstream stream was left open");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
