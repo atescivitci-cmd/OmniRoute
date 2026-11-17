@@ -221,6 +221,13 @@ export interface RunSingleModelTestOptions {
   prompt?: string;
   /** Output token cap for chat tests. Default: the streaming test cap. */
   maxTokens?: number;
+  /**
+   * Treat timeoutMs as a hard total deadline. By default the timeout means "no output within N
+   * seconds": a stream that keeps delivering data after the deadline is read to the end and
+   * reported ok. With a hard deadline the stream is cancelled and the result is "slow", so a
+   * caller that runs probes in sequence is never held by a slow upstream.
+   */
+  hardDeadline?: boolean;
 }
 
 export interface SingleModelTestResult {
@@ -253,6 +260,33 @@ export async function extractModelTestResponseText(
   return { text: extractComboTestResponseText(await response.json()) };
 }
 
+/**
+ * Read a response body to the end, or until `signal` aborts, whichever comes first. On abort the
+ * reader is cancelled, which releases the upstream connection instead of leaving it streaming to
+ * nobody. The caller decides what a partial read means.
+ */
+async function readBodyUntilDeadline(res: Response, signal: AbortSignal): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return res.text();
+  const decoder = new TextDecoder();
+  const cancel = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  if (signal.aborted) cancel();
+  else signal.addEventListener("abort", cancel, { once: true });
+  let text = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    signal.removeEventListener("abort", cancel);
+  }
+}
+
 function isRateLimitMessage(message: string): boolean {
   return /rate[ -]?limit|too many requests|quota exceeded/i.test(message);
 }
@@ -278,6 +312,7 @@ export async function runSingleModelTest(
     streamChat = true,
     prompt,
     maxTokens,
+    hardDeadline = false,
   } = options;
 
   let fullModelStr = modelId;
@@ -420,10 +455,17 @@ export async function runSingleModelTest(
     let responseText = "";
     let streamError: ModelTestResponseText["error"];
     try {
-      const parsedResponse = await extractModelTestResponseText(
-        res,
-        !isEmbedding && !isRerank && streamChat
-      );
+      const streaming = !isEmbedding && !isRerank && streamChat;
+      const parsedResponse = hardDeadline
+        ? await extractModelTestResponseText(
+            // Read with a reader we can cancel at the deadline; cancelling releases the upstream.
+            new Response(await readBodyUntilDeadline(res, controller.signal), {
+              status: res.status,
+              headers: res.headers,
+            }),
+            streaming
+          )
+        : await extractModelTestResponseText(res, streaming);
       responseText = parsedResponse.text;
       streamError = parsedResponse.error;
     } catch {
@@ -447,7 +489,7 @@ export async function runSingleModelTest(
         ...(rateLimited || isBotBlock ? { isTransient: true } : {}),
       };
     }
-    if (timedOut && !responseText) {
+    if (timedOut && (hardDeadline || !responseText)) {
       return {
         modelId: fullModelStr,
         status: "slow",

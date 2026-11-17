@@ -618,6 +618,7 @@ export function createDefaultRoutingEvidenceCanaryDeps(): RoutingEvidenceCanaryD
         streamChat: true,
         prompt: args.prompt,
         maxTokens: args.maxTokens,
+        hardDeadline: true,
       });
       return {
         ok: outcome.status === "ok",
