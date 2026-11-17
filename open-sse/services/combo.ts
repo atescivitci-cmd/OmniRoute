@@ -869,6 +869,8 @@ async function handleComboChatRemote({
   const setRetryDelayMs = resolveDelayMs(config.setRetryDelayMs, 2000);
 
   const targetResolution = await resolveComboTargetPipeline({
+    requestId:
+      typeof relayOptions?.routingRequestId === "string" ? relayOptions.routingRequestId : null,
     body,
     combo,
     strategy,

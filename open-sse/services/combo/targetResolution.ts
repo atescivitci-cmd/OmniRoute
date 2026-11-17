@@ -30,6 +30,7 @@ import { enforceLocalLast } from "../autoCombo/localFallbackPolicy.ts";
  * See _tasks/quality/2026-06-19-DESIGN-godfiles-decomposition.md §4.
  */
 import { isModelLocked } from "../accountFallback.ts";
+import { emitRuleDecision } from "../routingShadow.ts";
 import { parseAutoPrefix } from "../autoCombo/autoPrefix.ts";
 import { handlePipelineCombo, buildPipelineResponse } from "../autoCombo/pipelineRouter.ts";
 import type { resolveComboSetupConfig } from "../comboConfig.ts";
@@ -95,6 +96,8 @@ import type {
 } from "./types.ts";
 
 export interface ResolveComboTargetPipelineDeps {
+  /** Correlation id of the request (the call log's correlation id), when the caller has one. */
+  requestId?: string | null;
   body: Record<string, unknown>;
   combo: ComboLike;
   strategy: string;
@@ -717,9 +720,15 @@ export async function resolveComboTargetPipeline(
   if ("earlyResponse" in continuity) return continuity;
   const centralPolicy = resolveFitFirstFreeConfig(combo);
   const preserveDeadlineOrder =
-    strategy === "auto" && centralPolicy.enabled && autoUsedExplicitRouter &&
+    strategy === "auto" &&
+    centralPolicy.enabled &&
+    autoUsedExplicitRouter &&
     resolveDeadlineRoutingPolicy(combo.config, body) !== null;
   orderedTargets = continuity.orderedTargets;
+  // ROUTING_SHADOW_LOG: record the rule classifier's decision for this request. Observation
+  // only, off by default, deferred, and placed before the branch below so it also covers the
+  // fit-first path that skips task-aware ordering.
+  emitRuleDecision({ body, strategy, comboName: combo.name, requestId: deps.requestId ?? null });
   // Fit-first already uses task fit and deadline evidence. Reordering its tail
   // here can restore a target that was demoted before a definite rejection.
   if (!preserveDeadlineOrder) {
