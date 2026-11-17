@@ -10,6 +10,7 @@
  */
 
 import { getDbInstance } from "./core";
+import { EXCLUDE_ROUTING_CANARY_SQL } from "@/shared/constants/usageSource";
 import type { AnalyticsParams } from "./usageAnalytics/sources";
 
 export { buildUnifiedSource, buildPresetUnifiedSource } from "./usageAnalytics/sources";
@@ -722,7 +723,7 @@ export interface EndpointUsageParams {
  */
 export function getEndpointUsageRows(params: EndpointUsageParams = {}): EndpointUsageRow[] {
   const db = getDbInstance();
-  const conditions: string[] = [];
+  const conditions: string[] = [EXCLUDE_ROUTING_CANARY_SQL];
   const bind: Record<string, unknown> = {};
   if (params.sinceIso) {
     conditions.push("timestamp >= @since");

@@ -1,4 +1,9 @@
 import { getDbInstance } from "./core";
+import { USAGE_SOURCE_ROUTING_CANARY } from "@/shared/constants/usageSource";
+
+// Qualified: both queries join provider_nodes. Probes are OmniRoute's own traffic, so the
+// provider page's request counts describe what clients asked for.
+const EXCLUDE_CANARY_CALLS = `(c.source IS NULL OR c.source <> '${USAGE_SOURCE_ROUTING_CANARY}')`;
 
 /**
  * Provider/model call statistics aggregated from `call_logs`.
@@ -40,7 +45,7 @@ export function getProviderCallStats(): ProviderCallStat[] {
          SUM(c.tokens_out) AS totalTokensOut
        FROM call_logs c
        LEFT JOIN provider_nodes pn ON pn.id = c.provider
-       WHERE c.provider IS NOT NULL AND c.provider != '-'
+       WHERE c.provider IS NOT NULL AND c.provider != '-' AND ${EXCLUDE_CANARY_CALLS}
        GROUP BY c.provider
        ORDER BY totalRequests DESC`
     )
@@ -60,7 +65,7 @@ export function getModelCallStats(): ModelCallStat[] {
          SUM(CASE WHEN c.status >= 200 AND c.status < 400 THEN 1 ELSE 0 END) AS successfulRequests
        FROM call_logs c
        LEFT JOIN provider_nodes pn ON pn.id = c.provider
-       WHERE c.provider IS NOT NULL AND c.model IS NOT NULL
+       WHERE c.provider IS NOT NULL AND c.model IS NOT NULL AND ${EXCLUDE_CANARY_CALLS}
        GROUP BY c.provider, c.model
        ORDER BY c.provider, requests DESC`
     )

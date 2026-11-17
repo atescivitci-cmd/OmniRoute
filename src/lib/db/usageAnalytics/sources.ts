@@ -6,6 +6,8 @@
  * and are consumed by the query functions in the parent `usageAnalytics.ts` module.
  */
 
+import { EXCLUDE_ROUTING_CANARY_SQL } from "@/shared/constants/usageSource";
+
 export type AnalyticsParams = Record<string, string>;
 
 // ---------------------------------------------------------------------------
@@ -55,7 +57,8 @@ export function buildUnifiedSource(opts: BuildUnifiedSourceOptions): UnifiedSour
   const unifiedParams: AnalyticsParams = {};
 
   // Floor raw rows at rawCutoffDate when summary rows are included to avoid double-counting.
-  const rawConditions: string[] = [];
+  // Canary probes are OmniRoute's own traffic, not what clients asked for.
+  const rawConditions: string[] = [EXCLUDE_ROUTING_CANARY_SQL];
   if (needsAggregated) {
     rawConditions.push("timestamp >= @rawCutoff");
     unifiedParams.rawCutoff = rawCutoffDate;
@@ -156,7 +159,7 @@ export function buildPresetUnifiedSource(opts: BuildUnifiedSourceOptions): Unifi
 
   const presetParams: AnalyticsParams = {};
 
-  const rawConditions: string[] = [];
+  const rawConditions: string[] = [EXCLUDE_ROUTING_CANARY_SQL];
   if (needsAggregated) {
     rawConditions.push("timestamp >= @presetRawCutoff");
     presetParams.presetRawCutoff = rawCutoffDate;

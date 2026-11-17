@@ -13,6 +13,8 @@ import { createCombo } from "@/lib/db/combos";
 import { addCustomModel, replaceSyncedAvailableModelsForConnection } from "@/lib/db/models";
 import { updateSettings } from "@/lib/db/settings";
 import { getModelLatencyStats } from "@/lib/usageDb";
+import { getDbInstance } from "@/lib/db/core";
+import { USAGE_SOURCE_ROUTING_CANARY } from "@/shared/constants/usageSource";
 import {
   createDefaultRoutingEvidenceCanaryDeps,
   createRoutingEvidenceCanaryState,
@@ -106,6 +108,34 @@ test("canary probe flows through the real pipeline and becomes selector evidence
     assert.ok(recorded, "no usage_history evidence was recorded for the probed candidate");
     const stats = await getModelLatencyStats({ windowHours: 24, minSamples: 1 });
     assert.equal(stats["openai/gpt-4o"].successfulRequests >= 1, true);
+
+    // Every row the real pipeline wrote for the probe is tagged, so reports can tell it from
+    // client traffic, while the selector evidence above still counted it.
+    const db = getDbInstance();
+    const usageRows = db
+      .prepare("SELECT source FROM usage_history WHERE connection_id = ?")
+      .all(connectionId) as Array<{ source: string | null }>;
+    assert.ok(usageRows.length >= 1);
+    assert.deepEqual(
+      usageRows.map((r) => r.source),
+      usageRows.map(() => USAGE_SOURCE_ROUTING_CANARY),
+      "untagged usage_history row written for a canary probe"
+    );
+    await waitFor(async () => {
+      const n = db
+        .prepare("SELECT COUNT(*) AS n FROM call_logs WHERE connection_id = ?")
+        .get(connectionId) as { n: number };
+      return n.n >= 1;
+    });
+    const logTags = db
+      .prepare("SELECT source FROM call_logs WHERE connection_id = ?")
+      .all(connectionId) as Array<{ source: string | null }>;
+    assert.ok(logTags.length >= 1, "no call log was written for the probe");
+    assert.deepEqual(
+      logTags.map((r) => r.source),
+      logTags.map(() => USAGE_SOURCE_ROUTING_CANARY),
+      "untagged call_logs row written for a canary probe"
+    );
 
     // Spacing keeps the very next tick from probing the same candidate again.
     result = await runRoutingEvidenceCanaryTick(deps, state, Date.now, { env: {} });
@@ -226,6 +256,35 @@ test("default probe runner returns at its deadline even while the upstream keeps
     assert.ok(elapsed < 2_500, `probe held the caller for ${elapsed} ms (deadline 800 ms)`);
     await new Promise((r) => setTimeout(r, 300));
     assert.equal(cancelled, true, "the upstream stream was left open");
+
+    // The production probe streams and can be cancelled at its deadline. Every row the pipeline
+    // writes on those paths, the warm-up success and the cut-off failure alike, must be tagged.
+    const db = getDbInstance();
+    const connId = String(connection.id);
+    await waitFor(async () => {
+      const n = db
+        .prepare("SELECT COUNT(*) AS n FROM usage_history WHERE connection_id = ?")
+        .get(connId) as { n: number };
+      return n.n >= 2;
+    }, 3000);
+    const usage = db
+      .prepare("SELECT success, source FROM usage_history WHERE connection_id = ?")
+      .all(connId) as Array<{ success: number; source: string | null }>;
+    assert.ok(usage.length >= 1, "no usage rows were written for the streaming probes");
+    assert.ok(
+      usage.every((r) => r.source === USAGE_SOURCE_ROUTING_CANARY),
+      `untagged row on the streaming path: ${JSON.stringify(usage)}`
+    );
+    const logs = db
+      .prepare("SELECT source FROM call_logs WHERE connection_id = ?")
+      .all(connId) as Array<{ source: string | null }>;
+    assert.ok(
+      logs.every((r) => r.source === USAGE_SOURCE_ROUTING_CANARY),
+      `untagged call log on the streaming path: ${JSON.stringify(logs)}`
+    );
+    console.log(
+      `[tag-check] streaming path rows: usage=${usage.length} calllogs=${logs.length} failures=${usage.filter((r) => !r.success).length}`
+    );
   } finally {
     globalThis.fetch = original;
   }
