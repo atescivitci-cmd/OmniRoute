@@ -12,6 +12,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import { getEventListeners } from "node:events";
 import { executeWithUpstreamStartTimeout } from "../../open-sse/handlers/chatCore/upstreamTimeouts.ts";
 import { createProviderConnection } from "@/lib/db/providers";
 import { getDbInstance } from "@/lib/db/core";
@@ -28,6 +29,7 @@ test("after the start succeeds, aborting the caller still aborts the signal the 
     provider: "p",
     model: "m",
     signal: caller.signal,
+    abortAfterStart: true,
     execute: async (signal) => {
       upstreamSignal = signal;
       return "response started";
@@ -44,6 +46,48 @@ test("after the start succeeds, aborting the caller still aborts the signal the 
     true,
     "the caller's abort must reach the fetch after the response started"
   );
+});
+
+test("without abortAfterStart the old behaviour is kept: a later abort does not reach the upstream", async () => {
+  // A non-streaming request reads the body itself and still wants the result after the client
+  // has gone, so it must not turn a late abort into an error outside the 499 handler.
+  const caller = new AbortController();
+  let upstreamSignal: AbortSignal | null = null;
+  await executeWithUpstreamStartTimeout({
+    executor: {},
+    provider: "p",
+    model: "m",
+    signal: caller.signal,
+    execute: async (signal) => {
+      upstreamSignal = signal;
+      return "ok";
+    },
+  });
+  caller.abort();
+  assert.equal((upstreamSignal as unknown as AbortSignal).aborted, false);
+});
+
+test("listeners on the caller's signal: none left by a failed start or an opt-out, one per attempt otherwise", async () => {
+  const countAfter = async (abortAfterStart: boolean, fail: boolean) => {
+    const caller = new AbortController();
+    for (let attempt = 0; attempt < 12; attempt++) {
+      await executeWithUpstreamStartTimeout({
+        executor: {},
+        provider: "p",
+        model: "m",
+        signal: caller.signal,
+        abortAfterStart,
+        execute: async () => {
+          if (fail) throw new Error("refused");
+          return "ok";
+        },
+      }).catch(() => undefined);
+    }
+    return getEventListeners(caller.signal, "abort").length;
+  };
+  assert.equal(await countAfter(false, false), 0, "opt-out leaves no listener");
+  assert.equal(await countAfter(true, true), 0, "a failed start leaves no listener");
+  assert.equal(await countAfter(true, false), 12, "one forwarding listener per successful attempt");
 });
 
 test("a failed start detaches the caller's listener and leaves nothing to abort", async () => {
@@ -162,6 +206,16 @@ for (const mode of ["hold-headers", "headers-silent", "headers-trickle"] as cons
     );
     assert.equal(rows[0].success, 0);
     assert.equal(rows[0].source, "routing-canary");
+    // Which row it is matters: the probe's own deadline row, or the one the pipeline writes.
+    const accepted: Record<Mode, string[]> = {
+      "hold-headers": ["probe_deadline"],
+      "headers-silent": ["STREAM_READINESS_TIMEOUT", "probe_deadline"],
+      "headers-trickle": ["client_disconnected"],
+    };
+    assert.ok(
+      accepted[mode].includes(String(rows[0].error_code)),
+      `${mode}: unexpected failure row ${JSON.stringify(rows[0])}`
+    );
     assert.ok(
       rows[0].latency_ms < 4500,
       `${mode}: failure row written ${rows[0].latency_ms} ms after dispatch`

@@ -134,6 +134,7 @@ export async function executeWithUpstreamStartTimeout<T>({
   signal,
   log,
   execute,
+  abortAfterStart = false,
 }: {
   executor: unknown;
   provider: string;
@@ -141,6 +142,15 @@ export async function executeWithUpstreamStartTimeout<T>({
   signal: AbortSignal;
   log?: { warn?: (tag: string, message: string) => void } | null;
   execute: (signal: AbortSignal) => Promise<T>;
+  /**
+   * Keep forwarding the caller's abort to the upstream after the response has started. Set it
+   * when the response body goes straight to a client that can leave (a streaming request), so
+   * a disconnect or a deadline closes the connection instead of waiting for the provider. Leave
+   * it off when the server reads the body itself and still wants the result after the client
+   * is gone (a non-streaming request: accounting, caching), where an abort would surface as an
+   * error outside the handler that maps aborts to a 499.
+   */
+  abortAfterStart?: boolean;
 }): Promise<T> {
   const timeoutMs = getExecutorTimeoutMs(executor, provider, model);
   if (timeoutMs <= 0) return execute(signal);
@@ -173,8 +183,10 @@ export async function executeWithUpstreamStartTimeout<T>({
     }, timeoutMs);
   });
 
+  let abortRaceListener: (() => void) | null = null;
   const abortPromise = new Promise<never>((_, reject) => {
-    signal.addEventListener("abort", () => reject(createAbortError(signal)), { once: true });
+    abortRaceListener = () => reject(createAbortError(signal));
+    signal.addEventListener("abort", abortRaceListener, { once: true });
   });
 
   let started = false;
@@ -193,13 +205,18 @@ export async function executeWithUpstreamStartTimeout<T>({
     if (timeoutAbortListener) {
       timeoutController.signal.removeEventListener("abort", timeoutAbortListener);
     }
-    // The caller's abort listener is different. Once the response has started, the caller's
-    // signal (a client disconnect, a probe deadline) must still reach the upstream connection:
-    // `combinedController.signal` is the signal the fetch and its response body hold. Detaching
-    // the listener here meant a provider that sends its headers and then stays silent kept the
-    // connection open until it finally answered (164 s seen live on a stalled NVIDIA stream),
-    // however early the caller gave up. It stays attached on success and is removed only when
-    // the start failed, where nothing is left to abort.
-    if (!started && abortListener) signal.removeEventListener("abort", abortListener);
+    // The race is settled either way, so its rejecting listener has nothing left to reject.
+    if (abortRaceListener) signal.removeEventListener("abort", abortRaceListener);
+    // The caller's abort listener is different when the caller asked for it (abortAfterStart).
+    // Once the response has started, the caller's signal (a client disconnect, a probe
+    // deadline) must still reach the upstream connection: `combinedController.signal` is the
+    // signal the fetch and its response body hold. Detaching the listener at the start meant a
+    // provider that sends its headers and then stays silent kept the connection open until it
+    // finally answered (164 s seen live on a stalled NVIDIA stream), however early the caller
+    // gave up. It stays attached on a successful start and is removed when the start failed,
+    // where nothing is left to abort, or when the caller did not ask for it.
+    if ((!started || !abortAfterStart) && abortListener) {
+      signal.removeEventListener("abort", abortListener);
+    }
   }
 }

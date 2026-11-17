@@ -3132,6 +3132,10 @@ export async function handleChatCore({
                     provider,
                     model: modelToCall,
                     signal: streamController.signal,
+                    // A streaming client consumes the body live, so its disconnect must reach the
+                    // upstream. A non-streaming request reads the body here and still wants the
+                    // result for accounting after the client is gone.
+                    abortAfterStart: Boolean(stream),
                     log,
                     execute: (signal) =>
                       runWithCapture(providerRequestCapture, () =>
@@ -3365,6 +3369,7 @@ export async function handleChatCore({
                         provider,
                         model: modelToCall,
                         signal: streamController.signal,
+                        abortAfterStart: Boolean(stream),
                         log,
                         execute: (signal) =>
                           runWithCapture(providerRequestCapture, () =>
