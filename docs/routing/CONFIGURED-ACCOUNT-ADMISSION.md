@@ -1,3 +1,7 @@
+---
+title: Configured account admission
+---
+
 # Configured-account admission
 
 Stored combo configuration can set `costAdmissionMode: "configured-accounts"` to permit normal usage of its active configured accounts. This is **not** a guarantee of zero billing: subscription allowances, credits or normal account charges may apply. Other combos retain the existing strict zero-cost behavior. Request bodies and headers cannot enable this mode.
