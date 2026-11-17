@@ -14,6 +14,8 @@ export interface RoutingShadowDecisionInput {
   strategy: string | null;
   ruleLevel: string;
   ruleReasons: string[];
+  /** Step of the target pipeline reached when recorded (see migration 138). */
+  path: string | null;
   lightByAsk: boolean;
   wasLevel: string | null;
   promptChars: number;
@@ -28,6 +30,7 @@ export interface RoutingShadowDecisionInput {
   userTurns: number;
   askNonAscii: boolean;
   askNonText: boolean;
+  compactedHistory: boolean;
 }
 
 export const ROUTING_SHADOW_RETENTION_DAYS = 14;
@@ -40,11 +43,11 @@ export function insertRoutingShadowDecision(input: RoutingShadowDecisionInput): 
   const result = db
     .prepare(
       `INSERT OR IGNORE INTO routing_shadow_decisions (
-         timestamp, request_id, combo_name, strategy, rule_level, rule_reasons, light_by_ask,
+         timestamp, request_id, combo_name, strategy, rule_level, rule_reasons, path, light_by_ask,
          was_level, prompt_chars, message_count, tool_count, output_tokens, effort,
          light_keyword, heavy_keyword, critical_keyword, ask_chars, user_turns,
-         ask_non_ascii, ask_non_text
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         ask_non_ascii, ask_non_text, compacted_history
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.timestamp ?? new Date().toISOString(),
@@ -53,6 +56,7 @@ export function insertRoutingShadowDecision(input: RoutingShadowDecisionInput): 
       input.strategy,
       input.ruleLevel,
       input.ruleReasons.join(","),
+      input.path,
       input.lightByAsk ? 1 : 0,
       input.wasLevel,
       input.promptChars,
@@ -66,7 +70,8 @@ export function insertRoutingShadowDecision(input: RoutingShadowDecisionInput): 
       input.askChars,
       input.userTurns,
       input.askNonAscii ? 1 : 0,
-      input.askNonText ? 1 : 0
+      input.askNonText ? 1 : 0,
+      input.compactedHistory ? 1 : 0
     );
   const now = Date.now();
   if (now - lastPruneAt >= PRUNE_INTERVAL_MS) {
@@ -76,15 +81,31 @@ export function insertRoutingShadowDecision(input: RoutingShadowDecisionInput): 
   return result.changes > 0;
 }
 
-/** Delete rows older than the retention window. Returns the number removed. */
+const PRUNE_BATCH_ROWS = 2000;
+const PRUNE_MAX_BATCHES = 5;
+
+/**
+ * Delete rows older than the retention window, in bounded batches so a long backlog (for
+ * example after the flag was off for weeks and is turned on again) never blocks the process for
+ * one long statement. Any remainder is removed by the next hourly prune. Returns rows removed.
+ */
 export function pruneRoutingShadowDecisions(
   retentionDays: number = ROUTING_SHADOW_RETENTION_DAYS,
   nowMs: number = Date.now()
 ): number {
   const cutoff = new Date(nowMs - retentionDays * 24 * 60 * 60 * 1000).toISOString();
-  return getDbInstance()
-    .prepare("DELETE FROM routing_shadow_decisions WHERE timestamp < ?")
-    .run(cutoff).changes;
+  const statement = getDbInstance().prepare(
+    `DELETE FROM routing_shadow_decisions WHERE id IN (
+       SELECT id FROM routing_shadow_decisions WHERE timestamp < ? LIMIT ${PRUNE_BATCH_ROWS}
+     )`
+  );
+  let removed = 0;
+  for (let batch = 0; batch < PRUNE_MAX_BATCHES; batch++) {
+    const changes = statement.run(cutoff).changes;
+    removed += changes;
+    if (changes < PRUNE_BATCH_ROWS) break;
+  }
+  return removed;
 }
 
 export interface RoutingShadowSummaryRow {

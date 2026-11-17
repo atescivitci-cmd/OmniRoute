@@ -680,6 +680,19 @@ export async function resolveComboTargetPipeline(
 ): Promise<ResolveComboTargetPipelineResult> {
   const { body, combo, strategy, config, allCombos, log, isModelAvailable } = deps;
 
+  // ROUTING_SHADOW_LOG: record the rule classifier's decision for this request, with the step
+  // of this pipeline it reached. Called at every exit so the baseline covers requests that end
+  // early (context overflow, the smart pipeline, early responses), not only the ones that get
+  // ordered. Observation only: off by default, never throws, changes nothing below.
+  const shadow = (path: string) =>
+    emitRuleDecision({
+      body,
+      strategy,
+      comboName: combo.name,
+      requestId: deps.requestId ?? null,
+      path,
+    });
+
   const { expandedCombo, expandedAllCombos } = await expandComboWildcards(combo, allCombos);
   const stickyWeightedLimit = clampStickyWeightedTargetLimit(
     (config as Record<string, unknown>).stickyWeightedLimit
@@ -704,20 +717,30 @@ export async function resolveComboTargetPipeline(
 
   const overflow = getKnownContextOverflow(orderedTargets, body);
   if (overflow) {
+    shadow("context_overflow");
     return { earlyResponse: buildContextOverflowResponse(overflow, orderedTargets, log) };
   }
 
   logTargetPoolSize(strategy, allCombos, orderedTargets, stickyWeightedKey, log);
 
   const pipelineResponse = await dispatchSmartPipeline(deps);
-  if (pipelineResponse) return { earlyResponse: pipelineResponse };
+  if (pipelineResponse) {
+    shadow("smart_pipeline");
+    return { earlyResponse: pipelineResponse };
+  }
 
   const ordering = await orderByStrategy(deps, orderedTargets);
-  if ("earlyResponse" in ordering) return ordering;
+  if ("earlyResponse" in ordering) {
+    shadow("strategy_early_response");
+    return ordering;
+  }
   const { autoUsedExplicitRouter } = ordering;
 
   const continuity = await applyContinuityFilters(deps, ordering.orderedTargets);
-  if ("earlyResponse" in continuity) return continuity;
+  if ("earlyResponse" in continuity) {
+    shadow("continuity_early_response");
+    return continuity;
+  }
   const centralPolicy = resolveFitFirstFreeConfig(combo);
   const preserveDeadlineOrder =
     strategy === "auto" &&
@@ -725,10 +748,8 @@ export async function resolveComboTargetPipeline(
     autoUsedExplicitRouter &&
     resolveDeadlineRoutingPolicy(combo.config, body) !== null;
   orderedTargets = continuity.orderedTargets;
-  // ROUTING_SHADOW_LOG: record the rule classifier's decision for this request. Observation
-  // only, off by default, deferred, and placed before the branch below so it also covers the
-  // fit-first path that skips task-aware ordering.
-  emitRuleDecision({ body, strategy, comboName: combo.name, requestId: deps.requestId ?? null });
+  // Fit-first keeps its own order and skips task-aware ordering below, so say which happened.
+  shadow(preserveDeadlineOrder ? "fit_first_order_kept" : "task_ordered");
   // Fit-first already uses task fit and deadline evidence. Reordering its tail
   // here can restore a target that was demoted before a definite rejection.
   if (!preserveDeadlineOrder) {

@@ -814,7 +814,7 @@ const CONFIRMATION_ASK_RE =
 const COMPACTED_HISTORY_PREFIX = "Another language model started to solve this problem";
 
 /** A compaction item, or a handoff summary as the first user text: earlier turns are not visible. */
-function hasCompactedHistory(body: Record<string, unknown>): boolean {
+export function hasCompactedHistory(body: Record<string, unknown>): boolean {
   for (const messages of conversationArrays(body)) {
     for (const entry of messages) {
       if (asRecord(entry)?.type === "compaction") return true;

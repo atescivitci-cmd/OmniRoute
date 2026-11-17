@@ -16,6 +16,7 @@ import {
   type RoutingShadowDecisionInput,
 } from "@/lib/db/routingShadowDecisions";
 import {
+  __resetRoutingShadowWarningForTests,
   buildRuleDecisionRecord,
   emitRuleDecision,
   isRoutingShadowLogEnabled,
@@ -99,6 +100,7 @@ function sample(overrides: Partial<RoutingShadowDecisionInput> = {}): RoutingSha
     strategy: "task-aware",
     ruleLevel: "standard",
     ruleReasons: ["default"],
+    path: "task_ordered",
     lightByAsk: false,
     wasLevel: null,
     promptChars: 10,
@@ -113,6 +115,7 @@ function sample(overrides: Partial<RoutingShadowDecisionInput> = {}): RoutingSha
     userTurns: 1,
     askNonAscii: false,
     askNonText: false,
+    compactedHistory: false,
     ...overrides,
   };
 }
@@ -185,6 +188,36 @@ test("a heavy ask, a non-ASCII ask and the flag-off legacy path are described co
   });
 });
 
+test("the record carries the path, the compacted-history flag and bounded identifiers", () => {
+  const compacted = buildRuleDecisionRecord({
+    body: {
+      messages: [
+        {
+          role: "user",
+          content: "Another language model started to solve this problem and left a summary",
+        },
+        { role: "user", content: "continue" },
+      ],
+    },
+    strategy: "auto",
+    comboName: "c".repeat(500),
+    requestId: "r".repeat(500),
+    path: "context_overflow",
+  });
+  assert.equal(compacted.compactedHistory, true);
+  assert.equal(compacted.path, "context_overflow");
+  assert.equal(compacted.requestId?.length, 200, "request id is capped");
+  assert.equal(compacted.comboName?.length, 200, "combo name is capped");
+  const plain = buildRuleDecisionRecord({
+    body: bodyWithAsk("hello"),
+    strategy: "auto",
+    comboName: "c",
+    requestId: "r",
+  });
+  assert.equal(plain.compactedHistory, false);
+  assert.equal(plain.path, null);
+});
+
 test("the table dedups per request and combo, keeps nulls apart, prunes and summarises", () => {
   assert.equal(insertRoutingShadowDecision(sample()), true);
   assert.equal(insertRoutingShadowDecision(sample()), false, "same request and combo is one row");
@@ -212,6 +245,20 @@ test("the table dedups per request and combo, keeps nulls apart, prunes and summ
   assert.equal(light?.lightByAsk, 1);
 });
 
+test("pruning is bounded per call and drains a backlog over successive calls", () => {
+  const old = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+  db().exec("BEGIN");
+  const insert = db().prepare(
+    "INSERT INTO routing_shadow_decisions (timestamp, rule_level) VALUES (?, 'standard')"
+  );
+  for (let i = 0; i < 12_500; i++) insert.run(old);
+  db().exec("COMMIT");
+  assert.equal(pruneRoutingShadowDecisions(), 10_000, "one call removes at most five batches");
+  assert.equal(rowCount(), 2_500);
+  assert.equal(pruneRoutingShadowDecisions(), 2_500, "the next call drains the rest");
+  assert.equal(rowCount(), 0);
+});
+
 test("nothing is written unless the flag is on and the strategy is task routing", async () => {
   const args = {
     body: bodyWithAsk("hello there"),
@@ -230,18 +277,33 @@ test("nothing is written unless the flag is on and the strategy is task routing"
   assert.equal(await waitForRows(1), 1, "flag on and task strategy writes one row");
 });
 
-test("a failing write never surfaces", async () => {
-  db().exec("ALTER TABLE routing_shadow_decisions RENAME TO routing_shadow_decisions_off");
-  try {
+test("a failing write warns once, never surfaces, and writing works again afterwards", async () => {
+  __resetRoutingShadowWarningForTests();
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(" "));
+  };
+  const emit = (id: string) =>
     emitRuleDecision(
-      { body: bodyWithAsk("hello"), strategy: "smart", comboName: "c", requestId: "boom" },
+      { body: bodyWithAsk("hello"), strategy: "auto", comboName: "c", requestId: id },
       { ROUTING_SHADOW_LOG: "1" }
     );
-    await new Promise((r) => setTimeout(r, 200));
+  db().exec("ALTER TABLE routing_shadow_decisions RENAME TO routing_shadow_decisions_off");
+  try {
+    emit("boom-1");
+    emit("boom-2");
+    await new Promise((r) => setTimeout(r, 250));
   } finally {
     db().exec("ALTER TABLE routing_shadow_decisions_off RENAME TO routing_shadow_decisions");
+    console.warn = originalWarn;
   }
   assert.equal(rowCount(), 0);
+  const ours = warnings.filter((line) => line.includes("[routingShadow]"));
+  assert.equal(ours.length, 1, `one warning for two failures: ${JSON.stringify(ours)}`);
+
+  emit("after-recovery");
+  assert.equal(await waitForRows(1), 1, "a later write succeeds once the table is back");
 });
 
 function log() {
@@ -249,14 +311,19 @@ function log() {
   return { info: noop, warn: noop, error: noop, debug: noop };
 }
 
-async function runCombo(strategy: string, correlationId: string, body: Record<string, unknown>) {
+async function runCombo(
+  strategy: string,
+  correlationId: string,
+  body: Record<string, unknown>,
+  models: string[] = ["openai/gpt-4o-mini", "claude/sonnet"]
+) {
   const calls: string[] = [];
   const result = await handleComboChat({
     body,
     combo: {
       name: `shadow-${strategy}`,
       strategy,
-      models: ["openai/gpt-4o-mini", "claude/sonnet"],
+      models,
       config: { maxRetries: 0, retryDelayMs: 0, fallbackDelayMs: 0 },
     },
     handleSingleModel: async (_b: unknown, modelStr: string) => {
@@ -279,6 +346,7 @@ test("the real combo pipeline records one row with the request id, and routing i
   // "auto" is the only stored strategy that reaches task routing: "task-aware" and "smart"
   // normalize to "priority" before the pipeline sees them.
   const body = bodyWithAsk(SECRET_ASK, 20);
+  const bodyBefore = JSON.stringify(body);
   const off = await withEnvAsync({ ROUTING_SHADOW_LOG: undefined }, () =>
     runCombo("auto", "req-off", body)
   );
@@ -296,6 +364,8 @@ test("the real combo pipeline records one row with the request id, and routing i
   assert.equal(row.combo_name, "shadow-auto");
   assert.equal(row.strategy, "auto");
   assert.equal(row.tool_count, 20);
+  assert.equal(row.path, "task_ordered");
+  assert.equal(JSON.stringify(body), bodyBefore, "recording leaves the request body untouched");
   assert.ok(!JSON.stringify(row).includes("zzq-marker-7781"), "no prompt text in the row");
 
   assert.deepEqual(
@@ -308,4 +378,61 @@ test("the real combo pipeline records one row with the request id, and routing i
   await withEnvAsync({ ROUTING_SHADOW_LOG: "1" }, () => runCombo("priority", "req-priority", body));
   await new Promise((r) => setTimeout(r, 150));
   assert.equal(rowCount(), 1, "a non task-routing strategy is not recorded");
+});
+
+test("a request that ends early is still recorded, with the step it reached", async () => {
+  // About 220k tokens of text overflows the only candidate's 128k window, so the pipeline
+  // returns before ordering. The baseline must still count it. Every candidate needs a known
+  // limit for this check to fire, hence a single known model.
+  const huge = bodyWithAsk(`${"lorem ipsum dolor sit amet ".repeat(35_000)} summarise this`);
+  const result = await withEnvAsync({ ROUTING_SHADOW_LOG: "1" }, () =>
+    runCombo("auto", "req-overflow", huge, ["openai/gpt-4o-mini"])
+  );
+  assert.equal(result.calls.length, 0, "no target was tried");
+  assert.equal(result.ok, false);
+  assert.equal(await waitForRows(1), 1);
+  const row = db()
+    .prepare("SELECT path, rule_level FROM routing_shadow_decisions WHERE request_id = ?")
+    .get("req-overflow") as { path: string; rule_level: string };
+  assert.equal(row.path, "context_overflow");
+  assert.equal(row.rule_level, "critical", "the largest prompts are in the baseline");
+});
+
+test("a fit-first combo that refuses every candidate is recorded as an early response", async () => {
+  // Fit-first with no proven candidate ends the request before any target is tried. This is a
+  // real early exit of the pipeline, reached through the production entry point.
+  const calls: string[] = [];
+  const noop = () => {};
+  const response = await withEnvAsync({ ROUTING_SHADOW_LOG: "1" }, () =>
+    handleComboChat({
+      body: bodyWithAsk("hi there"),
+      combo: {
+        name: "shadow-fit-first",
+        strategy: "auto",
+        models: ["openai/gpt-4o-mini", "openai/gpt-4o"],
+        config: {
+          maxRetries: 0,
+          retryDelayMs: 0,
+          fallbackDelayMs: 0,
+          selectionPolicy: "fit-first-free",
+        },
+      },
+      handleSingleModel: async (_b: unknown, modelStr: string) => {
+        calls.push(modelStr);
+        return new Response("{}", { status: 200 });
+      },
+      isModelAvailable: async () => true,
+      log: { info: noop, warn: noop, error: noop, debug: noop },
+      settings: null,
+      allCombos: null,
+      correlationId: "req-fit-first",
+    } as never)
+  );
+  assert.equal((response as Response).ok, false);
+  assert.deepEqual(calls, [], "no target was tried");
+  assert.equal(await waitForRows(1), 1);
+  const row = db()
+    .prepare("SELECT path FROM routing_shadow_decisions WHERE request_id = ?")
+    .get("req-fit-first") as { path: string };
+  assert.equal(row.path, "strategy_early_response");
 });

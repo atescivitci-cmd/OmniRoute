@@ -4,6 +4,9 @@
 -- and, later, compared with a shadow classifier. It stores NO prompt text: only lengths,
 -- counts and flags. Written only while ROUTING_SHADOW_LOG is on; rows older than 14 days are
 -- pruned. Additive and idempotent: a new table, no change to existing ones.
+-- `path` says which step of the target pipeline the request reached when it was recorded
+-- (task_ordered, fit_first_order_kept, or an early exit such as context_overflow). The other
+-- columns describe the rule classification, not whether it reordered anything.
 CREATE TABLE IF NOT EXISTS routing_shadow_decisions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   timestamp TEXT NOT NULL,
@@ -12,6 +15,7 @@ CREATE TABLE IF NOT EXISTS routing_shadow_decisions (
   strategy TEXT,
   rule_level TEXT NOT NULL,
   rule_reasons TEXT,
+  path TEXT,
   light_by_ask INTEGER NOT NULL DEFAULT 0,
   was_level TEXT,
   prompt_chars INTEGER,
@@ -25,7 +29,8 @@ CREATE TABLE IF NOT EXISTS routing_shadow_decisions (
   ask_chars INTEGER,
   user_turns INTEGER,
   ask_non_ascii INTEGER NOT NULL DEFAULT 0,
-  ask_non_text INTEGER NOT NULL DEFAULT 0
+  ask_non_text INTEGER NOT NULL DEFAULT 0,
+  compacted_history INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_rsd_timestamp ON routing_shadow_decisions(timestamp);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rsd_request_combo
