@@ -77,9 +77,15 @@ test("returns slow at the deadline when headers arrive but the body never finish
       start(controller) {
         // Keep the stream open for 4 s, then finish with a valid event.
         setTimeout(() => {
-          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"OK"}}]}\n\n'));
-          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-          controller.close();
+          try {
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{"content":"OK"}}]}\n\n')
+            );
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+          } catch {
+            /* the reader was cancelled at the deadline, which is the point */
+          }
         }, 4_000);
       },
     });
@@ -112,6 +118,7 @@ test("a fast answer still returns ok and the deadline timer does not leak", asyn
       modelId: "gpt-4o",
       connectionId,
       timeoutMs: 5_000,
+      hardDeadline: true,
     });
     assert.equal(result.status, "ok", JSON.stringify(result));
   } finally {

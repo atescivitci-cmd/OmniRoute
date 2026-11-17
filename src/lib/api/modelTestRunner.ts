@@ -366,18 +366,58 @@ export async function runSingleModelTest(
     return postChatCompletion(buildInternalChatRequest(testBody, signal, connectionId));
   };
 
+  const readJsonBody = async (response: Response): Promise<unknown> =>
+    hardDeadline
+      ? JSON.parse(await readBodyUntilDeadline(response, controller.signal))
+      : response.json();
+
+  // With a hard deadline, do not rely on every layer below honouring the abort signal: stop
+  // waiting at the deadline, and release the response if it arrives late.
+  const raceDeadline = (work: Promise<Response>): Promise<Response> => {
+    if (!hardDeadline) return work;
+    return new Promise<Response>((resolve, reject) => {
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        reject(Object.assign(new Error("deadline"), { name: "AbortError" }));
+      };
+      if (controller.signal.aborted) onAbort();
+      else controller.signal.addEventListener("abort", onAbort, { once: true });
+      work.then(
+        (response) => {
+          controller.signal.removeEventListener("abort", onAbort);
+          if (settled) {
+            void response.body?.cancel().catch(() => undefined);
+            return;
+          }
+          settled = true;
+          resolve(response);
+        },
+        (error) => {
+          controller.signal.removeEventListener("abort", onAbort);
+          if (settled) return;
+          settled = true;
+          reject(error);
+        }
+      );
+    });
+  };
+
   let res: Response;
   try {
     if (connectionId) {
-      res = await withRateLimit(
-        providerId,
-        connectionId,
-        fullModelStr,
-        (signal) => runInner(signal),
-        controller.signal
+      res = await raceDeadline(
+        withRateLimit(
+          providerId,
+          connectionId,
+          fullModelStr,
+          (signal) => runInner(signal),
+          controller.signal
+        )
       );
     } else {
-      res = await runInner(controller.signal);
+      res = await raceDeadline(runInner(controller.signal));
     }
   } catch (error: unknown) {
     clearTimeout(timeoutHandle);
@@ -432,7 +472,7 @@ export async function runSingleModelTest(
 
     let errorMsg = "Rate limited";
     try {
-      const errBody = await res.json();
+      const errBody = await readJsonBody(res);
       errorMsg = extractProviderErrorMessage(errBody, res.statusText || errorMsg);
     } catch {
       errorMsg = res.statusText || errorMsg;
@@ -474,6 +514,16 @@ export async function runSingleModelTest(
       clearTimeout(timeoutHandle);
     }
     latencyMs = Date.now() - startTime;
+    if (timedOut && hardDeadline) {
+      return {
+        modelId: fullModelStr,
+        status: "slow",
+        latencyMs,
+        httpStatus: 504,
+        error: `No complete answer within ${Math.round(effectiveTimeoutMs / 1000)}s`,
+        isTimeout: true,
+      };
+    }
     if (streamError) {
       const error = sanitizeErrorMessage(streamError.message) || "Upstream stream failed";
       const rateLimited = streamError.statusCode === 429 || isRateLimitMessage(error);
@@ -529,7 +579,7 @@ export async function runSingleModelTest(
 
   let errorMsg = "";
   try {
-    const errBody = await res.json();
+    const errBody = await readJsonBody(res);
     errorMsg = extractProviderErrorMessage(errBody, res.statusText);
   } catch {
     errorMsg = res.statusText;
