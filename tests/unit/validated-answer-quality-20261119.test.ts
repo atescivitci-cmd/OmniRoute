@@ -215,3 +215,35 @@ test("global receipt and event metadata caps are enforced", () => {
         .n <= max
     );
 });
+
+test("switching accounts cannot erase the same model's semantic failure", () => {
+  assert.equal(
+    qualityCandidateKey("provider-a", "first-account", "model-a"),
+    qualityCandidateKey("provider-a", "second-account", "model-a")
+  );
+  assert.notEqual(
+    qualityCandidateKey("provider-a", "first-account", "model-a"),
+    qualityCandidateKey("provider-a", "first-account", "model-b")
+  );
+  const pool = [
+    candidate("provider-a", "model-a", "account-one"),
+    candidate("provider-a", "model-a", "account-two"),
+    candidate("provider-b", "model-b", "account-b"),
+  ];
+  const evidence = new Map([
+    [
+      qualityCandidateKey("provider-a", "account-one", "model-a"),
+      { accepted: 0, rejected: 2, latestAt: now },
+    ],
+  ]);
+  const decision = rankFitFirstFreeCandidates({
+    candidates: pool,
+    body: { messages: [{ role: "user", content: "Analyze evidence and return only JSON" }] },
+    zeroAdditionalCostProviders: ["provider-a", "provider-b"],
+    answerQualityEvidence: evidence,
+    now,
+  });
+  assert.equal(decision.ranked[0].candidate.provider, "provider-b");
+  assert.equal(decision.ranked.length, 3);
+  assert.equal(decision.ranked.filter((x) => x.factors.answerQualityPenalty! > 0).length, 2);
+});

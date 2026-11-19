@@ -23,7 +23,7 @@ verdict cannot create another sample or reverse the first verdict.
 
 `src/lib/db/answerQuality.ts` keeps this metadata in existing `key_value`
 namespaces. Ranking evidence is scoped to the same API-key owner, combo, contract,
-provider, model and connection. Positive samples require actual client acceptance;
+provider and model. Actual account provenance remains in the receipt; changing accounts cannot erase a semantic failure for the same model and contract. Positive samples require actual client acceptance;
 HTTP success alone does not supply them. Recent failures lower rank, penalties
 decay and later accepted responses reduce them. Receipt and event retention are
 bounded in the persistence module.

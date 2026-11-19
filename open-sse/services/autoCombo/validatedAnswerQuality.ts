@@ -6,7 +6,7 @@ export function qualityContract(body: Record<string, any>): string | null {
   return typeof value === "string" && /^[a-z0-9_.:-]{1,100}$/.test(value) ? value : null;
 }
 export function qualityCandidateKey(provider: string, connectionId: string, model: string): string {
-  return JSON.stringify([provider, connectionId, model]);
+  return JSON.stringify([provider, model]);
 }
 export function validatedQualityAdjustment(e: AnswerQualityEvidence | undefined, now = Date.now()) {
   if (
