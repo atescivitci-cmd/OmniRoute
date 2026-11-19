@@ -247,3 +247,22 @@ test("switching accounts cannot erase the same model's semantic failure", () => 
   assert.equal(decision.ranked.length, 3);
   assert.equal(decision.ranked.filter((x) => x.factors.answerQualityPenalty! > 0).length, 2);
 });
+
+test("persisted account-scoped V1 events retain model influence after account aggregation", () => {
+  const r = { ...receipt, contract: "legacy-v1" },
+    id = createAnswerQualityReceipt(r, now)!;
+  assert.equal(
+    recordAnswerQuality("key-a", id, false, "model_output_invalid", now + 1),
+    "recorded"
+  );
+  getDbInstance()
+    .prepare(
+      "UPDATE key_value SET value=json_set(value,'$.candidate',?) WHERE namespace=? AND key LIKE ?"
+    )
+    .run(JSON.stringify([r.provider, r.connectionId, r.model]), "answerQualityEventV1", "%:" + id);
+  const second = createAnswerQualityReceipt({ ...r, connectionId: "account-two" }, now + 2)!;
+  recordAnswerQuality("key-a", second, false, "model_output_invalid", now + 3);
+  const e = answerQualityEvidence("key-a", "travel", "legacy-v1", now + 4);
+  assert.equal(e.size, 1);
+  assert.equal(e.get(qualityCandidateKey(r.provider, "account-three", r.model))?.rejected, 2);
+});

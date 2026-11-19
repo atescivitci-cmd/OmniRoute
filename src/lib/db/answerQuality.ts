@@ -133,13 +133,29 @@ export function answerQualityEvidence(
       !valid(e.candidate, 1200)
     )
       continue;
-    const n = counts.get(e.candidate) ?? 0;
+    // V1 originally retained account-scoped keys. Normalize them on read so
+    // an upgrade cannot silently discard already observed semantic failures.
+    let candidate: string;
+    try {
+      const parts = JSON.parse(e.candidate);
+      if (
+        !Array.isArray(parts) ||
+        ![2, 3].includes(parts.length) ||
+        !valid(parts[0]) ||
+        !valid(parts.at(-1))
+      )
+        continue;
+      candidate = qualityCandidateKey(parts[0], "", parts.at(-1));
+    } catch {
+      continue;
+    }
+    const n = counts.get(candidate) ?? 0;
     if (n >= 16) continue;
-    counts.set(e.candidate, n + 1);
-    const x = out.get(e.candidate) ?? { accepted: 0, rejected: 0, latestAt: e.at };
+    counts.set(candidate, n + 1);
+    const x = out.get(candidate) ?? { accepted: 0, rejected: 0, latestAt: e.at };
     if (e.accepted) x.accepted++;
     else x.rejected++;
-    out.set(e.candidate, x);
+    out.set(candidate, x);
   }
   return out;
 }
