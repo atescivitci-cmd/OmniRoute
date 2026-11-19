@@ -33,7 +33,7 @@ import {
 import { runWithHostedTrialUsage } from "../../../open-sse/services/autoCombo/hostedTrialUsage.ts";
 import { resolveFitFirstFreeConfig } from "../../../open-sse/services/autoCombo/fitFirstPolicy.ts";
 import {
-  hasCurrentZeroCostAdmission,
+  hasCurrentCostAdmission,
   intersectStrictConnectionScope,
   selectedConnectionIsInScope,
   zeroCostErrorResponse,
@@ -790,7 +790,7 @@ export async function handleChat(
         if (
           !target?.connectionId ||
           !selectedConnectionIsInScope(target.connectionId, allowedConnections) ||
-          !(await hasCurrentZeroCostAdmission({
+          !(await hasCurrentCostAdmission({
             provider,
             model: resolvedModel,
             connectionId: target.connectionId,
@@ -837,14 +837,17 @@ export async function handleChat(
     // TRACKER44_SESSION_PLUMBING_V1: same-terminal continuity is a priority
     // combo. Carry the AUTH-resolved key explicitly; otherwise combo.ts derives
     // an input hash, treats the terminal id as absent, and removes every gh lane.
-    const relayOptions = buildComboRelayOptions({
-      combo,
-      relayConfig,
-      sessionId,
-      sessionAffinityKey,
-      bypassProviderQuotaPolicy,
-      perRequestAutoControls,
-    });
+    const relayOptions = {
+      ...buildComboRelayOptions({
+        combo,
+        relayConfig,
+        sessionId,
+        sessionAffinityKey,
+        bypassProviderQuotaPolicy,
+        perRequestAutoControls,
+      }),
+      qualityOwnerId: apiKeyInfo?.id ?? null,
+    };
     telemetry.endPhase();
 
     // Context-relay keeps generation in combo.ts, but handoff injection lives here
@@ -1468,7 +1471,7 @@ async function handleSingleModelChat(
         log,
         settings: {},
         allCombos: [],
-        relayOptions: undefined,
+        relayOptions: { qualityOwnerId: apiKeyInfo?.id ?? null },
         signal: request?.signal ?? null,
         correlationId: runtimeOptions?.correlationId ?? null,
       })
@@ -1645,7 +1648,7 @@ async function handleSingleModelChat(
 
   if (
     runtimeOptions.requireZeroCostAdmission === true &&
-    !(await hasCurrentZeroCostAdmission({
+    !(await hasCurrentCostAdmission({
       provider,
       model,
       connectionId: runtimeOptions.forcedConnectionId!,
@@ -1890,7 +1893,7 @@ async function handleSingleModelChat(
       }
       if (
         runtimeOptions.requireZeroCostAdmission === true &&
-        !(await hasCurrentZeroCostAdmission({
+        !(await hasCurrentCostAdmission({
           provider,
           model: effectiveModel,
           connectionId: credentials.connectionId,
@@ -1950,7 +1953,7 @@ async function handleSingleModelChat(
         runtimeOptions.requireZeroCostAdmission === true &&
         ((refreshedCredentials?.connectionId &&
           refreshedCredentials.connectionId !== credentials.connectionId) ||
-          !(await hasCurrentZeroCostAdmission({
+          !(await hasCurrentCostAdmission({
             provider,
             model: effectiveModel,
             connectionId: credentials.connectionId,

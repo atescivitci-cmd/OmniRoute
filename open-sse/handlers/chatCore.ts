@@ -1,3 +1,6 @@
+import { createAnswerQualityReceipt } from "../../src/lib/db/answerQuality.ts";
+import { qualityContract } from "../services/autoCombo/validatedAnswerQuality.ts";
+import { captureConfiguredAccountPolicy } from "../services/autoCombo/hostedTrialUsage.ts";
 import { estimateFullInputTokens, retainsFullContext } from "../services/fullContextAdmission.ts";
 import {
   describeRequestCompatibilityRefusal,
@@ -493,6 +496,7 @@ export async function handleChatCore({
   // This trusted per-call option is never serialized onto the provider wire.
   const requiredNoThinking = noThinkingIntent(body).genericRequested;
   let { provider, model, extendedContext } = modelInfo;
+  const immutableConfiguredAccountPolicy = captureConfiguredAccountPolicy();
   const immutableCostRequired = requireZeroCostAdmission === true;
   const immutableCostScope = Array.isArray(costAdmissionConnectionIds)
     ? Object.freeze([...costAdmissionConnectionIds])
@@ -2983,7 +2987,8 @@ export async function handleChatCore({
         // control to the shared request owner, not launch unaccounted work.
         routingAttemptToken?.enter();
         return executor.execute(args);
-      }
+      },
+      immutableConfiguredAccountPolicy
     );
   };
 
@@ -5245,6 +5250,22 @@ export async function handleChatCore({
       compressionResponseMeta,
       comboStrategy,
     });
+    const qualityScope = qualityContract(body);
+    if (qualityScope && apiKeyInfo?.id && comboName && provider && model && pendingConnId) {
+      try {
+        const receipt = createAnswerQualityReceipt({
+          owner: apiKeyInfo.id,
+          combo: comboName,
+          contract: qualityScope,
+          provider,
+          model,
+          connectionId: pendingConnId,
+        });
+        if (receipt) responseHeaders["x-omniroute-quality-receipt"] = receipt;
+      } catch {
+        log.warn("QUALITY", "Answer quality receipt unavailable");
+      }
+    }
     // #6426: align response body `model` with the `X-OmniRoute-Model` header
     // (both must be the resolved backend model). Some upstreams (notably legacy
     // /v1/completions text-completion path) return a body `model` field that

@@ -1067,3 +1067,15 @@ export {
   isConnectionRateLimited,
   getRateLimitedConnections,
 } from "./providers/rateLimit";
+
+/** Public account binding for configured-account admission; never reads credentials. */
+export function getActiveCostAdmissionAccount(
+  connectionId: string,
+  provider: string
+): { id: string; provider: string; is_active: number } | undefined {
+  return getDbInstance()
+    .prepare(
+      "SELECT id,provider,is_active FROM provider_connections WHERE id=? AND provider=? AND is_active=1"
+    )
+    .get(connectionId, provider) as { id: string; provider: string; is_active: number } | undefined;
+}

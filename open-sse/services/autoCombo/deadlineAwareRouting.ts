@@ -46,7 +46,7 @@ type Ranked = {
     connectionId?: string | null;
     quotaRemaining: number | null;
   };
-  factors: { score: number; deadlineResponsiveness?: any };
+  factors: { score: number; answerQualityPenalty?: number; deadlineResponsiveness?: any };
 };
 export function resolveDeadlineRoutingPolicy(
   config: unknown,
@@ -81,13 +81,15 @@ export function reorderByDeadlineEvidence<T extends Ranked>(
   });
   for (const indices of groups.values()) {
     const entries = indices.map((index) => ranked[index]);
-    const countsFor = (entry: T) => evidence.get(
-      key(entry.candidate.provider, entry.candidate.model, entry.candidate.connectionId ?? "")
-    );
+    const countsFor = (entry: T) =>
+      evidence.get(
+        key(entry.candidate.provider, entry.candidate.model, entry.candidate.connectionId ?? "")
+      );
     // Fresh matching completions after a miss are stronger evidence of current
     // responsiveness than an older censored sample. Keep the miss in telemetry.
     const recovered = (entry: T) => (countsFor(entry)?.consecutiveRecentFast ?? 0) >= 2;
     const provenTimely = (entry: T) => {
+      if ((entry.factors.answerQualityPenalty ?? 0) > 0) return false;
       const e = countsFor(entry);
       return !!e && e.timely >= 2 && (e.late === 0 || recovered(entry));
     };
@@ -104,6 +106,7 @@ export function reorderByDeadlineEvidence<T extends Ranked>(
       for (const peer of entries) {
         const peerCounts = countsFor(peer);
         if (
+          (peer.factors.answerQualityPenalty ?? 0) === 0 &&
           peerCounts?.late === 0 &&
           (peerCounts.recentFast ?? 0) >= 1 &&
           peerCounts.slowestTimelyMs !== undefined &&
@@ -119,24 +122,37 @@ export function reorderByDeadlineEvidence<T extends Ranked>(
     const fastPeers = entries.filter(provenTimely).map(countsFor);
     const recentSlowdown = (entry: T) => {
       const missMs = countsFor(entry)?.recentMissElapsedMs;
-      return missMs !== undefined && fastPeers.some((peer) =>
-        peer?.slowestTimelyMs !== undefined && peer.slowestTimelyMs <= missMs * 0.75
+      return (
+        missMs !== undefined &&
+        fastPeers.some(
+          (peer) => peer?.slowestTimelyMs !== undefined && peer.slowestTimelyMs <= missMs * 0.75
+        )
       );
     };
     const atRisk = (entry: T) => {
       const e = countsFor(entry);
-      return !!e && e.late > 0 && !recovered(entry) &&
-        (repeatMisses.has(entry) || recentSlowdown(entry) || e.timely === 0 ||
-          (hasProvenAlternative && e.late >= 2 && e.late >= e.timely));
+      return (
+        !!e &&
+        e.late > 0 &&
+        !recovered(entry) &&
+        (repeatMisses.has(entry) ||
+          recentSlowdown(entry) ||
+          e.timely === 0 ||
+          (hasProvenAlternative && e.late >= 2 && e.late >= e.timely))
+      );
     };
     const canDemote = entries.some((entry) => !atRisk(entry));
     // Prefer repeatable on-time completions within the same quota and local tier.
     // A candidate without evidence remains eligible as a fallback.
     const ordered = canDemote
-      ? [...entries.filter(preferFast),
-         ...entries.filter((entry) => provenTimely(entry) && !preferFast(entry)),
-         ...entries.filter((entry) => !preferFast(entry) && !provenTimely(entry) && !atRisk(entry)),
-         ...entries.filter(atRisk)]
+      ? [
+          ...entries.filter(preferFast),
+          ...entries.filter((entry) => provenTimely(entry) && !preferFast(entry)),
+          ...entries.filter(
+            (entry) => !preferFast(entry) && !provenTimely(entry) && !atRisk(entry)
+          ),
+          ...entries.filter(atRisk),
+        ]
       : entries;
     entries.forEach((entry) => {
       const e = evidence.get(
@@ -285,9 +301,15 @@ export function qualifyDeadlineObservation(
   if (!complete(response, row)) return null;
   return m.observedAt < m.deadlineAt ? "timely" : "late";
 }
-export async function readDeadlineArtifact(row: DeadlineCallRow, until: number): Promise<unknown | null> {
+export async function readDeadlineArtifact(
+  row: DeadlineCallRow,
+  until: number
+): Promise<unknown | null> {
   const identity = JSON.stringify([
-    row.id, row.artifact_relpath, row.artifact_size_bytes, row.artifact_sha256,
+    row.id,
+    row.artifact_relpath,
+    row.artifact_size_bytes,
+    row.artifact_sha256,
   ]);
   if (verifiedArtifacts.has(identity)) {
     const artifact = verifiedArtifacts.get(identity);
@@ -347,12 +369,15 @@ async function currentEndpoint(
 /** Give each eligible target a turn in the bounded artifact read budget. */
 export function interleaveDeadlineRows<T>(rows: T[], pairOf: (row: T) => string): T[] {
   const offsets = new Map<string, number>();
-  return rows.map((row) => {
-    const pair = pairOf(row);
-    const offset = offsets.get(pair) ?? 0;
-    offsets.set(pair, offset + 1);
-    return { row, offset };
-  }).sort((a, b) => a.offset - b.offset).map(({ row }) => row);
+  return rows
+    .map((row) => {
+      const pair = pairOf(row);
+      const offset = offsets.get(pair) ?? 0;
+      offsets.set(pair, offset + 1);
+      return { row, offset };
+    })
+    .sort((a, b) => a.offset - b.offset)
+    .map(({ row }) => row);
 }
 
 /** Bound filesystem concurrency while preserving sampling order and completed reads. */
@@ -409,18 +434,19 @@ export async function applyDeadlineAwareRouting(
     return;
   }
   const pairOf = (row: DeadlineCallRow) => key(row.provider, row.model, row.connection_id);
-  const eligible = rows.filter((row) =>
-    pairs.has(pairOf(row)) &&
-    row.method === "POST" &&
-    row.cache_source === "upstream" &&
-    /^\/(?:api\/)?v1\/(?:messages|chat\/completions)$/.test(row.path) &&
-    (!currentId || row.correlation_id !== currentId) &&
-    [200, 499, 504].includes(row.status) &&
-    row.detail_state === "ready" &&
-    Number.isSafeInteger(row.duration) &&
-    row.duration > 0 &&
-    row.artifact_size_bytes > 0 &&
-    row.artifact_size_bytes <= MAX_BYTES
+  const eligible = rows.filter(
+    (row) =>
+      pairs.has(pairOf(row)) &&
+      row.method === "POST" &&
+      row.cache_source === "upstream" &&
+      /^\/(?:api\/)?v1\/(?:messages|chat\/completions)$/.test(row.path) &&
+      (!currentId || row.correlation_id !== currentId) &&
+      [200, 499, 504].includes(row.status) &&
+      row.detail_state === "ready" &&
+      Number.isSafeInteger(row.duration) &&
+      row.duration > 0 &&
+      row.artifact_size_bytes > 0 &&
+      row.artifact_size_bytes <= MAX_BYTES
   );
   const fairRows = interleaveDeadlineRows(eligible, pairOf);
   const until = performance.now() + READ_BUDGET_MS,
@@ -442,11 +468,19 @@ export async function applyDeadlineAwareRouting(
     if (!result) continue;
     seen.add(identity);
     const count = existing ?? { late: 0, timely: 0, censored: 0, deadlineMs: policy.deadlineMs };
-    const dispatch = (artifact as { requestBody: { _omniroute: { nativeDispatch: {
-      elapsedMs: number; observedAt: number;
-    } } } }).requestBody._omniroute.nativeDispatch;
-    const newerSamplesAllFast =
-      (count.consecutiveRecentFast ?? 0) === count.timely + count.late;
+    const dispatch = (
+      artifact as {
+        requestBody: {
+          _omniroute: {
+            nativeDispatch: {
+              elapsedMs: number;
+              observedAt: number;
+            };
+          };
+        };
+      }
+    ).requestBody._omniroute.nativeDispatch;
+    const newerSamplesAllFast = (count.consecutiveRecentFast ?? 0) === count.timely + count.late;
     if (result === "timely") {
       count.timely++;
       if (
@@ -461,8 +495,10 @@ export async function applyDeadlineAwareRouting(
     } else {
       count.late++;
       // Only a fresh, near-full-budget miss is comparable to a fast peer.
-      if (Date.now() - dispatch.observedAt <= RECENT_MISS_MS &&
-          dispatch.elapsedMs >= policy.deadlineMs * 0.9) {
+      if (
+        Date.now() - dispatch.observedAt <= RECENT_MISS_MS &&
+        dispatch.elapsedMs >= policy.deadlineMs * 0.9
+      ) {
         count.recentMissElapsedMs = Math.max(count.recentMissElapsedMs ?? 0, dispatch.elapsedMs);
       }
     }
