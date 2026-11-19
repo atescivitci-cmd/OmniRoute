@@ -26,7 +26,7 @@ function cleanup(now: number) {
   lastCleanup = now;
   const db = getDbInstance();
   for (const [namespace, ttl, cap] of [
-    [RECEIPTS, 30 * 60_000, 10000],
+    [RECEIPTS, 30 * 60_000, 9999],
     [EVENTS, QUALITY_TTL_MS, 20000],
   ] as const) {
     db.prepare(
@@ -42,6 +42,7 @@ export function createAnswerQualityReceipt(
   now = Date.now()
 ): string | null {
   if (Object.values(input).some((v) => !valid(v))) return null;
+  cleanup(now);
   const id = randomUUID(),
     db = getDbInstance();
   db.prepare("INSERT INTO key_value(namespace,key,value) VALUES(?,?,?)").run(
@@ -49,7 +50,6 @@ export function createAnswerQualityReceipt(
     id,
     JSON.stringify({ ...input, at: now })
   );
-  cleanup(now);
   return id;
 }
 export function recordAnswerQuality(
