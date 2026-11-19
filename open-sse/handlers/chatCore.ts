@@ -405,6 +405,7 @@ import {
 } from "../utils/aiSdkCompat.ts";
 import { generateRequestId } from "@/shared/utils/requestId";
 import { isLocalStreamLifecycleError } from "@/shared/utils/circuitBreaker";
+import { getUsageSource } from "@/lib/usage/usageSourceContext";
 import { extractFacts } from "@/lib/memory/extraction";
 import { handleToolCallExecution } from "@/lib/skills/interception";
 import { OMNIROUTE_RESPONSE_HEADERS } from "@/shared/constants/headers";
@@ -634,6 +635,19 @@ export async function handleChatCore({
         endpoint: endpointPath,
       })
     ).catch(() => {});
+  };
+
+  // A request that carries a provenance tag is OmniRoute's own probe (the routing evidence
+  // canary), and the only thing that aborts one is the probe's own deadline. That timeout is the
+  // reliability evidence the probe exists to collect, but an abort before any response writes no
+  // usage row, so record it here, on the path that is known to reach the live database. A real
+  // client disconnect carries no tag and stays unrecorded: it is not a provider failure. The
+  // request's own signal must also be aborted, because the abort branches match by message and
+  // would otherwise label a local stream glitch ("controller is already closed") a deadline.
+  const persistProbeDeadlineUsage = () => {
+    if (getUsageSource() && clientRawRequest?.signal?.aborted) {
+      persistFailureUsage(HTTP_STATUS.GATEWAY_TIMEOUT, "probe_deadline");
+    }
   };
 
   // Key-health updater extracted to chatCore/keyHealth.ts (#3501); bind the per-request log once
@@ -3790,6 +3804,7 @@ export async function handleChatCore({
       cacheSource: "upstream",
     });
     if (isRequestAborted) {
+      persistProbeDeadlineUsage();
       streamController.handleError(error);
       return createErrorResult(499, "Request aborted");
     }
@@ -5277,6 +5292,7 @@ export async function handleChatCore({
     // The server reads this plain JSON body itself, after the handler above that maps an abort to
     // a 499. Now that a streaming client's disconnect (or a probe deadline) also aborts the
     // upstream body, an abort during this read must end the same way instead of escaping.
+    persistProbeDeadlineUsage();
     streamController.handleError(error);
     return createErrorResult(499, "Request aborted");
   }

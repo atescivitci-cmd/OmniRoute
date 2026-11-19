@@ -14,7 +14,6 @@ import v8 from "node:v8";
 import vm from "node:vm";
 import { createProviderConnection } from "@/lib/db/providers";
 import { getDbInstance } from "@/lib/db/core";
-import { saveRequestUsage } from "@/lib/usageDb";
 import { createDefaultRoutingEvidenceCanaryDeps } from "@/lib/services/routingEvidenceCanary.ts";
 import { USAGE_SOURCE_ROUTING_CANARY } from "@/shared/constants/usageSource";
 
@@ -204,30 +203,19 @@ test("headers arrive but no first frame: one timeout is counted once", async () 
 });
 
 test("the probe does not double a timeout the pipeline already recorded", async () => {
-  // A reviewer read the code and found a path where the pipeline writes its own failure row
-  // (STREAM_READINESS_TIMEOUT) when the abort lands in the stream readiness read. A faithful
-  // stub did not reach that path here, so this simulates the pipeline's row: written inside the
-  // probe's context, after the probe started, while the request is in flight.
+  // For a request that carries the probe's provenance tag, the pipeline records the deadline
+  // itself when the abort lands before any response. The probe's own safeguard must then add
+  // nothing, so one timeout leaves one row.
   const connectionId = await newConnection("pipeline-row-already");
   const original = globalThis.fetch;
-  globalThis.fetch = (async (_input: unknown, init: { signal?: AbortSignal } = {}) => {
-    await saveRequestUsage({
-      provider: "openai",
-      model: "gpt-4o",
-      connectionId,
-      status: "504",
-      success: false,
-      latencyMs: 1200,
-      errorCode: "STREAM_READINESS_TIMEOUT",
-    });
-    return new Promise<Response>((_resolve, reject) => {
+  globalThis.fetch = (async (_input: unknown, init: { signal?: AbortSignal } = {}) =>
+    new Promise<Response>((_resolve, reject) => {
       init.signal?.addEventListener(
         "abort",
         () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
         { once: true }
       );
-    });
-  }) as typeof fetch;
+    })) as typeof fetch;
   try {
     const outcome = await createDefaultRoutingEvidenceCanaryDeps().runProbe(
       probeArgs(connectionId, 800)
@@ -236,7 +224,7 @@ test("the probe does not double a timeout the pipeline already recorded", async 
     await new Promise((r) => setTimeout(r, 600));
     const rows = usageRowsFor(connectionId);
     assert.equal(rows.length, 1, `the timeout must be counted once: ${JSON.stringify(rows)}`);
-    assert.equal(rows[0].error_code, "STREAM_READINESS_TIMEOUT", "the pipeline's row is kept");
+    assert.equal(rows[0].error_code, "probe_deadline");
     assert.equal(rows[0].source, USAGE_SOURCE_ROUTING_CANARY);
   } finally {
     globalThis.fetch = original;
