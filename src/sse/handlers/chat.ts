@@ -837,14 +837,17 @@ export async function handleChat(
     // TRACKER44_SESSION_PLUMBING_V1: same-terminal continuity is a priority
     // combo. Carry the AUTH-resolved key explicitly; otherwise combo.ts derives
     // an input hash, treats the terminal id as absent, and removes every gh lane.
-    const relayOptions = buildComboRelayOptions({
-      combo,
-      relayConfig,
-      sessionId,
-      sessionAffinityKey,
-      bypassProviderQuotaPolicy,
-      perRequestAutoControls,
-    });
+    const relayOptions = {
+      ...buildComboRelayOptions({
+        combo,
+        relayConfig,
+        sessionId,
+        sessionAffinityKey,
+        bypassProviderQuotaPolicy,
+        perRequestAutoControls,
+      }),
+      qualityOwnerId: apiKeyInfo?.id ?? null,
+    };
     telemetry.endPhase();
 
     // Context-relay keeps generation in combo.ts, but handoff injection lives here
@@ -1468,7 +1471,7 @@ async function handleSingleModelChat(
         log,
         settings: {},
         allCombos: [],
-        relayOptions: undefined,
+        relayOptions: { qualityOwnerId: apiKeyInfo?.id ?? null },
         signal: request?.signal ?? null,
         correlationId: runtimeOptions?.correlationId ?? null,
       })

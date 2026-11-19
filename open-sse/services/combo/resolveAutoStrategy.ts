@@ -1,3 +1,5 @@
+import { answerQualityEvidence } from "../../../src/lib/db/answerQuality.ts";
+import { qualityContract } from "../autoCombo/validatedAnswerQuality.ts";
 import { captureConfiguredAccountPolicy } from "../autoCombo/hostedTrialUsage.ts";
 import {
   resolveDeadlineRoutingPolicy,
@@ -101,6 +103,7 @@ export interface ResolveAutoStrategyDeps {
   config: { complexityAwareRouting?: boolean; compatFilterFailOpen?: boolean };
   relayOptions?: {
     routingRequestId?: string | null;
+    qualityOwnerId?: string | null;
     bypassProviderQuotaPolicy?: boolean;
     sessionId?: string | null;
     /** Per-request X-OmniRoute-Mode value (#6024/#6025). */
@@ -567,7 +570,13 @@ export async function resolveAutoStrategyOrder(
         signal: deps.signal,
         budgetMs: deps.taskInterpretationBudgetMs,
       });
+      const answerQuality = answerQualityEvidence(
+        typeof relayOptions?.qualityOwnerId === "string" ? relayOptions.qualityOwnerId : null,
+        combo.name,
+        qualityContract(body)
+      );
       fitFirstDecision = rankFitFirstFreeCandidates({
+        answerQualityEvidence: answerQuality,
         taskProfile,
         candidates: availableCandidates,
         body,

@@ -1,3 +1,8 @@
+import {
+  qualityCandidateKey,
+  validatedQualityAdjustment,
+  type AnswerQualityEvidence,
+} from "./validatedAnswerQuality.ts";
 import { operationalReliability } from "./rankingEvidence.ts";
 import { TASK_LEVELS, type TaskProfileResolution, type TaskProfile } from "./taskProfile.ts";
 import { providerSupportsEmulatedToolCalling } from "../combo/comboStructure.ts";
@@ -79,8 +84,10 @@ export interface FitFirstFactors {
   reliabilityConfidence: number;
   reliabilitySampleCount: number;
   reliabilitySource: string;
-  answerQuality: null;
-  answerQualitySource: "unavailable";
+  answerQuality: number | null;
+  answerQualityPenalty?: number;
+  answerQualitySamples?: number;
+  answerQualitySource: "unavailable" | "client_validated_contract";
   latencyEvidence: "observed" | "neutral_prior";
   latencyFit: number;
   score: number;
@@ -798,6 +805,7 @@ export function rankFitFirstFreeCandidates(args: {
   localFallbackPolicy?: "last" | null;
   taskProfile?: TaskProfileResolution;
   now?: number;
+  answerQualityEvidence?: Map<string, AnswerQualityEvidence>;
 }): FitFirstDecision {
   const task = classifyTask(args.body);
   const { profile: _taskProfileProposal, ...taskIntent } = inferFitFirstIntent(args.body);
@@ -945,13 +953,20 @@ export function rankFitFirstFreeCandidates(args: {
         : validLatency(candidate)
           ? clamp01(1 - candidate.p95LatencyMs / maxLatency)
           : 0.5;
+      const quality = validatedQualityAdjustment(
+        args.answerQualityEvidence?.get(
+          qualityCandidateKey(candidate.provider, candidate.connectionId ?? "", candidate.model)
+        ),
+        args.now
+      );
       const score = clamp01(
         fitness.score * weights.task +
           complexityFit * weights.complexity +
           health * weights.health +
           quota * weights.quota +
           reliability * weights.reliability +
-          latencyFit * weights.latency
+          latencyFit * weights.latency -
+          quality.penalty
       );
       return {
         candidate,
@@ -965,8 +980,10 @@ export function rankFitFirstFreeCandidates(args: {
           reliabilityConfidence: operational.confidence,
           reliabilitySampleCount: operational.sampleCount,
           reliabilitySource: operational.source,
-          answerQuality: null,
-          answerQualitySource: "unavailable",
+          answerQuality: quality.score,
+          answerQualitySource: quality.samples ? "client_validated_contract" : "unavailable",
+          answerQualityPenalty: quality.penalty,
+          answerQualitySamples: quality.samples,
           latencyEvidence: validLatency(candidate) ? "observed" : "neutral_prior",
           latencyFit,
           score,

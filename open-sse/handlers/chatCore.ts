@@ -1,3 +1,5 @@
+import { createAnswerQualityReceipt } from "../../src/lib/db/answerQuality.ts";
+import { qualityContract } from "../services/autoCombo/validatedAnswerQuality.ts";
 import { captureConfiguredAccountPolicy } from "../services/autoCombo/hostedTrialUsage.ts";
 import { estimateFullInputTokens, retainsFullContext } from "../services/fullContextAdmission.ts";
 import {
@@ -5248,6 +5250,22 @@ export async function handleChatCore({
       compressionResponseMeta,
       comboStrategy,
     });
+    const qualityScope = qualityContract(body);
+    if (qualityScope && apiKeyInfo?.id && comboName && provider && model && pendingConnId) {
+      try {
+        const receipt = createAnswerQualityReceipt({
+          owner: apiKeyInfo.id,
+          combo: comboName,
+          contract: qualityScope,
+          provider,
+          model,
+          connectionId: pendingConnId,
+        });
+        if (receipt) responseHeaders["x-omniroute-quality-receipt"] = receipt;
+      } catch {
+        log.warn("QUALITY", "Answer quality receipt unavailable");
+      }
+    }
     // #6426: align response body `model` with the `X-OmniRoute-Model` header
     // (both must be the resolved backend model). Some upstreams (notably legacy
     // /v1/completions text-completion path) return a body `model` field that
