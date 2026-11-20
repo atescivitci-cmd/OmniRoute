@@ -134,5 +134,13 @@ for (const shape of ["headers-silent", "chunk-then-silent", "trickle"] as const)
       0,
       "an untagged request must not carry the canary tag"
     );
+    // The untagged path is unchanged: a stream that had started and whose client left is still
+    // the pipeline's 499, so the assertions above cannot pass merely because nothing was written.
+    if (shape !== "headers-silent") {
+      const failures = rows.filter((row) => row.success === 0);
+      assert.equal(failures.length, 1, `expected one failure row: ${JSON.stringify(rows)}`);
+      assert.equal(failures[0].status, "499");
+      assert.equal(failures[0].error_code, "client_disconnected");
+    }
   });
 }
