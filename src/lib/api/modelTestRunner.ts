@@ -10,6 +10,7 @@ import {
 import { getCustomModels } from "@/lib/localDb";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
 import { withRateLimit } from "@omniroute/open-sse/services/rateLimitManager";
+import { bindRequestSignal } from "@/shared/utils/requestSignal";
 
 const INTERNAL_ORIGIN = "http://omniroute.internal";
 export const DEFAULT_MODEL_TEST_TIMEOUT_MS = 30_000;
@@ -146,22 +147,26 @@ export function buildInternalChatRequest(
   signal: AbortSignal,
   connectionId?: string
 ) {
-  return new Request(`${INTERNAL_ORIGIN}/v1/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      // Reuse the existing strict-mode internal bypass for live health checks.
-      "X-Internal-Test": "combo-health-check",
-      "X-OmniRoute-No-Cache": "true",
-      // #6240: a connection test must be clean — never let the operator's globally-enabled
-      // Output Styles (e.g. "Ultra terse") leak a system prompt into a test-model call.
-      "X-OmniRoute-Compression": "off",
-      "X-Request-Id": `model-test-${randomUUID()}`,
-      ...(connectionId ? { "X-OmniRoute-Connection": connectionId } : {}),
-    },
-    body: JSON.stringify(testBody),
-    signal,
-  });
+  // The signal is bound, not passed to the constructor: a constructor-made follower signal can be
+  // lost to garbage collection during a long stall (see bindRequestSignal).
+  return bindRequestSignal(
+    new Request(`${INTERNAL_ORIGIN}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        // Reuse the existing strict-mode internal bypass for live health checks.
+        "X-Internal-Test": "combo-health-check",
+        "X-OmniRoute-No-Cache": "true",
+        // #6240: a connection test must be clean — never let the operator's globally-enabled
+        // Output Styles (e.g. "Ultra terse") leak a system prompt into a test-model call.
+        "X-OmniRoute-Compression": "off",
+        "X-Request-Id": `model-test-${randomUUID()}`,
+        ...(connectionId ? { "X-OmniRoute-Connection": connectionId } : {}),
+      },
+      body: JSON.stringify(testBody),
+    }),
+    signal
+  );
 }
 
 export function buildInternalRerankRequest(
@@ -169,19 +174,21 @@ export function buildInternalRerankRequest(
   signal: AbortSignal,
   connectionId?: string
 ) {
-  return new Request(`${INTERNAL_ORIGIN}/v1/rerank`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Internal-Test": "combo-health-check",
-      "X-OmniRoute-No-Cache": "true",
-      "X-OmniRoute-Compression": "off",
-      "X-Request-Id": `model-test-${randomUUID()}`,
-      ...(connectionId ? { "X-OmniRoute-Connection": connectionId } : {}),
-    },
-    body: JSON.stringify(testBody),
-    signal,
-  });
+  return bindRequestSignal(
+    new Request(`${INTERNAL_ORIGIN}/v1/rerank`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Internal-Test": "combo-health-check",
+        "X-OmniRoute-No-Cache": "true",
+        "X-OmniRoute-Compression": "off",
+        "X-Request-Id": `model-test-${randomUUID()}`,
+        ...(connectionId ? { "X-OmniRoute-Connection": connectionId } : {}),
+      },
+      body: JSON.stringify(testBody),
+    }),
+    signal
+  );
 }
 
 export function detectTestKind(modelStr: string, customModel: any) {

@@ -5578,12 +5578,21 @@ export async function handleChatCore({
   // those rows were written as 499 `client_disconnected`, so the selector read a slow model's
   // stall as a client leaving. The tag is captured when the request starts: stream callbacks run
   // from the abort, which is not guaranteed to be inside the probe's async context.
+  //
+  // The request's own signal is not enough on its own. The request the pipeline sees follows the
+  // probe's abort signal through a weak reference, so after a long stall and some garbage
+  // collections it is never marked aborted, and the deadline reaches the pipeline only as the
+  // probe cancelling the response body (disconnect reason "cancelled"). That is what the live
+  // 45 s stalls looked like. Only a consumer cancels a response body, and for a tagged request the
+  // consumer is the canary, which gives up only at its deadline; a completed stream returns early
+  // in the failure finalizer, so a probe that finished is never relabelled.
+  let streamDisconnectReason: string | null = null;
   const persistStreamFailureUsage = (statusCode: number, errorCode?: string | null) => {
     if (
       statusCode === 499 &&
       errorCode === "client_disconnected" &&
       requestUsageSource &&
-      clientRawRequest?.signal?.aborted
+      (clientRawRequest?.signal?.aborted || streamDisconnectReason === "cancelled")
     ) {
       // Bind the tag for the write itself: the abort callback may run outside the probe's context.
       runWithUsageSource(requestUsageSource, () =>
@@ -5603,13 +5612,15 @@ export async function handleChatCore({
   });
   const handleStreamFailure = streamFailureFinalizers.handleStreamFailure;
   onPipelineStreamError = streamFailureFinalizers.onPipelineStreamError;
-  onClientDisconnectFinalize = (event) =>
-    handleStreamFailure({
+  onClientDisconnectFinalize = (event) => {
+    streamDisconnectReason = event.reason;
+    return handleStreamFailure({
       status: 499,
       message: `Client disconnected: ${event.reason}`,
       code: "client_disconnected",
       type: "client_disconnected",
     });
+  };
 
   // For providers using Responses API format, translate stream back to openai (Chat Completions) format
   // UNLESS client is Droid CLI which expects openai-responses format back
