@@ -83,6 +83,7 @@ function cand(id: string): FitFirstCandidate {
   } as FitFirstCandidate;
 }
 
+const uuid = (k: number) => `${String(k).padStart(8, "0")}-aaaa-4bbb-8ccc-dddddddddddd`;
 const EQUAL = ["syna/zorbex-9", "synb/quillon-3", "sync/vandra-7", "synd/hexel-5"];
 function winner(body: Record<string, unknown>, sessionId?: string | null): string {
   const d = rankFitFirstFreeCandidates({
@@ -176,7 +177,7 @@ test("R6: Claude Code style bodies (19K static system, per-session user text, me
     winner(
       claudeCodeBody(k, {
         metadata: {
-          user_id: `user_abc123_account_def_session_${String(k).padStart(8, "0")}-aaaa-bbbb`,
+          user_id: `user_abc123_account_def456_session_${uuid(k)}`,
         },
       })
     )
@@ -241,7 +242,7 @@ test("R6: each style keeps one winner for the life of a conversation", () => {
   install(EQUAL);
   for (let k = 0; k < 12; k++) {
     const meta = {
-      metadata: { user_id: `user_x_account_y_session_${String(k).padStart(8, "0")}-1111` },
+      metadata: { user_id: `user_x_account_y_session_${uuid(k)}` },
     };
     for (const make of [
       (t: number) => claudeCodeBody(k, meta, t),
@@ -258,7 +259,7 @@ test("R6: each style keeps one winner for the life of a conversation", () => {
 
 test("R6: key priority: external session id, then session inside metadata.user_id, then explicit ids, then server fingerprint, then content", () => {
   const body = claudeCodeBody(1, {
-    metadata: { user_id: "user_h_account_a_session_12345678-abcd" },
+    metadata: { user_id: "user_h_account_a_session_12345678-abcd-4ef0-8123-456789abcdef" },
     prompt_cache_key: "pck",
   });
   const ext = getConversationTieKey(body, { sessionId: "ext:client-chosen" });
@@ -300,6 +301,33 @@ test("R6: key priority: external session id, then session inside metadata.user_i
   assert.match(
     getConversationTieKey({ ...bare, metadata: { user_id: "user_only_hash" } })!,
     /^conv:/
+  );
+});
+
+test("R12: a user id that merely contains the word session is not a session", () => {
+  const bare = { messages: [{ role: "user", content: "hello there" }] };
+  for (const uid of [
+    "user-session-manager-1",
+    "user_session_manager_account",
+    "user_abc_session_12345678",
+    "session_12345678-notauuid",
+    "team_session_0000000a-aaaa-4bbb-8ccc-dddddddddddd_extra",
+  ]) {
+    assert.match(getConversationTieKey({ ...bare, metadata: { user_id: uid } })!, /^conv:/, uid);
+  }
+  assert.match(
+    getConversationTieKey({
+      ...bare,
+      metadata: { user_id: "user_h_account_a_session_12345678-abcd-4ef0-8123-456789ABCDEF" },
+    })!,
+    /^uid:/
+  );
+  assert.match(
+    getConversationTieKey({
+      ...bare,
+      metadata: { user_id: '{"device_id":"d","session_id":"s-1"}' },
+    })!,
+    /^uid:/
   );
 });
 
@@ -366,24 +394,28 @@ function withArenaRow<T>(model: string, score: number, fn: () => T): T {
   }
 }
 
-test("R7: an arena_elo row written under the bare model name is found from the provider-qualified id", () => {
+const rated = (rating: number) => ((rating - 0.69) / 0.29) * 0.06;
+
+test("R7: an arena_elo row written under the bare model name is found from the provider-qualified id and refines the capability-derived value", () => {
   install([MEASURED, UNMEASURED]);
+  const unrated = getTaskFitnessWithSource(UNMEASURED, "coding");
   withArenaRow("zorbex-arena", 0.97, () => {
-    assert.deepEqual(getTaskFitnessWithSource("zorbex-arena", "coding"), {
-      score: 0.97,
-      source: "arena_elo",
-    });
-    assert.deepEqual(getTaskFitnessWithSource(MEASURED, "coding"), {
-      score: 0.97,
-      source: "arena_elo",
-    });
-    const other = getTaskFitnessWithSource(UNMEASURED, "coding");
-    assert.equal(other.source, "capability_derived");
+    for (const id of ["zorbex-arena", MEASURED]) {
+      const r = getTaskFitnessWithSource(id, "coding");
+      assert.equal(r.source, "arena_elo");
+    }
+    const r = getTaskFitnessWithSource(MEASURED, "coding");
+    assert.ok(
+      Math.abs(r.score - (unrated.score + rated(0.97))) < 1e-9,
+      `${r.score} vs ${unrated.score}`
+    );
+    assert.deepEqual(getTaskFitnessWithSource(UNMEASURED, "coding"), unrated);
   });
 });
 
-test("R7: a row keyed by the qualified id wins over the bare one, and user_override beats arena", () => {
+test("R7: a row keyed by the qualified id wins over the bare one, and user_override beats arena outright", () => {
   install([MEASURED]);
+  const base = getTaskFitnessWithSource(MEASURED, "coding").score;
   withArenaRow("zorbex-arena", 0.5, () => {
     upsertModelIntelligence({
       model: MEASURED,
@@ -396,7 +428,7 @@ test("R7: a row keyed by the qualified id wins over the bare one, and user_overr
     } as never);
     invalidateFitnessCache();
     try {
-      assert.equal(getTaskFitness(MEASURED, "coding"), 0.91);
+      assert.ok(Math.abs(getTaskFitness(MEASURED, "coding") - (base + rated(0.91))) < 1e-9);
     } finally {
       deleteModelIntelligence(MEASURED, "arena_elo", "coding");
       invalidateFitnessCache();
@@ -466,6 +498,140 @@ test("R7: an unmeasured model is not penalised by measurement elsewhere: it keep
   });
 });
 
+// ── 2b. ratings refine, they never override: scale-mismatch cannot decide ───
+
+function ratedFour(): { id: string; rating: number | null }[] {
+  return [
+    { id: "syna/rated-high", rating: 0.97 },
+    { id: "synb/unrated", rating: null },
+    { id: "sync/rated-mid", rating: 0.7 },
+    { id: "synd/rated-low", rating: 0.45 },
+  ];
+}
+function withRatings<T>(items: { id: string; rating: number | null }[], fn: () => T): T {
+  for (const it of items) {
+    if (it.rating !== null) {
+      upsertModelIntelligence({
+        model: it.id.split("/")[1],
+        source: "arena_elo",
+        category: "general",
+        score: it.rating,
+        eloRaw: null,
+        confidence: null,
+        expiresAt: null,
+      } as never);
+    }
+  }
+  invalidateFitnessCache();
+  try {
+    return fn();
+  } finally {
+    for (const it of items) {
+      if (it.rating !== null) deleteModelIntelligence(it.id.split("/")[1], "arena_elo", "general");
+    }
+    invalidateFitnessCache();
+  }
+}
+
+test("R10: equal capabilities: rated-high >= unrated >= rated-low, monotone in rating, bounded by the band", () => {
+  const items = ratedFour();
+  install(items.map((i) => i.id));
+  withRatings(items, () => {
+    const fit = Object.fromEntries(items.map((i) => [i.id, getTaskFitness(i.id, "general")]));
+    assert.ok(fit["syna/rated-high"] >= fit["synb/unrated"]);
+    assert.ok(fit["synb/unrated"] >= fit["synd/rated-low"]);
+    assert.ok(
+      fit["syna/rated-high"] > fit["sync/rated-mid"] &&
+        fit["sync/rated-mid"] > fit["synd/rated-low"]
+    );
+    const span = fit["syna/rated-high"] - fit["synd/rated-low"];
+    assert.ok(span <= 0.12 + 1e-9, `rating span ${span}`);
+    // The mid-rated model is not below the unrated one by more than the band.
+    assert.ok(fit["synb/unrated"] - fit["sync/rated-mid"] < 0.06);
+    // Through the ranker at critical: the ordering by score follows the same order.
+    const d = rankFitFirstFreeCandidates({
+      candidates: items.map((i) => cand(i.id)),
+      body: { messages: [{ role: "user", content: "Handle the request." }] },
+      zeroAdditionalCostProviders: ["syna", "synb", "sync", "synd"],
+      taskProfile: {
+        source: "interpreter",
+        fallbackReason: null,
+        profile: {
+          taskType: "general",
+          complexity: "critical",
+          requiredCapabilities: [],
+          confidence: 1,
+        },
+      },
+    });
+    const score = Object.fromEntries(
+      d.ranked.map((r) => [`${r.candidate.provider}/${r.candidate.model}`, r.factors.score])
+    );
+    assert.ok(score["syna/rated-high"] >= score["synb/unrated"]);
+    assert.ok(score["synb/unrated"] >= score["synd/rated-low"]);
+    assert.ok(score["sync/rated-mid"] >= score["synd/rated-low"]);
+  });
+});
+
+test("R10: monotone in rating over the whole leaderboard range", () => {
+  install(["syna/mono"]);
+  let prev = -1;
+  for (let r = 0.4; r <= 0.98 + 1e-9; r += 0.02) {
+    const v = withRatings([{ id: "syna/mono", rating: r }], () =>
+      getTaskFitness("syna/mono", "general")
+    );
+    assert.ok(v >= prev - 1e-12, `rating ${r.toFixed(2)} lowered fitness`);
+    prev = v;
+  }
+});
+
+test("R10: a rating alone cannot lift a weaker-capability model above a clearly stronger one", () => {
+  install(["syna/strong"]);
+  saveModelsDevCapabilities({
+    syna: { strong: entry(1_000_000, 128_000), weak: entry(32_000, 8_192) } as never,
+  });
+  invalidateFitnessCache();
+  withRatings([{ id: "syna/weak", rating: 0.98 }], () => {
+    assert.ok(getTaskFitness("syna/weak", "coding") < getTaskFitness("syna/strong", "coding"));
+  });
+  // And the best rating moves a model by at most the band over its unrated self.
+  const base = getTaskFitness("syna/weak", "coding");
+  withRatings([{ id: "syna/weak", rating: 0.98 }], () => {
+    assert.ok(getTaskFitness("syna/weak", "coding") - base <= 0.06 + 1e-9);
+  });
+});
+
+test("R10: a rated model with no capability evidence never outranks a verified model", () => {
+  install(["syna/verified"]);
+  withRatings([{ id: "synz/never-synced", rating: 0.98 }], () => {
+    assert.ok(
+      getTaskFitness("synz/never-synced", "coding") <= getTaskFitness("syna/verified", "coding")
+    );
+  });
+});
+
+// ── 2c. a bare row applies to the provider-less form only, never to a longer path ──
+
+test("R11: a bare arena row does not leak onto a different model that merely ends with the same segment", () => {
+  install(["synb/leafy", "synb/other/leafy", "vendorx/team/leafy"]);
+  const before = {
+    plain: getTaskFitnessWithSource("synb/leafy", "coding"),
+    nested: getTaskFitnessWithSource("synb/other/leafy", "coding"),
+    deep: getTaskFitnessWithSource("vendorx/team/leafy", "coding"),
+  };
+  withArenaRow("leafy", 0.98, () => {
+    // The legitimate bare-name case: provider/leafy resolves to the bare row.
+    assert.equal(getTaskFitnessWithSource("synb/leafy", "coding").source, "arena_elo");
+    // Different models that only share the last path segment are untouched.
+    assert.equal(
+      getTaskFitnessWithSource("vendorx/team/leafy", "coding").source,
+      before.deep.source
+    );
+    assert.deepEqual(getTaskFitnessWithSource("vendorx/team/leafy", "coding"), before.deep);
+    assert.notEqual(getTaskFitnessWithSource("synb/other/leafy", "coding").source, "arena_elo");
+  });
+});
+
 // ── 4. a model counts once in the tie draw ──────────────────────────────────
 
 function installWithMeta(map: Record<string, { family: string | null; release: string | null }>) {
@@ -509,23 +675,10 @@ function pickShares(candidates: FitFirstCandidate[], conversations: number): Map
   return wins;
 }
 
-test("R9: aliases and snapshot ids of one model (same provider, family, release date, capabilities) share one draw", () => {
-  // vendor X lists one model under four ids; vendor Y lists one model once. Without identity
-  // collapse X would win 4 of 5 ties.
-  installWithMeta({
-    "synx/m-one": { family: "fam-x", release: "2026-01-01" },
-    "synx/m-one@default": { family: "fam-x", release: "2026-01-01" },
-    "synx/m-one-20260101": { family: "fam-x", release: "2026-01-01" },
-    "synx/m-one-latest": { family: "fam-x", release: "2026-01-01" },
-    "syny/other": { family: "fam-y", release: "2026-02-02" },
-  });
-  const ids = [
-    "synx/m-one",
-    "synx/m-one@default",
-    "synx/m-one-20260101",
-    "synx/m-one-latest",
-    "syny/other",
-  ];
+test("R9: aliases and snapshots of one model (x, x@default, x-<8-digit date>) share one draw", () => {
+  // vendor X lists one model under three ids; vendor Y lists one model once.
+  install(["synx/m-one", "synx/m-one@default", "synx/m-one-20260101", "syny/other"]);
+  const ids = ["synx/m-one", "synx/m-one@default", "synx/m-one-20260101", "syny/other"];
   const N = 600;
   const wins = pickShares(ids.map(cand), N);
   const x = (wins.get("synx") ?? 0) / N;
@@ -533,26 +686,22 @@ test("R9: aliases and snapshot ids of one model (same provider, family, release 
     x > 0.4 && x < 0.6,
     `vendor X won ${(x * 100).toFixed(0)}% of ties (expected about 50%)`
   );
-  // Within the identity the alias is chosen by the entry hash, spread across the four ids.
   const inner = new Set<string>();
   for (let k = 0; k < 200; k++) {
     const body = { messages: [{ role: "user", content: `inner ${k}` }] };
     const d = rankFitFirstFreeCandidates({
-      candidates: ids.slice(0, 4).map(cand),
+      candidates: ids.slice(0, 3).map(cand),
       body,
       zeroAdditionalCostProviders: ["synx"],
       conversationKey: getConversationTieKey(body),
     });
     inner.add(d.ranked[0].candidate.model);
   }
-  assert.ok(inner.size >= 3, `aliases inside one identity should all be reachable: ${[...inner]}`);
+  assert.equal(inner.size, 3, `every alias is reachable inside one identity: ${[...inner]}`);
 });
 
 test("R9: several accounts of one model share one draw", () => {
-  installWithMeta({
-    "synx/m-one": { family: null, release: null },
-    "syny/other": { family: null, release: null },
-  });
+  install(["synx/m-one", "syny/other"]);
   const cands = ["a", "b", "c"]
     .map((c) => ({ ...cand("synx/m-one"), connectionId: `conn-${c}` }))
     .concat([cand("syny/other")]);
@@ -562,47 +711,64 @@ test("R9: several accounts of one model share one draw", () => {
   assert.ok(x > 0.4 && x < 0.6, `three accounts of one model won ${(x * 100).toFixed(0)}% of ties`);
 });
 
-test("R9: distinct models are never merged: without metadata each equal model keeps its own draw", () => {
+test("R9: variants of a model are different models: flash, size, sol and mini variants never merge", () => {
+  // Same provider, family, release date and capabilities on purpose: only the id differs.
   installWithMeta({
-    "synx/m-a": { family: null, release: null },
-    "synx/m-b": { family: null, release: null },
-    "synx/m-c": { family: null, release: null },
-    "syny/other": { family: null, release: null },
+    "synx/m-code-2": { family: "fam", release: "2026-01-01" },
+    "synx/m-code-2-flash": { family: "fam", release: "2026-01-01" },
+    "synx/gemma-3-12b-it": { family: "fam", release: "2026-01-01" },
+    "synx/gemma-3-4b-it": { family: "fam", release: "2026-01-01" },
+    "synx/gpt-5.6": { family: "fam", release: "2026-01-01" },
+    "synx/gpt-5.6-sol": { family: "fam", release: "2026-01-01" },
+    "syny/other": { family: "fam2", release: "2026-02-02" },
   });
-  const N = 800;
-  const wins = pickShares(["synx/m-a", "synx/m-b", "synx/m-c", "syny/other"].map(cand), N);
+  const xs = [
+    "m-code-2",
+    "m-code-2-flash",
+    "gemma-3-12b-it",
+    "gemma-3-4b-it",
+    "gpt-5.6",
+    "gpt-5.6-sol",
+  ];
+  const N = 1400;
+  const wins = pickShares([...xs.map((m) => cand(`synx/${m}`)), cand("syny/other")], N);
   const x = (wins.get("synx") ?? 0) / N;
+  // Six distinct models against one: about 6/7.
   assert.ok(
-    x > 0.68 && x < 0.82,
-    `three distinct metadata-less models won ${(x * 100).toFixed(0)}% (expected about 75%)`
+    x > 0.8 && x < 0.92,
+    `six distinct variants won ${(x * 100).toFixed(0)}% (expected about 86%)`
   );
 });
 
-test("R9: same family and release date but different capabilities are different identities", () => {
-  const meta = { family: "fam-z", release: "2026-03-03" };
-  const data: Record<string, Record<string, ReturnType<typeof entry>>> = {
-    synx: {
-      big: {
-        ...entry(1_000_000, 128_000),
-        family: meta.family,
-        release_date: meta.release,
-      } as never,
-      small: {
-        ...entry(500_000, 128_000),
-        family: meta.family,
-        release_date: meta.release,
-      } as never,
-    },
+test("R9: metadata coverage does not change the draw: the same pool with and without family/date behaves the same", () => {
+  const ids = [
+    "synx/m-one",
+    "synx/m-one@default",
+    "syny/m-two",
+    "syny/m-two-20260101",
+    "synz/m-three",
+  ];
+  const run = (withMeta: boolean) => {
+    installWithMeta(
+      Object.fromEntries(
+        ids.map((i) => [
+          i,
+          withMeta
+            ? { family: "f-" + i.split("/")[0], release: "2026-01-01" }
+            : { family: null, release: null },
+        ])
+      )
+    );
+    return pickShares(ids.map(cand), 900);
   };
-  saveModelsDevCapabilities(data);
-  invalidateFitnessCache();
-  const d = rankFitFirstFreeCandidates({
-    candidates: [cand("synx/big"), cand("synx/small")],
-    body: { messages: [{ role: "user", content: "x" }] },
-    zeroAdditionalCostProviders: ["synx"],
-  });
-  const [a, b] = d.ranked.map((r) => r.tieBreaker.slice(0, 64));
-  assert.notEqual(a, b);
+  const a = run(true);
+  const b = run(false);
+  for (const p of ["synx", "syny", "synz"]) {
+    assert.ok(
+      Math.abs((a.get(p) ?? 0) - (b.get(p) ?? 0)) / 900 < 0.06,
+      `${p}: ${a.get(p)} vs ${b.get(p)}`
+    );
+  }
 });
 
 // ── 3. graceful degradation (replaces the deleted "DB not initialised" fallbacks) ──

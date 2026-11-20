@@ -8,7 +8,8 @@
  *
  * Resolution chain (highest -> lowest priority):
  * 1. User override   - DB `model_intelligence` where source='user_override'        (owner's data)
- * 2. Arena ELO       - DB `model_intelligence` where source='arena_elo'            (measured)
+ * 2. Arena ELO       - DB `model_intelligence` where source='arena_elo'            (measured;
+ *                      refines the capability-derived value by a bounded +/-0.06, see below)
  *                      (also resolves a `-free` variant through its base id)
  * 3. Persisted tier  - DB `model_intelligence` where source='models_dev_tier'      (synced data)
  * 4. Capability      - derived from the model's resolved capabilities (reasoning, tools,
@@ -110,19 +111,16 @@ export function getTaskFitness(model: string, taskType: string): number {
 /**
  * Ids under which measured rows (user_override, arena_elo) are looked up, most specific first:
  * the id as given (usually `provider/model`), then the model without its leading provider
- * segment, then the last path segment. Measured rows are written under the bare model name
- * (arenaEloSync writes `claude-opus-4-7`, never `claude/claude-opus-4-7`), while the routers
- * look models up by their provider-qualified id; trying both keeps measured evidence reachable
- * from every path. Pure string handling of the id's shape, no model or vendor names.
+ * segment. Measured rows are written under the bare model name (arenaEloSync writes
+ * `claude-opus-4-7`, never `claude/claude-opus-4-7`), while the routers look models up by their
+ * provider-qualified id; trying both keeps measured evidence reachable from every path. There is
+ * deliberately no last-segment fallback: a bare row named `x` must not apply to `vendor/team/x`,
+ * a different model that merely ends the same way. Pure string handling, no model names.
  */
 function measuredLookupIds(normalizedModel: string): string[] {
   const ids = [normalizedModel];
   const slash = normalizedModel.indexOf("/");
-  if (slash > 0) {
-    ids.push(normalizedModel.slice(slash + 1));
-    const leaf = normalizedModel.slice(normalizedModel.lastIndexOf("/") + 1);
-    if (leaf) ids.push(leaf);
-  }
+  if (slash > 0) ids.push(normalizedModel.slice(slash + 1));
   return [...new Set(ids.filter(Boolean))];
 }
 
@@ -138,6 +136,39 @@ function firstMeasured(
   return null;
 }
 
+// Arena ratings are normalised per leaderboard onto this range (arenaEloSync: 0.4 + 0.58 x rank
+// position), so its midpoint is the rating of an "average" listed model.
+const ARENA_RATING_MID = 0.69;
+const ARENA_RATING_HALF_RANGE = 0.29;
+/**
+ * Largest move a rating can make to a model's fitness, either way. The best-rated model gains
+ * this much over an unrated one of equal capability and the worst-rated loses this much, so the
+ * full leaderboard spans 2 x 0.06 = 0.12 of fitness: enough to order models of similar verified
+ * capability (capability strength 0..1 moves fitness by 0.27-0.37), too small to lift a model
+ * above one with materially more verified capability (at least 0.12 / 0.37 = a third of the
+ * strength range). Final-score effect at the heavy/critical task weight 0.5: at most 0.03.
+ */
+const ARENA_RATING_BAND = 0.06;
+
+/**
+ * A measured rating REFINES the capability-derived fitness instead of replacing it. Ratings live
+ * on the leaderboard's own 0.4-0.98 scale while unrated models keep a capability-derived value on
+ * a different scale, so using the raw rating as the fitness let leaderboard coverage (uneven
+ * across vendors) decide: an unrated model outranked every rated model below about 0.92. Here a
+ * rated model sits at its capability-derived value plus a bounded, monotone adjustment centred on
+ * the leaderboard midpoint: rated-high >= unrated >= rated-low for equal capability. With no
+ * capability evidence the 0.5 prior is adjusted the same way but never lifted above the lowest
+ * verified fitness of the task, so a rating cannot make an unverified model outrank a verified one.
+ */
+function refineWithRating(rating: number, normalizedTask: string, model: string): number {
+  const range = TASK_FITNESS_RANGE[normalizedTask] ?? TASK_FITNESS_RANGE.default;
+  const derived = getCapabilityDerivedFitness(model, normalizedTask);
+  const position = Math.max(-1, Math.min(1, (rating - ARENA_RATING_MID) / ARENA_RATING_HALF_RANGE));
+  const adjustment = position * ARENA_RATING_BAND;
+  if (derived === null) return Math.min(NO_EVIDENCE_FITNESS + adjustment, range.floor);
+  return Math.max(0, Math.min(1, derived + adjustment));
+}
+
 export function getTaskFitnessWithSource(
   model: string,
   taskType: string
@@ -146,12 +177,13 @@ export function getTaskFitnessWithSource(
   const normalizedTask = taskType.toLowerCase();
   const ids = measuredLookupIds(normalizedModel);
 
+  // The owner's explicit override is outright: it replaces the fitness.
   const userOverride = firstMeasured(ids, normalizedTask, "user_override");
   if (userOverride) {
     return { score: userOverride.score, source: "user_override" };
   }
 
-  // Try arena_elo with the literal model id first (e.g. "mimo-v2.5"), then its bare forms. If
+  // Try arena_elo with the literal model id first (e.g. "mimo-v2.5"), then its bare form. If
   // that's a miss and the model id carries a "-free" suffix (e.g. "mimo-v2.5-free"),
   // try the un-suffixed base id so free-tier variants inherit the arena_elo
   // score of their paid counterpart. This is what operators expect: the
@@ -159,12 +191,18 @@ export function getTaskFitnessWithSource(
   // pick up the same signal rather than losing every free-vs-paid comparison.
   const arenaElo = firstMeasured(ids, normalizedTask, "arena_elo");
   if (arenaElo) {
-    return { score: arenaElo.score, source: "arena_elo" };
+    return {
+      score: refineWithRating(arenaElo.score, normalizedTask, model),
+      source: "arena_elo",
+    };
   }
   for (const id of ids) {
     const arenaEloBase = lookupFreeAliasArenaElo(id, normalizedTask);
     if (arenaEloBase !== null) {
-      return { score: arenaEloBase, source: "arena_elo_free_alias" };
+      return {
+        score: refineWithRating(arenaEloBase, normalizedTask, model),
+        source: "arena_elo_free_alias",
+      };
     }
   }
 

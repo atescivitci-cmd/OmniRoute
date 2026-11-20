@@ -157,9 +157,11 @@ describe("Task Fitness", () => {
       invalidateFitnessCache();
       try {
         const result = getTaskFitnessWithSource(freeId, "coding");
-        // Without the fix: result.source would be "wildcard_boost" (0.5 default).
-        // With the fix: result.source is "arena_elo_free_alias" with score 0.42.
-        expect(result.score).toBeCloseTo(0.42, 5);
+        // Without the fix: result.source would be "no_capability_evidence" (0.5).
+        // With the fix: result.source is "arena_elo_free_alias". Since 2026-11-20 a rating
+        // refines the fitness instead of replacing it: with no capability evidence the 0.5 prior
+        // moves by ((0.42 - 0.69) / 0.29) x 0.06 = -0.0559 (below the lowest verified value).
+        expect(result.score).toBeCloseTo(0.5 + ((0.42 - 0.69) / 0.29) * 0.06, 5);
         expect(result.source).toBe("arena_elo_free_alias");
       } finally {
         deleteModelIntelligence(baseId, "arena_elo", "coding");

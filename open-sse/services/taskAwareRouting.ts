@@ -1201,12 +1201,14 @@ function fullAllRoleText(
     .join("\n");
 }
 
-const SESSION_IN_USER_ID_RE = /session[_:-]([A-Za-z0-9][A-Za-z0-9-]{7,})/i;
+// The older Claude Code form ends with `_session_<uuid>`; nothing looser counts as a session.
+const SESSION_IN_USER_ID_RE =
+  /_session_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
 /**
  * Session id carried by metadata.user_id: either a JSON object with `session_id`/`sessionId`
  * (the form Claude Code sends and that claudeCodeCompatible.ts emits) or the older
- * `user_<hash>_account_<uuid>_session_<uuid>` string. A user_id without a session part is a
+ * `user_<hash>_account_<uuid>_session_<uuid>` string (uuid-shaped, anchored at the end). A user_id without a session part is a
  * user (or device) identifier, not a conversation, and yields null.
  */
 function sessionFromUserId(userId: string): string | null {

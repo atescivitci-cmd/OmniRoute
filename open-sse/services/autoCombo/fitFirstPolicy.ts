@@ -762,34 +762,31 @@ function requestFingerprint(
 }
 
 /**
+ * Canonical model-name stem for the tie identity: lower-case, with only a trailing `@suffix`
+ * (`x@default`) and then a trailing 8-digit date snapshot (`x-20251001`) removed. Variant and
+ * size words (a `-12b` size, a speed or tier suffix) are kept, so they never merge with the base.
+ * A string rule on the id's shape, not a vendor or family rule.
+ */
+function modelStem(modelId: string): string {
+  return modelId
+    .toLowerCase()
+    .replace(/@[^/@]*$/, "")
+    .replace(/-\d{8}$/, "");
+}
+
+/**
  * Identity used to count a model ONCE in the tie draw. Entries that are the same model reached
- * through several accounts, aliases or snapshot ids (for example `x` and `x@default`) would
+ * through several accounts, aliases or snapshot ids (`x`, `x@default`, `x-20251001`) would
  * otherwise each get a full draw, so a provider that lists many aliases of one model won
  * proportionally more ties (measured on a synced pool of 256 listed ids: 24 of 68 exactly tied
- * entries belonged to one provider, only 16 of them distinct models). Two entries share an identity only when they come from
- * the same provider AND the resolver reports the same family, release date, knowledge cutoff and
- * every capability (a metadata match, not a name match). When that metadata is missing the
- * identity is the provider plus the canonical model id, so models without metadata are never
- * merged with each other.
+ * entries belonged to one provider, only 16 of them distinct models). Two entries share an
+ * identity only when they come from the same provider and have the same canonical model stem.
+ * It needs no catalog metadata, so providers with sparse metadata behave like the rest, and
+ * models that differ by a variant or size word are never merged.
  */
 function tieIdentity(candidate: FitFirstCandidate): string {
-  const caps = getResolvedModelCapabilities(candidateModelString(candidate));
-  if (caps.family && caps.releaseDate) {
-    return [
-      "meta",
-      candidate.provider,
-      caps.family,
-      caps.releaseDate,
-      caps.knowledgeCutoff ?? "",
-      caps.contextWindow ?? "",
-      caps.maxOutputTokens ?? "",
-      caps.supportsTools ?? "",
-      caps.supportsThinking ?? "",
-      caps.supportsVision ?? "",
-    ].join("|");
-  }
   const canonical = resolveCanonicalProviderModel(candidate.provider, candidate.model);
-  return `id|${canonical.provider}|${canonical.model ?? candidate.model}`;
+  return `id|${canonical.provider}|${modelStem(canonical.model ?? candidate.model)}`;
 }
 
 /**
