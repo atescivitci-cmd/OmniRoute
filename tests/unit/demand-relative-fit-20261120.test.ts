@@ -172,20 +172,23 @@ const idOf = (r: { candidate: FitFirstCandidate }) =>
 
 // ── the formula ─────────────────────────────────────────────────────────────
 
-test("formula: context credit starts exactly where the 85% overflow rule stops penalising", () => {
-  assert.equal(CONTEXT_HEADROOM, 0.85);
-  const demand = { promptTokens: 85_000, outputTokens: 1_000, reasoning: false, tools: false };
+test("formula: context credit is flat to 60% of the window; the 85% overflow rule is a separate constant", () => {
+  assert.equal(CONTEXT_HEADROOM, 0.6);
+  assert.equal(capabilityStrengthNs.CONTEXT_OVERFLOW_LIMIT, 0.85);
+  const demand = { promptTokens: 60_000, outputTokens: 1_000, reasoning: false, tools: false };
   const at = (ctx: number) =>
     demandedCapabilityStrength({ contextWindow: ctx, maxOutputTokens: 1_000 }, demand);
-  assert.equal(at(100_000), 1); // 85K prompt in a 100K window: exactly on the rule
+  assert.equal(at(100_000), 1); // 60K prompt in a 100K window: exactly on the headroom
   assert.ok(at(99_999) < 1);
   assert.equal(at(1_000_000), 1);
-  // the overflow penalty and the credit shortfall begin at the same window
+  // linear after the headroom: window / (prompt / 0.6)
+  assert.ok(Math.abs(at(80_000) - (0.3 * (80_000 / 100_000) + 0.25) / 0.55) < 1e-12);
+  // the hard overflow penalty still starts only above 85% of the window
   seed({ syna: { "zz-edge": { think: true, tools: true, ctx: 100_000, out: 8_192 } } });
   const edge = (chars: number) =>
     scoreModelForTask("syna/zz-edge", task("light", { promptChars: chars }));
-  assert.ok(edge(4 * 85_000) > 90);
-  assert.ok(edge(4 * 85_001 + 4) < edge(4 * 85_000) - 150);
+  assert.ok(edge(4 * 85_000) > 80);
+  assert.ok(edge(4 * 85_001 + 4) < edge(4 * 85_000) - 190);
 });
 
 test("formula: output credit is proportional, half the demanded output is half that dimension", () => {
@@ -314,11 +317,13 @@ test("D2: a model short of the demanded output gets partial credit, not zero and
     Math.abs((gemma.taskFitness - 0.55) / (big.taskFitness - 0.55) - strength) < 1e-9,
     "task fitness credit is exactly the demand-relative strength"
   );
-  // The existing hard penalty (-80: requested output above the model's own cap) is unchanged and
-  // is applied on top of the same proportional credit in the complexity term, which therefore
-  // clamps to 0 for this request; the final score still keeps gemma's proportional task credit.
+  // The output-above-cap penalty is proportional to the shortfall (80 x 15616/32000 = 39.04) and
+  // adds to the proportional credit, so the complexity term is partial, not clamped to zero.
   const t = { ...classifyTask(body), level: "critical" as TaskLevel, weight: 4 };
-  assert.ok(Math.abs(scoreModelForTask("synb/zz-gemma", t) - (100 * strength - 80)) < 1e-9);
+  const expected = 100 * strength - 80 * ((32_000 - 16_384) / 32_000);
+  assert.ok(Math.abs(scoreModelForTask("synb/zz-gemma", t) - expected) < 1e-9);
+  assert.ok(Math.abs(gemma.complexityFit - expected / 100) < 1e-9);
+  assert.ok(gemma.complexityFit > 0.3 && gemma.complexityFit < 1);
   assert.ok(gemma.score > 0 && gemma.score < big.score);
   assert.equal(d.ranked[0].candidate.model, "zz-big");
 });
@@ -387,7 +392,7 @@ test("D2: more capability never lowers a score, and beyond the demand it changes
 
 // ── D3: hard requirements unchanged ─────────────────────────────────────────
 
-test("D3: overflow, output-limit, vision, required reasoning and tools keep their hard effect", () => {
+test("D3: overflow, output shortfall, vision, required reasoning and tools keep their hard effect", () => {
   seed({
     syna: { "zz-ok": BIG, "zz-small": { think: true, tools: true, ctx: 32_000, out: 8_192 } },
     synb: { "zz-nothink": { think: false, tools: true, ctx: 1_000_000, out: 128_000 } },
@@ -404,11 +409,14 @@ test("D3: overflow, output-limit, vision, required reasoning and tools keep thei
     Math.abs(scoreModelForTask("syna/zz-small", long) - (strength("syna/zz-small", long) - 200)) <
       1e-9
   );
-  // requested output above the model's own cap: -80 on top of the proportional output credit
+  // requested output above the model's own cap: a penalty proportional to the shortfall
+  // (80 x (20000 - 8192) / 20000) on top of the proportional output credit
   const wide = { ...base, outputTokens: 20_000 };
   assert.ok(
-    Math.abs(scoreModelForTask("syna/zz-small", wide) - (strength("syna/zz-small", wide) - 80)) <
-      1e-9
+    Math.abs(
+      scoreModelForTask("syna/zz-small", wide) -
+        (strength("syna/zz-small", wide) - 80 * ((20_000 - 8_192) / 20_000))
+    ) < 1e-9
   );
   // required vision not verified: the -10000 hard miss
   assert.ok(scoreModelForTask("syna/zz-ok", base, new Set(["vision"])) <= 100 - 10_000);
@@ -423,17 +431,14 @@ test("D3: overflow, output-limit, vision, required reasoning and tools keep thei
   // search (tools) is an unmet requirement when unverified: bounded -30
   const tools = scoreModelForTask("sync/zz-notools", task("heavy"), new Set(["search"]));
   assert.ok(tools < scoreModelForTask("syna/zz-ok", task("heavy"), new Set(["search"])));
-  // the soft reasoning penalty on heavy/critical still applies when reasoning is not demanded
-  assert.equal(
-    scoreModelForTask("syna/zz-ok", task("critical")) -
-      scoreModelForTask("synb/zz-nothink", task("critical")),
-    15
-  );
-  assert.equal(
-    scoreModelForTask("syna/zz-ok", task("heavy")) -
-      scoreModelForTask("synb/zz-nothink", task("heavy")),
-    10
-  );
+  // there is no soft reasoning penalty: undemanded reasoning neither rewards nor penalises
+  for (const level of ["light", "standard", "heavy", "critical"] as TaskLevel[]) {
+    assert.equal(
+      scoreModelForTask("syna/zz-ok", task(level)),
+      scoreModelForTask("synb/zz-nothink", task(level)),
+      level
+    );
+  }
 });
 
 test("D3: the exclusion gate is unchanged (unverified required capabilities never reach the ranking)", () => {
@@ -707,4 +712,162 @@ test("D6 replay: across conversations the tied models share the wins, not the la
   const claude = wins.get("claude/claude-opus-4-8") ?? 0;
   assert.ok(claude > N * 0.1 && claude < N * 0.5, `claude won ${claude}/${N}: ${[...wins]}`);
   assert.ok(wins.size >= 2, `one model won every conversation: ${[...wins]}`);
+});
+
+// ── Round 3: continuous output shortfall, separate headroom constants, no soft reasoning penalty ──
+
+const rank1 = (id: string, body: Record<string, unknown>, level: TaskLevel) =>
+  rank([cand(id)], level, body).ranked[0].factors;
+const wideBody = {
+  messages: [{ role: "user", content: "x".repeat(6_000) }],
+  max_tokens: 32_000,
+  tools: [{ type: "function", function: { name: "t" } }],
+  thinking: { type: "enabled", budget_tokens: 8_000 },
+};
+
+test("R3.1 output shortfall: penalty proportional to the shortfall fraction, none at or above the cap", () => {
+  seed({ syna: { "zz-m": { think: true, tools: true, ctx: 256_000, out: 16_384 } } });
+  const body = { messages: [{ role: "user", content: "x" }], max_tokens: 32_000 };
+  const t = { ...classifyTask(body), level: "critical" as TaskLevel, weight: 4 };
+  const strength = (cap: number) =>
+    100 *
+    demandedCapabilityStrength(
+      { contextWindow: 256_000, maxOutputTokens: cap, supportsThinking: true, supportsTools: true },
+      capabilityDemandForTask(t, new Set())
+    );
+  for (const cap of [1_000, 8_000, 16_384, 24_000, 31_999]) {
+    seed({ syna: { "zz-m": { think: true, tools: true, ctx: 256_000, out: cap } } });
+    const expected = strength(cap) - 80 * ((32_000 - cap) / 32_000);
+    assert.ok(Math.abs(scoreModelForTask("syna/zz-m", t) - expected) < 1e-9, `cap ${cap}`);
+  }
+  for (const cap of [32_000, 64_000, 1_000_000]) {
+    seed({ syna: { "zz-m": { think: true, tools: true, ctx: 256_000, out: cap } } });
+    assert.equal(scoreModelForTask("syna/zz-m", t), 100, `cap ${cap} covers the request`);
+  }
+});
+
+test("R3.1 output shortfall: no step at the cap, monotone, a gemma-like cap lands proportionally", () => {
+  const caps: number[] = [];
+  for (let v = 1_000; v < 1_000_000; v = Math.ceil(v * 1.05)) caps.push(v);
+  let prev: { cap: number; score: number; cf: number } | null = null;
+  let maxJump = 0;
+  for (const cap of caps) {
+    seed({ syna: { "zz-m": { think: true, tools: true, ctx: 256_000, out: cap } } });
+    const f = rank1("syna/zz-m", wideBody, "critical");
+    if (prev) {
+      assert.ok(f.score >= prev.score - 1e-12, `score fell at cap ${cap}`);
+      assert.ok(f.complexityFit >= prev.cf - 1e-12);
+      maxJump = Math.max(maxJump, f.score - prev.score, 0.5 * (f.complexityFit - prev.cf));
+    }
+    prev = { cap, score: f.score, cf: f.complexityFit };
+  }
+  assert.ok(maxJump < 0.03, `largest 5% step ${maxJump}`);
+  seed({
+    syna: {
+      "zz-cover": { think: true, tools: true, ctx: 256_000, out: 64_000 },
+      "zz-gemma": GEMMA,
+      "zz-tiny": { think: true, tools: true, ctx: 256_000, out: 1_000 },
+    },
+  });
+  const cover = rank1("syna/zz-cover", wideBody, "critical");
+  const gemma = rank1("syna/zz-gemma", wideBody, "critical");
+  const tiny = rank1("syna/zz-tiny", wideBody, "critical");
+  assert.ok(
+    gemma.complexityFit > 0.2 && gemma.complexityFit < cover.complexityFit,
+    `${gemma.complexityFit}`
+  );
+  assert.ok(gemma.score < cover.score - 0.05, "clearly lower than a covering model");
+  assert.ok(tiny.score < gemma.score, "a model that really cannot produce the output loses more");
+  assert.ok(gemma.score > tiny.score + 0.02);
+});
+
+test("R3.3 headroom: credit and the hard overflow rule use two named constants", async () => {
+  const cs = capabilityStrengthNs as Record<string, unknown>;
+  assert.equal(cs.CONTEXT_HEADROOM, 0.6);
+  assert.equal(cs.CONTEXT_OVERFLOW_LIMIT, 0.85);
+  const src = fs.readFileSync(path.join(ROOT, "open-sse/services/taskAwareRouting.ts"), "utf8");
+  assert.ok(src.includes("CONTEXT_OVERFLOW_LIMIT"), "the -200 rule must use its own constant");
+});
+
+test("R3.3 headroom: credit is flat to 60% of the window, linear after, monotone at 1% steps, one -200 step at 85%", () => {
+  const W = 256_000;
+  seed({ syna: { "zz-w": { think: true, tools: true, ctx: W, out: 128_000 } } });
+  const at = (ratio: number) => {
+    const tokens = Math.round(W * ratio);
+    const t = {
+      ...classifyTask({}),
+      level: "critical" as TaskLevel,
+      weight: 4,
+      promptChars: tokens * 4,
+      outputTokens: 1_000,
+    };
+    return {
+      raw: scoreModelForTask("syna/zz-w", t),
+      strength:
+        100 *
+        demandedCapabilityStrength(
+          {
+            contextWindow: W,
+            maxOutputTokens: 128_000,
+            supportsThinking: true,
+            supportsTools: true,
+          },
+          capabilityDemandForTask(t, new Set())
+        ),
+    };
+  };
+  for (const r of [0.1, 0.5, 0.6]) assert.equal(at(r).strength, 100, `ratio ${r}`);
+  // beyond 60% credit falls linearly: window / (prompt / 0.6) on the context dimension
+  const r7 = at(0.7).strength;
+  assert.ok(Math.abs(r7 - (100 * (0.3 * (0.6 / 0.7) + 0.25)) / 0.55) < 1e-6, String(r7));
+  let prev = 101;
+  let maxStep = 0;
+  for (let r = 0.01; r <= 0.99; r += 0.01) {
+    const { raw, strength } = at(r);
+    if (Math.round(W * r) <= W * 0.85) {
+      assert.ok(strength <= prev + 1e-9, `credit rose at ${r}`);
+      maxStep = Math.max(maxStep, prev - strength > 0 && prev <= 100 ? prev - strength : 0);
+      assert.equal(raw, strength, `no penalty below 85% (${r})`);
+    } else {
+      assert.equal(raw, strength - 200, `exactly one -200 step above 85% (${r})`);
+    }
+    prev = strength;
+  }
+  assert.ok(maxStep < 1.6, `credit step per 1% of window ${maxStep}`);
+  // the step at 85% is the -200 rule only: credit itself is continuous there
+  const below = at(0.849).strength;
+  const above = at(0.851).strength;
+  assert.ok(below - above < 0.2, `credit jumped at 85%: ${below} -> ${above}`);
+  assert.ok(at(0.849).raw - at(0.851).raw > 199.8 && at(0.849).raw - at(0.851).raw < 200.2);
+});
+
+test("R3.4 reasoning that the request does not demand neither rewards nor penalises", () => {
+  seed({
+    syna: { "zz-r": { think: true, tools: true, ctx: 1_000_000, out: 128_000 } },
+    synb: { "zz-n": { think: false, tools: true, ctx: 1_000_000, out: 128_000 } },
+    sync: { "zz-u": { think: null, tools: true, ctx: 1_000_000, out: 128_000 } },
+  });
+  const plain = { messages: [{ role: "user", content: "Review this module." }], max_tokens: 8_000 };
+  for (const level of LEVELS) {
+    const t = task(level, { outputTokens: 8_000 });
+    const scores = ["syna/zz-r", "synb/zz-n", "sync/zz-u"].map((m) => scoreModelForTask(m, t));
+    assert.equal(new Set(scores).size, 1, `${level}: ${scores}`);
+    const d = rank([cand("syna/zz-r"), cand("synb/zz-n"), cand("sync/zz-u")], level, plain);
+    const f = d.ranked.map((r) => r.factors);
+    for (const x of f) {
+      assert.equal(x.complexityFit, f[0].complexityFit, `${level} complexity`);
+      assert.equal(x.taskFitness, f[0].taskFitness, `${level} fitness`);
+      assert.equal(x.score, f[0].score, `${level} score`);
+    }
+  }
+  // demanded (explicit reasoning control) and required reasoning still count
+  const asked = rank([cand("syna/zz-r"), cand("synb/zz-n")], "critical", {
+    ...plain,
+    thinking: { type: "enabled", budget_tokens: 8_000 },
+  });
+  const [first, second] = asked.ranked;
+  assert.equal(first.candidate.model, "zz-r");
+  assert.ok(first.factors.complexityFit > second.factors.complexityFit);
+  const need = scoreModelForTask("synb/zz-n", task("critical"), new Set(["reasoning"]));
+  assert.ok(need < 100 - 100, `required reasoning miss still takes the -120 gate: ${need}`);
 });

@@ -20,7 +20,7 @@
 import { createHash } from "node:crypto";
 import { getResolvedModelCapabilities } from "./modelCapabilities.ts";
 import {
-  CONTEXT_HEADROOM,
+  CONTEXT_OVERFLOW_LIMIT,
   deriveCapabilityDemand,
   demandedCapabilityStrength,
   NEUTRAL_DEMAND,
@@ -950,27 +950,8 @@ export function capabilityDemandForTask(
   });
 }
 
-/**
- * Soft, name-blind penalty (in fit points out of 100) on heavy and critical tasks for a model
- * whose reasoning capability is not verified (`supportsThinking !== true`: false or unknown).
- * It applies only when the request did not already require reasoning (that case takes the -120
- * above) and never on light/standard tasks. Monotone: verifying reasoning can only raise a score.
- *
- * Sizing (strength weights: reasoning 0.35, tools 0.10, context 0.30, output 0.25). A
- * non-reasoning 1M/128K model has strength 0.65 (power 98) and a reasoning 64K/16K model 0.65
- * (power 97): without this term the two tie and the big non-reasoning window wins heavy and
- * critical turns on overall score by 0.003. A penalty of 15 (critical) / 10 (heavy) fit points
- * (about 0.05 / 0.03 of the final score at weights 0.32) breaks that tie toward verified
- * reasoning, yet a reasoning model that is much smaller still loses where capacity decides:
- * reasoning 8K/4K (power 68) scores 57 on critical against 82 - 15 = 67 for the huge
- * non-reasoning one, and a prompt that does not fit takes the separate -200 overflow penalty.
- */
-const UNVERIFIED_REASONING_SOFT_PENALTY: Record<TaskLevel, number> = {
-  light: 0,
-  standard: 0,
-  heavy: 10,
-  critical: 15,
-};
+/** Largest penalty for a requested output far above the model's own output cap. */
+const OUTPUT_SHORTFALL_MAX_PENALTY = 80;
 
 // Hard capabilities: missing one drops request data (images, PDFs). Maps TS
 // ResolvedModelCapabilities fields that correspond to hard-cap modalities.
@@ -1010,20 +991,23 @@ export function scoreModelForTask(
   // A required capability that is not verified is an unmet requirement. The task level alone
   // is not a requirement (it used to subtract 120 here for any heavy+ task on a model not
   // known to reason).
-  // The soft penalty applies only when the request does not demand reasoning: a demanded
-  // reasoning dimension is already scored in `demandedCapabilityStrength`, so subtracting here
-  // as well would count it twice.
+  // A required reasoning capability that is not verified takes the -120 gate. Reasoning the
+  // request does not demand neither rewards nor penalises: until 2026-11-20 a flat 10/15-point
+  // soft penalty on heavy/critical asks scored an undemanded capability, which is removed. A
+  // demanded reasoning dimension is scored in `demandedCapabilityStrength` as well.
   if (required.has("reasoning") && caps.supportsThinking !== true) score -= 120;
-  else if (!demand.reasoning && caps.supportsThinking !== true) {
-    score -= UNVERIFIED_REASONING_SOFT_PENALTY[task.level];
-  }
   if (required.has("search") && !caps.toolCalling) score -= 30;
 
   const ctxLimit = caps.contextWindow ?? 0;
-  if (ctxLimit > 0 && demand.promptTokens > ctxLimit * CONTEXT_HEADROOM) score -= 200;
+  if (ctxLimit > 0 && demand.promptTokens > ctxLimit * CONTEXT_OVERFLOW_LIMIT) score -= 200;
 
+  // A requested output above the model's own cap is a shortfall, penalised in proportion to its
+  // size (0 at or above the cap, growing linearly to -80 as the cap approaches 0), so there is no
+  // step at the cap. It adds to the proportional output credit already lost in the strength.
   const maxOut = caps.maxOutputTokens ?? 0;
-  if (maxOut > 0 && task.outputTokens > 0 && task.outputTokens > maxOut) score -= 80;
+  if (maxOut > 0 && Number.isFinite(task.outputTokens) && task.outputTokens > maxOut) {
+    score -= OUTPUT_SHORTFALL_MAX_PENALTY * ((task.outputTokens - maxOut) / task.outputTokens);
+  }
 
   return score;
 }

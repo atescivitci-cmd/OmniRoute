@@ -297,13 +297,17 @@ test("P2: only a genuine unmet requirement subtracts", () => {
     scoreModelForTask("p/big", base)
   );
   // output limit below the requested output
-  assert.ok(
-    scoreModelForTask("p/small", { ...base, outputTokens: 20_000 } as never) <=
-      scoreModelForTask("p/small", base) - 80
-  );
+  // (2026-11-20: the -80 is proportional to the shortfall, (20000-8192)/20000 of 80 = 47.2, on top
+  // of the output credit already lost in the demand-relative strength, so the drop is about 74,
+  // and it grows with the size of the shortfall.)
+  const over = (out: number) =>
+    scoreModelForTask("p/small", { ...base, outputTokens: out } as never);
+  const small = scoreModelForTask("p/small", base);
+  assert.ok(over(20_000) <= small - 70, `${over(20_000)} vs ${small}`);
+  assert.ok(over(40_000) < over(20_000) && over(20_000) < over(10_000) && over(10_000) < small);
   // required reasoning not verified
-  // (round 2: the required-reasoning -120 replaces the heavy/critical soft penalty of 10, so the
-  // gap to the unrequired score is 110 on heavy; it is never stacked.)
+  // (2026-11-20: there is no soft penalty any more; the gap is the -120 plus the demanded
+  // reasoning dimension.)
   assert.ok(
     scoreModelForTask("p/unknownthink", task("heavy"), new Set(["reasoning"])) <=
       scoreModelForTask("p/unknownthink", task("heavy")) - 110
@@ -312,7 +316,7 @@ test("P2: only a genuine unmet requirement subtracts", () => {
     scoreModelForTask("p/big", task("heavy"), new Set(["reasoning"])),
     scoreModelForTask("p/big", task("heavy"))
   );
-  // heavy/critical without a stated requirement: no reasoning cliff (only the bounded soft penalty)
+  // heavy/critical without a stated requirement: no reasoning cliff and no soft penalty
   const noThink = scoreModelForTask("p/small", task("critical"));
   assert.ok(noThink > 0, `no unmet requirement, yet ${noThink}`);
   // an oversized power is not penalised on a light task
@@ -521,7 +525,12 @@ test("P6: more verified capability beats less, with the same evidence", () => {
       candidate("prov-w", "mid"),
       candidate("prov-w", "big"),
     ],
-    body: { messages: [{ role: "user", content: "Plan the architecture and rollout." }] },
+    // 2026-11-20: capability credit is demand-relative, so the request must need the capacity:
+    // 100K output tokens are covered only by the 128K model and are 64K/8K short for the rest.
+    body: {
+      messages: [{ role: "user", content: "Plan the architecture and rollout." }],
+      max_tokens: 100_000,
+    },
     zeroAdditionalCostProviders: ["prov-w"],
     taskProfile: {
       source: "deterministic",
@@ -538,6 +547,14 @@ test("P6: more verified capability beats less, with the same evidence", () => {
     d.ranked.map((r) => r.candidate.model),
     ["big", "mid", "small"]
   );
+});
+
+test("P6b: when the demand is covered, more verified capability adds nothing (they tie)", () => {
+  seed({ "prov-w": { big: BIG, mid: MID, small: SMALL } });
+  const scores = ["small", "mid", "big"].map((m) =>
+    scoreModelForTask(`prov-w/${m}`, task("critical", { outputTokens: 4_000 }))
+  );
+  assert.equal(new Set(scores).size, 1, `${scores}`);
 });
 
 // ── P4: one shared code path ────────────────────────────────────────────────

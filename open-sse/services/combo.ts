@@ -314,18 +314,16 @@ const DEFAULT_MODEL_P95_MS: Record<string, number> = {
  */
 const MIN_HISTORY_SAMPLES = 10;
 /**
- * Usage-window samples needed before the observed success RATE counts as ranking evidence
- * (`errorRate` and the `usage_24h` provenance that `operationalReliability` reads). Lower than
- * MIN_HISTORY_SAMPLES on purpose. With the rate scored directly (volume-blind), the old 10-sample
- * gate made 9 samples neutral (0.5 reliability, 0.5 health) and 10 samples the full record, a 0.06
- * swing at critical (about 0.14 at light) from one extra call; and because fit-first-free never
- * explores, a model stuck at 9 samples could not earn its 10th. A failing model that aged from 10
- * to 9 samples was also laundered up to neutral. Three samples is the smallest count at which one
- * unlucky or lucky call cannot decide a model's rate on its own (2 of 3 = 0.67, not 0 or 1); it
- * matches the existing minimum for successful-latency evidence. The observation gate for the hard
- * veto lives in `healthEvidenceHasRecentSamples` (>= 10) and is not touched by this constant.
+ * Usage-window samples after which the observed success RATE is ranking evidence for fit-first
+ * (`usageFailureRate` and the `usage_24h` provenance that `operationalReliability` reads). One:
+ * with the rate scored directly (volume-blind), the old 10-sample gate made 9 samples neutral
+ * (0.5 reliability, 0.5 health) and 10 the full record, a 0.06 swing at critical from one extra
+ * call, and a failing model that aged from 10 to 9 samples was laundered up to neutral. How
+ * much a thin sample may move a score is decided in `operationalReliability`
+ * (`MIN_FULL_EVIDENCE_SAMPLES`): below 3 samples evidence can only LOWER a score, never raise
+ * it. `errorRate`, the latency statistics and the hard veto keep their own 10-sample gates.
  */
-const MIN_OBSERVED_OUTCOME_SAMPLES = 3;
+const MIN_OBSERVED_OUTCOME_SAMPLES = 1;
 const OUTPUT_TOKEN_RATIO = 0.4;
 
 function calculateTargetContextAffinity(
@@ -366,7 +364,12 @@ export async function buildAutoCandidates(
     const { getModelLatencyStats } = await import("../../src/lib/usageDb");
     historicalLatencyStats = await getModelLatencyStats({
       windowHours: 24,
-      minSamples: 3,
+      // 1, not 3: models with 1 or 2 usage samples must reach `usageFailureRate` so a thin
+      // sample can lower a score. Every latency use below still requires 10 samples
+      // (hasHistoricalSignal) and 3 successful latencies (hasSuccessfulLatencySignal), so latency
+      // evidence is unchanged: a bucket with 1 or 2 successes now reports source "successful"
+      // with a count under 3, which fails the same guard that "all_attempts" failed before.
+      minSamples: 1,
       maxRows: 10000,
     });
   } catch {
@@ -475,7 +478,7 @@ export async function buildAutoCandidates(
           ? avgLatency
           : getBootstrapLatencyMs(model);
 
-      const errorRate = hasObservedOutcomes
+      const errorRate = hasHistoricalSignal
         ? Number.isFinite(historicalSuccessRate) &&
           historicalSuccessRate >= 0 &&
           historicalSuccessRate <= 1
@@ -594,6 +597,14 @@ export async function buildAutoCandidates(
             ? successfulLatencySampleCount
             : 0,
         errorRate,
+        usageFailureRate:
+          hasObservedOutcomes && Number.isFinite(historicalTotal)
+            ? Number.isFinite(historicalSuccessRate) &&
+              historicalSuccessRate >= 0 &&
+              historicalSuccessRate <= 1
+              ? 1 - historicalSuccessRate
+              : 0.05
+            : undefined,
         provenance: candidateProvenance({
           provider,
           connectionId: target.connectionId,

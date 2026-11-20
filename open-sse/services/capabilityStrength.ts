@@ -80,11 +80,20 @@ export function capabilityStrength(caps: CapabilityEvidence | null | undefined):
 // spec it has, and only a real shortfall lowers it, continuously and in proportion.
 
 /**
- * A prompt must fit in at most this share of the context window. Same constant as the -200
- * overflow penalty in `scoreModelForTask`, so full context credit starts exactly where that
- * penalty stops applying.
+ * Context CREDIT headroom: a model gets full context credit while the prompt takes at most this
+ * share of its window, and the credit then falls linearly, `window / (prompt / 0.6)`, so it
+ * shrinks smoothly as a session grows instead of staying flat and then dropping at the hard
+ * limit (a 256K window still ties a 150K prompt, 150 / 256 = 0.586). It is a SOFT preference
+ * for room to work in; the hard rule is `CONTEXT_OVERFLOW_LIMIT`.
  */
-export const CONTEXT_HEADROOM = 0.85;
+export const CONTEXT_HEADROOM = 0.6;
+
+/**
+ * Hard overflow rule: a prompt over this share of the window cannot be served and takes the
+ * -200 penalty in `scoreModelForTask`. Separate from `CONTEXT_HEADROOM` on purpose: the credit
+ * curve is continuous through this point, so the only step at 85% is the one -200 rule.
+ */
+export const CONTEXT_OVERFLOW_LIMIT = 0.85;
 
 /** What a request needs from a model. Derived from the request body only, never from a name. */
 export interface CapabilityDemand {

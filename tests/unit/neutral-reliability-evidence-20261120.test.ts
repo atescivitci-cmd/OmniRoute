@@ -40,15 +40,23 @@ function health(n: number, failures: number, now = NOW) {
 
 const SIZES = [1, 2, 3, 5, 10, 29, 100, 1000];
 
-test("equal observed success rate scores equal at every sample size, including 100%", () => {
+// Round 3 (2026-11-20): below MIN_FULL_EVIDENCE_SAMPLES (3) a sample can only LOWER a score
+// (min(0.5, rate)); a healthy thin sample is not promoted above the neutral prior. Equal observed
+// rate therefore scores equal at EVERY size for rates up to a coin flip, and for every size from
+// 3 samples on at any rate. The one accepted exception is a healthy rate above 0.5 from 1 or 2
+// samples, which scores neutral (see "cold start premium" below).
+const FULL = SIZES.filter((n) => n >= 3);
+
+test("equal observed success rate scores equal at every sample size, including 100% (from 3 samples; up to a coin flip at any size)", () => {
   for (const [label, rate] of [
     ["all success", 0],
     ["quarter failing", 0.25],
     ["half failing", 0.5],
     ["mostly failing", 0.75],
   ] as const) {
-    // Only sizes where the rate is a whole number of failures.
-    const sizes = SIZES.filter((n) => Number.isInteger(n * rate));
+    // Only sizes where the rate is a whole number of failures; rates above a coin flip are
+    // compared from the 3-sample floor on.
+    const sizes = (rate >= 0.5 ? SIZES : FULL).filter((n) => Number.isInteger(n * rate));
     const scores = sizes.map((n) => operationalReliability(health(n, n * rate), NOW).score);
     for (const s of scores) {
       assert.ok(
@@ -62,16 +70,16 @@ test("equal observed success rate scores equal at every sample size, including 1
 test("all-success scores are exactly the observed rate, not a volume-ramped prior", () => {
   for (const n of SIZES) {
     const r = operationalReliability(health(n, 0), NOW);
-    assert.equal(r.score, 1, `n=${n} scored ${r.score}`);
+    assert.equal(r.score, n >= 3 ? 1 : 0.5, `n=${n} scored ${r.score}`);
     assert.equal(r.source, "usage_24h");
-    assert.equal(r.reason, "observed");
+    assert.equal(r.reason, n >= 3 ? "observed" : "insufficient_samples");
     assert.equal(r.sampleCount, n);
   }
 });
 
 test("failures stay monotone: more failures never raise the score; a lower rate never outranks a higher one", () => {
   const cells: { n: number; f: number; rate: number; score: number }[] = [];
-  for (let n = 1; n <= 60; n++) {
+  for (let n = 3; n <= 60; n++) {
     for (let f = 0; f <= n; f++) {
       cells.push({ n, f, rate: 1 - f / n, score: operationalReliability(health(n, f), NOW).score });
     }
@@ -94,6 +102,7 @@ test("a single failure on a small sample is visible, and a failure streak ranks 
   const oneOfTwo = operationalReliability(health(2, 1), NOW).score;
   const streak = operationalReliability(health(3, 2), NOW).score;
   const oneOfOne = operationalReliability(health(1, 1), NOW).score;
+  assert.ok(oneOfTwo <= 0.5, `1 failure in 2 must not look better than neutral: ${oneOfTwo}`);
   assert.ok(oneOfTwo < proven - 0.4, `1 failure in 2 hidden: ${oneOfTwo} vs ${proven}`);
   assert.ok(streak < proven - 0.5, `3-sample 2-failure streak not clearly below: ${streak}`);
   assert.ok(oneOfOne < streak);
@@ -125,10 +134,10 @@ test("unobserved and stale evidence keep the neutral prior; a healthy observed R
   assert.equal(stale.source, "neutral_prior");
   assert.equal(stale.score, 0.5);
   for (const n of SIZES) {
-    assert.ok(
-      operationalReliability(health(n, 0), NOW).score > none.score,
-      `n=${n} below unobserved`
-    );
+    const score = operationalReliability(health(n, 0), NOW).score;
+    // from 3 samples a healthy model is above neutral; below it, exactly neutral, never below
+    if (n >= 3) assert.ok(score > none.score, `n=${n} not above unobserved`);
+    else assert.equal(score, none.score, `n=${n}`);
   }
 });
 
@@ -144,7 +153,7 @@ const POOL = ["syna/zorbex-9", "synb/quillon-3", "sync/vandra-7", "synd/hexel-5"
 const SAMPLES: Record<string, number> = {
   "syna/zorbex-9": 29, // the proven, high-volume model
   "synb/quillon-3": 3,
-  "sync/vandra-7": 1,
+  "sync/vandra-7": 4,
   "synd/hexel-5": 5,
   "syne/orvix-2": 0, // never observed
 };
@@ -192,7 +201,7 @@ function rank(candidates: FitFirstCandidate[], key: string, extra: Record<string
 const id = (d: { ranked: { candidate: FitFirstCandidate }[] }, i = 0) =>
   `${d.ranked[i].candidate.provider}/${d.ranked[i].candidate.model}`;
 
-test("replay: n=29,5,3,1 all successful tie on every evidence factor; only the unobserved one differs", () => {
+test("replay: n=29,5,4,3 all successful tie on every evidence factor; only the unobserved one differs", () => {
   const d = rank(
     POOL.map((p) => cand(p, SAMPLES[p])),
     "replay"
@@ -249,7 +258,7 @@ test("replay: shuffling which model has which volume does not change who wins a 
   // Volume is assigned to different ids; the winner follows the tie-break identity, not n.
   const ids = POOL.slice(0, 4);
   const winnersByVolume: string[] = [];
-  const volumes = [29, 5, 3, 1];
+  const volumes = [29, 5, 4, 3];
   for (let rot = 0; rot < 4; rot++) {
     const cands = ids.map((p, i) => cand(p, volumes[(i + rot) % 4]));
     winnersByVolume.push(id(rank(cands, "stable-conv")));
@@ -274,8 +283,8 @@ test("a failing small sample ranks below a proven healthy model and below an uno
   }
 });
 
-test("a single failure among small samples is still penalised against a clean small sample", () => {
-  const d = rank([cand("syna/zorbex-9", 2, 1), cand("synb/quillon-3", 2, 0)], "one-failure");
+test("a single failure among small samples is still penalised against a clean small sample (from the 3-sample floor)", () => {
+  const d = rank([cand("syna/zorbex-9", 3, 1), cand("synb/quillon-3", 3, 0)], "one-failure");
   assert.equal(id(d, 0), "synb/quillon-3");
   assert.ok(d.ranked[0].factors.score > d.ranked[1].factors.score);
 });
@@ -406,9 +415,9 @@ test("a coin-flip model scores exactly like an unobserved one; worse than a coin
 
 test("health, like reliability, ignores volume at equal observed rate and keeps the neutral prior", () => {
   for (const [rate, sizes] of [
-    [1, [1, 3, 10, 29, 1000]],
+    [1, [3, 10, 29, 1000]],
     [0.8, [5, 10, 100, 1000]],
-    [0.5, [2, 10, 100]],
+    [0.5, [2, 4, 10, 100]],
   ] as const) {
     const hs = sizes.map((n) =>
       healthOf(rank([cand("syna/zorbex-9", n, n * (1 - rate))], "v"), "syna/zorbex-9")
@@ -422,9 +431,13 @@ test("health, like reliability, ignores volume at equal observed rate and keeps 
 });
 
 test("an observed healthy model has health at or above an unobserved one at every sample size", () => {
-  for (const n of [1, 3, 9, 10, 29, 1000]) {
+  for (const n of [1, 2, 3, 9, 10, 29, 1000]) {
     const d = rank([cand("syna/zorbex-9", n, 0), cand("synb/quillon-3", 0)], `hh-${n}`);
-    assert.ok(healthOf(d, "syna/zorbex-9") > healthOf(d, "synb/quillon-3"), `n=${n}`);
+    const a = healthOf(d, "syna/zorbex-9");
+    const b = healthOf(d, "synb/quillon-3");
+    // from 3 samples a healthy model is above neutral; below it exactly neutral, never below
+    if (n >= 3) assert.ok(a > b, `n=${n}`);
+    else assert.equal(a, b, `n=${n}`);
   }
 });
 
@@ -463,10 +476,14 @@ async function assembled(n: number, failures: number, tag: string) {
   return c as unknown as FitFirstCandidate;
 }
 
-test("production assembly: from 3 usage samples the observed rate is ranking evidence; 1 and 2 stay neutral", async () => {
+test("production assembly: every usage sample is evidence; below 3 it can only LOWER the score", async () => {
   for (const n of [1, 2]) {
-    const c = await assembled(n, 0, "lo");
-    assert.equal(operationalReliability(c, Date.now()).source, "neutral_prior", `n=${n}`);
+    const ok = operationalReliability(await assembled(n, 0, "lo"), Date.now());
+    assert.equal(ok.source, "usage_24h", `n=${n}`);
+    assert.equal(ok.sampleCount, n);
+    assert.equal(ok.score, 0.5, `n=${n}: a healthy sample cannot raise a model above neutral`);
+    const bad = operationalReliability(await assembled(n, n, "lo"), Date.now());
+    assert.equal(bad.score, 0, `n=${n}: all failing is visible`);
   }
   for (const n of [3, 5, 9, 10, 29]) {
     const c = await assembled(n, 0, "ok");
@@ -475,6 +492,42 @@ test("production assembly: from 3 usage samples the observed rate is ranking evi
     assert.equal(r.sampleCount, n);
     assert.equal(r.score, 1);
   }
+});
+
+test("a failing model never looks better than neutral because it has too few samples", () => {
+  const at = (n: number, f: number) => operationalReliability(health(n, f), NOW).score;
+  assert.equal(at(1, 1), 0);
+  assert.equal(at(2, 2), 0);
+  assert.ok(at(2, 2) <= at(3, 2) && at(2, 2) <= at(3, 3) && at(2, 2) <= at(3, 1));
+  assert.ok(at(2, 1) <= 0.5);
+  // equal observed rate scores equal across the boundary for rates at or below a coin flip
+  assert.equal(at(2, 1), operationalReliability(health(4, 2), NOW).score, "2/2 vs 2/4 at rate 0.5");
+  // no sample count below the floor can score above neutral
+  for (let n = 1; n < 3; n++) for (let f = 0; f <= n; f++) assert.ok(at(n, f) <= 0.5);
+  // at the floor and above the plain observed rate applies again
+  assert.equal(at(3, 0), 1);
+  assert.ok(Math.abs(at(3, 1) - 2 / 3) < 1e-12);
+});
+
+test("health follows the same rule below the floor", () => {
+  const h = (n: number, f: number) =>
+    healthOf(rank([cand("syna/zorbex-9", n, f)], `fl-${n}-${f}`), "syna/zorbex-9");
+  assert.equal(h(2, 0), 0.5);
+  assert.equal(h(2, 2), 0);
+  assert.equal(h(1, 1), 0);
+  assert.equal(h(3, 0), 1);
+});
+
+test("production assembly: errorRate for the other consumers is unchanged below 10 samples", async () => {
+  for (const n of [1, 2, 3, 5, 9]) {
+    const c = await assembled(n, n, "legacy");
+    // the legacy/SLA/speed consumers still see the pre-change value (process metrics or the
+    // default), never the usage-window rate, until the 10-sample history gate is met
+    assert.notEqual(c.errorRate, 1, `n=${n}`);
+    assert.equal((c as unknown as { usageFailureRate?: number }).usageFailureRate, 1, `n=${n}`);
+  }
+  const c10 = await assembled(10, 10, "legacy");
+  assert.equal(c10.errorRate, 1);
 });
 
 test("production assembly: no cliff between 9 and 10 samples, healthy or failing", async () => {
@@ -524,4 +577,28 @@ test("production assembly: latency gates and the hard-veto floor are untouched b
   const c10 = await assembled(10, 0, "lat");
   assert.equal(healthEvidenceHasRecentSamples(c10.provenance), true);
   assert.equal(c10.latencySampleSource, "successful_usage_24h");
+});
+
+// ── 5. cold start premium and the 3-sample floor ────────────────────────────
+
+test("cold start premium: healthy 2 samples vs 3 samples differs by the accepted, documented 0.06 at critical", () => {
+  // Accepted 2026-11-20: an unobserved or thinly observed model must never outrank an observed
+  // healthy one on a critical session. The routing canary builds NVIDIA samples continuously, so
+  // the premium closes quickly. The bound I would accept: reliability 0.05 + health 0.07 at
+  // critical, times half the rate range (0.5) = 0.06; at light 0.2 + 0.08 = 0.14.
+  const at = (n: number) => scoreOfId(rank([cand("syna/zorbex-9", n, 0)], "cold"), "syna/zorbex-9");
+  assert.equal(at(1), at(2));
+  assert.equal(at(1), scoreOfId(rank([cand("syna/zorbex-9", 0)], "cold"), "syna/zorbex-9"));
+  assert.ok(Math.abs(at(3) - at(2) - 0.06) < 1e-9, `${at(3) - at(2)}`);
+  assert.equal(at(3), at(1000));
+});
+
+test("a model failing everything with 2 samples never outranks the same model at 3 samples", () => {
+  const d = rank([cand("syna/zorbex-9", 2, 2), cand("synb/quillon-3", 3, 2)], "launder");
+  assert.ok(scoreOfId(d, "syna/zorbex-9") <= scoreOfId(d, "synb/quillon-3"));
+  const e = rank([cand("syna/zorbex-9", 2, 2), cand("synb/quillon-3", 3, 1)], "launder2");
+  assert.ok(scoreOfId(e, "syna/zorbex-9") < scoreOfId(e, "synb/quillon-3"));
+  // equal observed rate across the floor: 1 of 2 succeeded vs 1.5 of 3 is not whole; use 2 of 4
+  const f = rank([cand("syna/zorbex-9", 2, 1), cand("synb/quillon-3", 4, 2)], "coin");
+  assert.equal(scoreOfId(f, "syna/zorbex-9"), scoreOfId(f, "synb/quillon-3"));
 });

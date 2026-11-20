@@ -101,6 +101,12 @@ export interface ProviderCandidate {
   errorRate: number;
   /** Optional provider/model observed failure rate. Falls back to errorRate. */
   failureRate?: number;
+  /**
+   * Failure rate of the 24 h usage window (1 - success rate), present from the first sample.
+   * Read only by fit-first `operationalReliability`; `errorRate` keeps its own gate for the
+   * other consumers.
+   */
+  usageFailureRate?: number;
   /** T10: Optional account tier for priority boosting (Ultra > Pro > Free) */
   accountTier?: "ultra" | "pro" | "standard" | "free";
   /** T10: Optional quota reset interval in seconds (shorter = higher priority when same quota) */
