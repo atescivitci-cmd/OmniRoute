@@ -13,6 +13,16 @@
  * Binding the source signal itself removes the follower. The signal is then exactly the object
  * whoever owns the abort already holds, so its lifetime is theirs. Abort semantics are the same:
  * the signal is already aborted when the source was, and aborts when the source does.
+ *
+ * Limits, measured on Node 26.3 (not on 22 or 24):
+ * - Only reads of `request.signal` see the binding. `request.clone()`, `new Request(request)` and
+ *   `fetch(request)` read the runtime's internal slot instead, so a clone or a Request handed to
+ *   fetch does NOT abort with the source. Nothing on the chat or rerank path does either today;
+ *   if that changes, pass `request.signal` explicitly (and bind the result again).
+ * - It keeps the signal alive, not the object that produced it. In production the inbound request
+ *   from the server is itself built with a follower signal, so a disconnect reaches this binding
+ *   only while something keeps that inbound request alive; that is not verified here.
+ * - `signal` must be a real AbortSignal; this does not validate it.
  */
 export function bindRequestSignal<T extends Request>(request: T, signal: AbortSignal): T {
   Object.defineProperty(request, "signal", {
