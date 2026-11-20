@@ -407,7 +407,7 @@ import {
 } from "../utils/aiSdkCompat.ts";
 import { generateRequestId } from "@/shared/utils/requestId";
 import { isLocalStreamLifecycleError } from "@/shared/utils/circuitBreaker";
-import { getUsageSource } from "@/lib/usage/usageSourceContext";
+import { getUsageSource, runWithUsageSource } from "@/lib/usage/usageSourceContext";
 import { extractFacts } from "@/lib/memory/extraction";
 import { handleToolCallExecution } from "@/lib/skills/interception";
 import { OMNIROUTE_RESPONSE_HEADERS } from "@/shared/constants/headers";
@@ -646,8 +646,9 @@ export async function handleChatCore({
   // client disconnect carries no tag and stays unrecorded: it is not a provider failure. The
   // request's own signal must also be aborted, because the abort branches match by message and
   // would otherwise label a local stream glitch ("controller is already closed") a deadline.
+  const requestUsageSource = getUsageSource();
   const persistProbeDeadlineUsage = () => {
-    if (getUsageSource() && clientRawRequest?.signal?.aborted) {
+    if (requestUsageSource && clientRawRequest?.signal?.aborted) {
       persistFailureUsage(HTTP_STATUS.GATEWAY_TIMEOUT, "probe_deadline");
     }
   };
@@ -5571,11 +5572,33 @@ export async function handleChatCore({
     });
   };
 
+  // The stream failure path writes its usage row as a 499 for any client close. For a canary probe
+  // (carries the provenance tag) whose own signal is aborted, that close is the probe's deadline
+  // firing on a stream that had already started, which is a provider reliability failure. Live,
+  // those rows were written as 499 `client_disconnected`, so the selector read a slow model's
+  // stall as a client leaving. The tag is captured when the request starts: stream callbacks run
+  // from the abort, which is not guaranteed to be inside the probe's async context.
+  const persistStreamFailureUsage = (statusCode: number, errorCode?: string | null) => {
+    if (
+      statusCode === 499 &&
+      errorCode === "client_disconnected" &&
+      requestUsageSource &&
+      clientRawRequest?.signal?.aborted
+    ) {
+      // Bind the tag for the write itself: the abort callback may run outside the probe's context.
+      runWithUsageSource(requestUsageSource, () =>
+        persistFailureUsage(HTTP_STATUS.GATEWAY_TIMEOUT, "probe_deadline")
+      );
+      return;
+    }
+    persistFailureUsage(statusCode, errorCode);
+  };
+
   const streamFailureFinalizers = streamFailure.createStreamFailureFinalizers({
     isFailureCompletionRecorded: () => streamFailureCompletionRecorded,
     isStreamCompletionRecorded: () => streamCompletionRecorded,
     onStreamComplete,
-    persistFailureUsage,
+    persistFailureUsage: persistStreamFailureUsage,
     onStreamFailure,
   });
   const handleStreamFailure = streamFailureFinalizers.handleStreamFailure;

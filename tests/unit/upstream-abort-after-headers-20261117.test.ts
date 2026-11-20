@@ -217,7 +217,10 @@ for (const mode of ["hold-headers", "headers-silent", "headers-trickle", "json-s
     const accepted: Record<Mode, string[]> = {
       "hold-headers": ["probe_deadline"],
       "headers-silent": ["STREAM_READINESS_TIMEOUT", "probe_deadline"],
-      "headers-trickle": ["client_disconnected"],
+      // The stream had started, so the pipeline's stream failure path ends it. It used to write a
+      // 499 `client_disconnected`, which read as a client leaving (seen live on NVIDIA models);
+      // a probe aborted at its own deadline is a provider failure and is recorded as one.
+      "headers-trickle": ["probe_deadline"],
       // The server's own read of a JSON body is aborted and ends as a 499, which writes no
       // usage row, so the probe records its own deadline row.
       "json-silent": ["probe_deadline"],
