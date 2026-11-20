@@ -43,7 +43,7 @@ OpenRouter-style suffixes separate **what kind of route** (category) from **how 
 
 Any valid `auto/<category>[:<tier>]` resolves on demand; a curated subset is advertised in `/v1/models` and the dashboard (`AUTO_SUFFIX_VARIANTS` in `open-sse/services/autoCombo/builtinCatalog.ts`). Filtering is **fail-open** — if a constraint matches no connected models, the full pool is used so routing never breaks. The core scorer (`combo.ts`) is unchanged; the category/tier filter is applied in `buildAutoCandidates`.
 
-> **Live model intelligence:** auto-routing fitness is informed by live **Arena ELO** rankings + **models.dev** tier data when the `ARENA_ELO_SYNC_ENABLED` flag is on (falls back to the static fitness map otherwise).
+> **Live model intelligence:** auto-routing fitness is informed by live **Arena ELO** rankings + **models.dev** tier data when the `ARENA_ELO_SYNC_ENABLED` flag is on (falls back to capability-derived fitness otherwise).
 
 **How to use:**
 
@@ -642,7 +642,17 @@ SLA-aware fields:
 
 ## Task Fitness
 
-30+ models scored across 6 task types (`coding`, `review`, `planning`, `analysis`, `debugging`, `documentation`). Supports wildcard patterns (e.g., `*-coder` → high coding score).
+Model x task-type fitness (`coding`, `review`, `planning`, `analysis`, `debugging`, `documentation`, `math`, `creative`) is resolved from evidence only, in this order:
+
+1. `user_override` (owner-set row in `model_intelligence`)
+2. `arena_elo` (measured; a `-free` variant resolves through its base id: `arena_elo_free_alias`). A rating REFINES the capability-derived value by a bounded, monotone adjustment centred on the leaderboard midpoint (best rating +0.06, worst -0.06, clamped to 0..1), so an unrated model of equal capability sits between rated-high and rated-low and leaderboard coverage cannot decide; with no capability evidence the 0.5 prior is adjusted the same way but never above the task's lowest verified value. Rows are looked up under the provider-qualified id, then the model without its provider segment (never by last path segment).
+3. `models_dev_tier` (persisted tier row)
+4. `capability_derived`: interpolated per task type from the model's **verified** capabilities (reasoning, tool calling, context window, output limit) by `capabilityStrength()`. Continuous and monotone, and identical for identical capabilities whatever the provider or model name.
+5. `no_capability_evidence`: neutral 0.5.
+
+There is no vendor/name table and no name wildcard. The former `fitness_table` and `wildcard_boost` source labels (visible in older `routing_decisions.factors_json` rows) no longer occur.
+
+The fit-first `complexityFit` factor is sufficiency against the task level, not closeness to a target: verified power (0-150, from the same capability strength) earns fit up to `TASK_TARGET_POWER[level]`, then stops adding. The only deductions are genuine unmet requirements (prompt does not fit the context window, requested output above the output limit, required vision/reasoning/tools not verified). On heavy and critical tasks a model whose reasoning is not verified takes a bounded soft penalty (10 / 15 fit points; a required-reasoning request takes the hard -120 instead, never both). Equal candidates are separated only by a two-stage hash tie-break (a model counts once however many accounts or alias ids list it: same provider and same model id once a trailing `@suffix` and an 8-digit date snapshot are removed; variants and sizes stay distinct; then the entry within it), seeded per conversation by `getConversationTieKey`: an external session id, else a session inside `metadata.user_id`, else explicit conversation/thread/session ids or `prompt_cache_key`, else the server session fingerprint, else full-text digests of the system prompt and the first user message (never a truncated joined string). One conversation keeps its pick from turn to turn while different conversations spread across equal candidates; never by list order, provider, or catalog price.  `reorderByTaskWeight` breaks ties the same way for the explicit task strategies, and keeps the incoming order for `auto` (whose scorer already ranked the targets). The legacy 12-factor scorer looks fitness up by the provider-qualified id.
 
 ## Auto Variants Recap
 

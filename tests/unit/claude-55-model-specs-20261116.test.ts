@@ -261,28 +261,51 @@ function top(models: string[], level: "light" | "standard" | "heavy" | "critical
     .sort((a, b) => b.score - a.score || a.i - b.i);
 }
 
-test("power scores of the 5.5 models (name heuristic + resolved specs)", () => {
+// Changed 2026-11-20. These three tests used to pin the old name-heuristic ranking (Haiku 5.5 at
+// power 69 after a -24 "haiku" malus, Opus preferred for critical by the +28 "opus" bonus, Haiku
+// 4.5 winning light by closeness to a target). The power score is now built only from resolved
+// capabilities, so the 5.5 models, which the registry gives the same limits as their siblings,
+// score exactly like them whatever their id says.
+test("power scores of the 5.5 models come from resolved specs only", () => {
   assert.equal(modelPowerScore("claude/claude-opus-5-5"), modelPowerScore("claude/claude-opus-5"));
   assert.equal(
     modelPowerScore("claude/claude-sonnet-5-5"),
     modelPowerScore("claude/claude-sonnet-5")
   );
-  // Haiku 5.5: 35 base +18 reasoning +3 vision +3 tools +22 (1M ctx) +12 (128k out) -24 (haiku).
-  assert.equal(modelPowerScore("claude/claude-haiku-5-5"), 69);
+  // Same resolved capabilities (1M context, 128k output, reasoning, tools) => same power,
+  // regardless of the family word in the id.
+  assert.equal(
+    modelPowerScore("claude/claude-haiku-5-5"),
+    modelPowerScore("claude/claude-opus-5-5")
+  );
+  assert.equal(modelPowerScore("claude/claude-haiku-5-5"), 150);
+  // A model with a smaller verified window/output scores lower, never higher.
+  assert.ok(
+    modelPowerScore("claude/claude-haiku-4-5-20251001") < modelPowerScore("claude/claude-haiku-5-5")
+  );
 });
 
-test("critical still prefers an Opus-class model; heavy is not taken by a 5.5 Haiku/Opus", () => {
-  assert.match(top(WITH_55, "critical")[0].m, /claude-opus/);
-  assert.equal(top(WITH_55, "critical")[0].m, top(CURRENT, "critical")[0].m);
-  assert.ok(!/haiku/.test(top(WITH_55, "heavy")[0].m));
+test("critical and heavy: equal verified capability ties, and ties keep the listed order", () => {
+  // Critical asks for power 120: every model at or above it shares the top score.
+  const sufficient = (m: string) => modelPowerScore(m) >= 120;
+  const critical = top(WITH_55, "critical");
+  const heavy = top(WITH_55, "heavy");
+  // Every full-capability model shares the top score, in list order (stable sort).
+  const best = critical[0].score;
+  const tops = critical.filter((r) => r.score === best).map((r) => r.m);
+  assert.deepEqual(
+    tops,
+    WITH_55.filter((m) => sufficient(m))
+  );
+  assert.equal(heavy.filter((r) => r.score === heavy[0].score).length, tops.length);
+  // Nothing outranks the sufficient group.
+  assert.ok(critical[0].score >= critical[critical.length - 1].score);
+  assert.ok(tops.includes("claude/claude-haiku-4-5-20251001"), "haiku 4.5 verifies power 125");
 });
 
-test("FINDING: with specs known, Haiku 4.5 (not 5.5) still wins `light`; Haiku 5.5 wins `standard`", () => {
-  // modelPowerScore adds bonuses for 1M context and 128k output, so Haiku 5.5 (power 69) sits
-  // farther from the light target (35) than Haiku 4.5 (power 52), and nearer the standard
-  // target (65). Reported, not tuned: cost is not an input to scoreModelForTask.
-  assert.equal(top(WITH_55, "light")[0].m, "claude/claude-haiku-4-5-20251001");
-  assert.equal(top(WITH_55, "standard")[0].m, "claude/claude-haiku-5-5");
-  const light = top(WITH_55, "light").map((r) => r.m);
-  assert.ok(light.indexOf("claude/claude-haiku-5-5") < light.indexOf("claude/claude-fable-5"));
+test("light: sufficiency, not size: Haiku 4.5 and the 5.5 models tie on the light ask", () => {
+  const light = top(WITH_55, "light");
+  const byModel = Object.fromEntries(light.map((r) => [r.m, r.score]));
+  assert.equal(byModel["claude/claude-haiku-4-5-20251001"], byModel["claude/claude-haiku-5-5"]);
+  assert.equal(byModel["claude/claude-haiku-5-5"], byModel["claude/claude-fable-5"]);
 });

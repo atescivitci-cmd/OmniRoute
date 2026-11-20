@@ -24,6 +24,39 @@ import {
   clearConversationAffinity,
 } from "../../open-sse/services/taskAwareRouting.ts";
 import type { ResolvedComboTarget } from "../../open-sse/services/combo/types.ts";
+import {
+  clearModelsDevCapabilities,
+  saveModelsDevCapabilities,
+} from "../../src/lib/modelsDevSync.ts";
+import { resetDbInstance } from "../../src/lib/db/core.ts";
+
+// Capability fixtures (2026-11-20). Task-aware ordering is driven by VERIFIED capability, not by
+// the model name, so tests that need a "stronger" and a "weaker" model state their capabilities
+// instead of relying on words like opus or haiku in the id.
+const capRow = (
+  limit_context: number,
+  limit_output: number,
+  reasoning: boolean,
+  tool_call = true
+) => ({
+  tool_call,
+  reasoning,
+  attachment: false,
+  structured_output: null,
+  temperature: null,
+  modalities_input: null,
+  modalities_output: null,
+  knowledge_cutoff: null,
+  release_date: null,
+  last_updated: null,
+  status: null,
+  family: null,
+  open_weights: null,
+  limit_context,
+  limit_input: null,
+  limit_output,
+  interleaved_field: null,
+});
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -53,8 +86,15 @@ function makeBody(overrides: Record<string, unknown> = {}): Record<string, unkno
 const savedLightByAskFlag = process.env.ROUTING_LIGHT_BY_ASK;
 before(() => {
   delete process.env.ROUTING_LIGHT_BY_ASK;
+  saveModelsDevCapabilities({
+    "prov-strong": { "model-wide": capRow(1_000_000, 128_000, true) },
+    "prov-weak": { "model-narrow": capRow(32_000, 8_192, false) },
+    "prov-mid": { "model-mid": capRow(256_000, 64_000, true) },
+  });
 });
 after(() => {
+  clearModelsDevCapabilities();
+  resetDbInstance();
   if (savedLightByAskFlag === undefined) delete process.env.ROUTING_LIGHT_BY_ASK;
   else process.env.ROUTING_LIGHT_BY_ASK = savedLightByAskFlag;
 });
@@ -189,23 +229,49 @@ describe("reorderByTaskWeight", () => {
     assert.strictEqual(out, targets);
   });
 
-  it("routes light tasks to lighter models (haiku before opus)", () => {
-    const targets = [
-      makeTarget("anthropic/claude-opus-4.6", 0),
-      makeTarget("anthropic/claude-haiku-4.5", 1),
-    ];
-    const task = classifyTask({
+  it("light tasks: sufficiency, not size: a mid model ties the largest, and insufficient capability sorts behind", () => {
+    // Changed 2026-11-20 (was "haiku before opus"): ordering by name or size is gone. A light ask
+    // asks little, so every model with enough verified capability scores the same and neither
+    // list order nor size decides between them; the narrow model, which cannot meet the light
+    // demand, sorts behind regardless of where it was listed.
+    const lightTask = classifyTask({
       messages: [{ role: "user", content: "quick rewrite this sentence" }],
       max_tokens: 300,
     });
-    const out = reorderByTaskWeight(targets, task, new Set());
-    assert.equal(out[0].modelStr, "anthropic/claude-haiku-4.5");
+    assert.equal(lightTask.level, "light");
+    assert.equal(
+      scoreModelForTask("prov-mid/model-mid", lightTask),
+      scoreModelForTask("prov-strong/model-wide", lightTask),
+      "a sufficient mid model must tie the largest on a light ask"
+    );
+    assert.ok(
+      scoreModelForTask("prov-weak/model-narrow", lightTask) <
+        scoreModelForTask("prov-mid/model-mid", lightTask)
+    );
+    const forward = reorderByTaskWeight(
+      [makeTarget("prov-strong/model-wide", 0), makeTarget("prov-mid/model-mid", 1)],
+      lightTask
+    );
+    const reverse = reorderByTaskWeight(
+      [makeTarget("prov-mid/model-mid", 0), makeTarget("prov-strong/model-wide", 1)],
+      lightTask
+    );
+    assert.equal(forward[0].modelStr, reverse[0].modelStr, "ties must not follow list order");
+    const out = reorderByTaskWeight(
+      [
+        makeTarget("prov-weak/model-narrow", 0),
+        makeTarget("prov-strong/model-wide", 1),
+        makeTarget("prov-mid/model-mid", 2),
+      ],
+      lightTask
+    );
+    assert.equal(out.at(-1)?.modelStr, "prov-weak/model-narrow");
   });
 
-  it("routes critical tasks to stronger models (opus before haiku)", () => {
+  it("routes critical tasks to models with more verified capability", () => {
     const targets = [
-      makeTarget("anthropic/claude-haiku-4.5", 0),
-      makeTarget("anthropic/claude-opus-4.6", 1),
+      makeTarget("prov-weak/model-narrow", 0),
+      makeTarget("prov-strong/model-wide", 1),
     ];
     const task = classifyTask({
       messages: [
@@ -219,7 +285,7 @@ describe("reorderByTaskWeight", () => {
     });
     const required = new Set(["reasoning"]);
     const out = reorderByTaskWeight(targets, task, required);
-    assert.equal(out[0].modelStr, "anthropic/claude-opus-4.6");
+    assert.equal(out[0].modelStr, "prov-strong/model-wide");
     assert.ok(
       scoreModelForTask(out[0].modelStr, task, required) >=
         scoreModelForTask(out[1].modelStr, task, required),

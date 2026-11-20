@@ -40,6 +40,7 @@ import { isProviderInCooldown } from "../providerCooldownTracker.ts";
 import {
   classifyTask,
   getConversationCacheKey,
+  getConversationTieKey,
   isTaskRoutingStrategy,
   reorderByTaskWeight,
 } from "../taskAwareRouting.ts";
@@ -567,7 +568,14 @@ function applyTaskAwareOrdering(
   if (!isTaskRoutingStrategy(strategy)) return orderedTargets;
   const task = classifyTask(body);
   const conversationCacheKey = getConversationCacheKey(body);
-  const taskReordered = reorderByTaskWeight(orderedTargets, task);
+  // For the explicit task strategies the input is the operator's listed order, which must not
+  // break ties: a neutral conversation-stable hash does. For `auto` the input is already ordered
+  // by the auto scorer (evidence-ranked, with its own neutral tie-break), so equal task fit keeps
+  // that order rather than discarding it.
+  const taskReordered = reorderByTaskWeight(orderedTargets, task, undefined, {
+    tieKey: getConversationTieKey(body, { sessionId: deps.relayOptions?.sessionId }),
+    preserveInputOrder: strategy === "auto",
+  });
   // #4945 regression guard: when an explicit auto router (lkgp/cost/…) pinned
   // orderedTargets[0], keep that primary choice and let task-aware refine only
   // the fallback tail — otherwise task weighting silently defeats the operator's

@@ -18,8 +18,10 @@ import { noThinkingIntent, noThinkingHandling } from "../reasoningEffortCompatib
 
 import type { ComboLike } from "../combo/types.ts";
 import { getResolvedModelCapabilities } from "../modelCapabilities.ts";
+import { resolveCanonicalProviderModel } from "../model.ts";
 import {
   classifyTask,
+  getConversationTieKey,
   isLightByAskEnabled,
   scoreModelForTask,
   TASK_LEVEL_WEIGHT,
@@ -58,6 +60,9 @@ export interface FitFirstCandidate extends ProviderCandidate {
   latencySampleSource?: "successful_usage_24h" | "unqualified";
   successfulLatencySampleCount?: number;
 }
+
+export type QualityEvidenceKind =
+  "measured" | "capability_tier" | "capability_derived" | "no_evidence";
 
 export interface FitFirstFactors {
   deadlineResponsiveness?: {
@@ -102,8 +107,8 @@ export interface FitFirstFactors {
   latencyP95Ms?: number | null;
   latencyShrink?: number;
   reliabilityMeasured?: boolean;
-  /** Where the task-fitness value came from: a measurement, a capability tier, or a prior table. */
-  qualityEvidence?: "measured" | "capability_tier" | "table_prior";
+  /** Where the task-fitness value came from: a measurement, a capability tier, capabilities, or nothing. */
+  qualityEvidence?: QualityEvidenceKind;
 }
 
 export interface RankedFitFirstCandidate {
@@ -735,7 +740,20 @@ function isNonGenerativeSpecialtyModel(candidate: FitFirstCandidate): boolean {
   );
 }
 
-function requestFingerprint(body: Record<string, unknown>): string {
+/**
+ * Conversation-stable seed for the neutral tie-break (see `getConversationTieKey` for the order
+ * of preference and why long shared system prompts cannot collapse it). Between turns of ONE
+ * conversation the latest ask changes every turn, so hashing the ask made equal candidates
+ * alternate mid-session. When the request carries no conversation material at all (a bare
+ * single-turn call) the seed is a hash of the project text and the ask.
+ */
+function requestFingerprint(
+  body: Record<string, unknown>,
+  conversationKey?: string | null
+): string {
+  if (typeof conversationKey === "string" && conversationKey) return conversationKey;
+  const stable = getConversationTieKey(body);
+  if (stable) return stable;
   const { ask, project } = selectorInputs(body);
   return createHash("sha256")
     .update(`${project.slice(0, 4000)}\0${ask.slice(0, 12000)}`)
@@ -743,23 +761,77 @@ function requestFingerprint(body: Record<string, unknown>): string {
     .slice(0, 16);
 }
 
+/**
+ * Canonical model-name stem for the tie identity: lower-case, with only a trailing `@suffix`
+ * (`x@default`) and then a trailing 8-digit date snapshot (`x-20251001`) removed. Variant and
+ * size words (a `-12b` size, a speed or tier suffix) are kept, so they never merge with the base.
+ * A string rule on the id's shape, not a vendor or family rule.
+ */
+function modelStem(modelId: string): string {
+  return modelId
+    .toLowerCase()
+    .replace(/@[^/@]*$/, "")
+    .replace(/-\d{8}$/, "");
+}
+
+/**
+ * Identity used to count a model ONCE in the tie draw. Entries that are the same model reached
+ * through several accounts, aliases or snapshot ids (`x`, `x@default`, `x-20251001`) would
+ * otherwise each get a full draw, so a provider that lists many aliases of one model won
+ * proportionally more ties (measured on a synced pool of 256 listed ids: 24 of 68 exactly tied
+ * entries belonged to one provider, only 16 of them distinct models). Two entries share an
+ * identity only when they come from the same provider and have the same canonical model stem.
+ * It needs no catalog metadata, so providers with sparse metadata behave like the rest, and
+ * models that differ by a variant or size word are never merged.
+ */
+function tieIdentity(candidate: FitFirstCandidate): string {
+  const canonical = resolveCanonicalProviderModel(candidate.provider, candidate.model);
+  return `id|${canonical.provider}|${modelStem(canonical.model ?? candidate.model)}`;
+}
+
+/**
+ * Final, neutral tie-break for candidates whose score, task fitness and complexity fit are all
+ * exactly equal. Two stages, both hashes of the conversation-stable fingerprint (see
+ * requestFingerprint): first the candidate's tie identity (a model counts once, however many
+ * accounts or aliases list it), then the candidate's own provider, model and connection to pick
+ * within that identity. Neither reads list order, alphabetical order or a vendor constant, so
+ * equal candidates alternate across conversations while one conversation keeps its pick from turn
+ * to turn while the candidate set and evidence are unchanged. The two 64-hex halves are
+ * concatenated, so comparing the strings compares identity first, then entry. Catalog price is
+ * deliberately NOT a tie-break: the pool is already limited to zero-additional-cost providers
+ * (see the "catalog token price" test), and evidence volume is not one either, since that would
+ * let the most-used model keep winning ties.
+ */
 function neutralTieBreaker(fingerprint: string, candidate: FitFirstCandidate): string {
-  return createHash("sha256")
+  const identity = createHash("sha256")
+    .update(`${fingerprint}\0${tieIdentity(candidate)}`)
+    .digest("hex");
+  const entry = createHash("sha256")
     .update(
       `${fingerprint}\0${candidate.provider}\0${candidate.model}\0${candidate.connectionId ?? ""}`
     )
     .digest("hex");
+  return `${identity}${entry}`;
 }
 
 // confidence = n / (n + 20), so 0.5 means at least 20 observed samples.
 const CONFIDENT_FAILURE_MIN_CONFIDENCE = 0.5;
 
-/** Classify the task-fitness source tag; reads a provenance label, never a model id. */
-function qualityEvidenceKind(source: string): "measured" | "capability_tier" | "table_prior" {
+/**
+ * Classify the task-fitness source tag; reads a provenance label, never a model id.
+ *  - measured: owner override or arena rating.
+ *  - capability_tier: a persisted models.dev tier row.
+ *  - capability_derived: computed from the model's verified capabilities.
+ *  - no_evidence: nothing verified, the neutral 0.5 prior (there is no static table any more).
+ * Renamed 2026-11-20: the last value used to be "table_prior" and the third did not exist.
+ */
+function qualityEvidenceKind(source: string): QualityEvidenceKind {
   if (source === "user_override" || source === "arena_elo" || source === "arena_elo_free_alias") {
     return "measured";
   }
-  return source === "models_dev_tier" ? "capability_tier" : "table_prior";
+  if (source === "models_dev_tier") return "capability_tier";
+  if (source === "capability_derived") return "capability_derived";
+  return "no_evidence";
 }
 
 function weightProfile(level: ReturnType<typeof classifyTask>["level"]) {
@@ -806,6 +878,8 @@ export function rankFitFirstFreeCandidates(args: {
   taskProfile?: TaskProfileResolution;
   now?: number;
   answerQualityEvidence?: Map<string, AnswerQualityEvidence>;
+  /** Precomputed conversation tie key (`getConversationTieKey`); derived from the body when absent. */
+  conversationKey?: string | null;
 }): FitFirstDecision {
   const task = classifyTask(args.body);
   const { profile: _taskProfileProposal, ...taskIntent } = inferFitFirstIntent(args.body);
@@ -916,7 +990,7 @@ export function rankFitFirstFreeCandidates(args: {
   const weights = lightEvidence
     ? lightEvidenceWeights(legacyWeights, lightCoverage)
     : legacyWeights;
-  const fingerprint = requestFingerprint(args.body);
+  const fingerprint = requestFingerprint(args.body, args.conversationKey);
   const ranked = eligible
     .map((candidate): RankedFitFirstCandidate => {
       const modelStr = candidateModelString(candidate);

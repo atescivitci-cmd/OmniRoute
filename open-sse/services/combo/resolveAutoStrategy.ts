@@ -6,7 +6,7 @@ import {
   applyDeadlineAwareRouting,
 } from "../autoCombo/deadlineAwareRouting.ts";
 import { resolveTaskProfile, type TaskInterpreter } from "../autoCombo/taskProfile.ts";
-import { classifyTask } from "../taskAwareRouting.ts";
+import { classifyTask, getConversationTieKey } from "../taskAwareRouting.ts";
 import { probeRequestCompatibility, RequestCompatibilityError } from "../requestCompatibility.ts";
 import { resolveRequestCompatibilityTarget } from "../requestCompatibilityTarget.ts";
 import { requestCompatibilityErrorResult } from "../requestCompatibilityResponse.ts";
@@ -586,6 +586,7 @@ export async function resolveAutoStrategyOrder(
           : zeroAdditionalCostProviders,
         configuredAccounts: captureConfiguredAccountPolicy().enabled,
         localFallbackPolicy: strictCentralPolicy.localFallbackPolicy,
+        conversationKey: getConversationTieKey(body, { sessionId: relayOptions?.sessionId }),
       });
       if (isPressedTextRequest(combo.name, body)) {
         await applyPressedResponsiveness(

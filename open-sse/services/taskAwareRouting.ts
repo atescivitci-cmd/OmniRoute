@@ -2,8 +2,8 @@
  * Task-aware routing layer for combo routing.
  *
  * Derives request difficulty (light / standard / heavy / critical) from cheap,
- * local structural signals — no LLM call. Routes heavier tasks toward higher-power
- * models using a continuous `modelPowerScore`. Also provides conversation-affinity
+ * local structural signals — no LLM call. Routes heavier tasks toward models with more
+ * VERIFIED capability using a continuous, name-blind `modelPowerScore`. Also provides conversation-affinity
  * sticky round-robin for prompt-cache efficiency.
  *
  * Ported from upstream PR #2045 (decolua/9router) by @nguyenxvotanminh3.
@@ -19,6 +19,7 @@
 
 import { createHash } from "node:crypto";
 import { getResolvedModelCapabilities } from "./modelCapabilities.ts";
+import { capabilityStrength } from "./capabilityStrength.ts";
 import type { ResolvedComboTarget } from "./combo/types.ts";
 
 // ── Task level constants ──────────────────────────────────────────────────────
@@ -32,6 +33,10 @@ export const TASK_LEVEL_WEIGHT = {
 
 export type TaskLevel = keyof typeof TASK_LEVEL_WEIGHT;
 
+/**
+ * Verified capability power (0-150, see `modelPowerScore`) at which more capability stops
+ * adding fit for a task level. A sufficiency ceiling, not a "closest to" target.
+ */
 export const TASK_TARGET_POWER: Record<TaskLevel, number> = {
   light: 35,
   standard: 65,
@@ -907,40 +912,43 @@ function classifyLightByAsk(
 // ── Model power scoring ───────────────────────────────────────────────────────
 
 /**
- * Estimate how capable a model is on a continuous 0–150 scale, using both
- * registry-derived capabilities and heuristic name matching.
+ * Verified capability power on a 0-150 scale (150 x capabilityStrength).
+ *
+ * Built ONLY from resolved capabilities (reasoning, tool calling, context window, output
+ * limit); it never reads a provider or model name, so two models with the same resolved
+ * capabilities get the same power, whoever made them. A capability the registry could not
+ * verify adds nothing (it is not guessed from the name and not penalised). Monotone: more
+ * verified capability never lowers the value.
+ *
+ * Before 2026-11-20 this also added +28 / -24 / +8 from brand and size words in the model id
+ * (opus, gpt-5, pro, haiku, mini, ...). That made the critical tier reachable only by models
+ * whose NAME matched, so one vendor won by design. See docs/routing/AUTO-COMBO.md.
  */
 export function modelPowerScore(modelStr: string): number {
-  const id = `${modelStr ?? ""}`.toLowerCase();
-  const caps = getResolvedModelCapabilities(modelStr);
-
-  let score = 35;
-  if (caps.reasoning) score += 18;
-  if (caps.supportsVision === true) score += 3;
-  if (caps.toolCalling) score += 3;
-
-  const ctx = caps.contextWindow ?? 0;
-  if (ctx >= 1_000_000) score += 22;
-  else if (ctx >= 400_000) score += 15;
-  else if (ctx >= 200_000) score += 9;
-  else if (ctx > 0 && ctx <= 32_000) score -= 10;
-
-  const maxOut = caps.maxOutputTokens ?? 0;
-  if (maxOut >= 128_000) score += 12;
-  else if (maxOut >= 64_000) score += 8;
-  else if (maxOut > 0 && maxOut <= 8_192) score -= 8;
-
-  if (
-    /\b(opus|mythos|gpt-5|o3|o4|pro|max|ultra|deepseek-v4-pro|sonnet-4|glm-5|kimi-k2\.7|minimax-m3|reasoner)\b/i.test(
-      id
-    )
-  )
-    score += 28;
-  if (/\b(coder|code|coding)\b/i.test(id)) score += 8;
-  if (/\b(haiku|flash|mini|lite|small|nano|instant|fast|turbo|3\.5|8b|7b)\b/i.test(id)) score -= 24;
-
-  return Math.max(0, Math.min(150, score));
+  return Math.round(capabilityStrength(getResolvedModelCapabilities(modelStr)) * 150);
 }
+
+/**
+ * Soft, name-blind penalty (in fit points out of 100) on heavy and critical tasks for a model
+ * whose reasoning capability is not verified (`supportsThinking !== true`: false or unknown).
+ * It applies only when the request did not already require reasoning (that case takes the -120
+ * above) and never on light/standard tasks. Monotone: verifying reasoning can only raise a score.
+ *
+ * Sizing (strength weights: reasoning 0.35, tools 0.10, context 0.30, output 0.25). A
+ * non-reasoning 1M/128K model has strength 0.65 (power 98) and a reasoning 64K/16K model 0.65
+ * (power 97): without this term the two tie and the big non-reasoning window wins heavy and
+ * critical turns on overall score by 0.003. A penalty of 15 (critical) / 10 (heavy) fit points
+ * (about 0.05 / 0.03 of the final score at weights 0.32) breaks that tie toward verified
+ * reasoning, yet a reasoning model that is much smaller still loses where capacity decides:
+ * reasoning 8K/4K (power 68) scores 57 on critical against 82 - 15 = 67 for the huge
+ * non-reasoning one, and a prompt that does not fit takes the separate -200 overflow penalty.
+ */
+const UNVERIFIED_REASONING_SOFT_PENALTY: Record<TaskLevel, number> = {
+  light: 0,
+  standard: 0,
+  heavy: 10,
+  critical: 15,
+};
 
 // Hard capabilities: missing one drops request data (images, PDFs). Maps TS
 // ResolvedModelCapabilities fields that correspond to hard-cap modalities.
@@ -949,6 +957,14 @@ const HARD_CAP_CHECKS = new Set(["vision"]);
 /**
  * Score a single model for a given task + capability requirements.
  * Higher score = better fit. Negative score = capability hard-miss.
+ *
+ * Fit is SUFFICIENCY, not closeness: `100 x min(1, power / TASK_TARGET_POWER[level])`. Verified
+ * capability earns fit up to what the task level asks for, then stops adding, so a bigger model
+ * is never ranked below a smaller one (monotone) and there is no "too powerful" or "below the
+ * threshold" cliff. Light asks therefore tie on this factor and are decided by evidence
+ * (reliability, latency, health, quota). The only deductions are GENUINE unmet requirements:
+ * context window cannot hold the prompt, output limit below the requested output, and a
+ * required vision / reasoning / tool capability that is not verified.
  */
 export function scoreModelForTask(
   modelStr: string,
@@ -957,8 +973,8 @@ export function scoreModelForTask(
 ): number {
   const caps = getResolvedModelCapabilities(modelStr);
   const target = TASK_TARGET_POWER[task.level];
-  const power = modelPowerScore(modelStr);
-  let score = 100 - Math.abs(power - target);
+  const power = Math.round(capabilityStrength(caps) * 150);
+  let score = 100 * Math.min(1, power / target);
 
   // Hard capability misses: drop score heavily so the model sorts to the back
   // but stays in the list (fallback still tries every model).
@@ -967,8 +983,11 @@ export function scoreModelForTask(
     if (cap === "vision" && caps.supportsVision !== true) score -= 10000;
   }
 
-  if ((required.has("reasoning") || task.weight >= TASK_LEVEL_WEIGHT.heavy) && !caps.reasoning)
-    score -= 120;
+  // A required capability that is not verified is an unmet requirement. The task level alone
+  // is not a requirement (it used to subtract 120 here for any heavy+ task on a model not
+  // known to reason).
+  if (required.has("reasoning") && caps.supportsThinking !== true) score -= 120;
+  else if (caps.supportsThinking !== true) score -= UNVERIFIED_REASONING_SOFT_PENALTY[task.level];
   if (required.has("search") && !caps.toolCalling) score -= 30;
 
   const estimatedPromptTokens = Math.ceil((task.promptChars ?? 0) / 4);
@@ -978,29 +997,60 @@ export function scoreModelForTask(
   const maxOut = caps.maxOutputTokens ?? 0;
   if (maxOut > 0 && task.outputTokens > 0 && task.outputTokens > maxOut) score -= 80;
 
-  if (task.level === "light" && power > 95) score -= 35;
-  if (task.level === "standard" && power > 125) score -= 10;
-  if (task.level === "heavy" && power < 65) score -= 60;
-  if (task.level === "critical" && power < 85) score -= 100;
-
   return score;
 }
 
 /**
+ * Neutral tie-break for targets with equal fit: a hash of a conversation-stable key and the
+ * target's provider, model and connection. Never list order, alphabetical order or a vendor.
+ */
+function targetTieHash(target: ResolvedComboTarget, tieKey: string): string {
+  return createHash("sha256")
+    .update(
+      `${tieKey}\0${target.provider ?? ""}\0${target.modelStr ?? ""}\0${target.connectionId ?? ""}`
+    )
+    .digest("hex");
+}
+
+export interface ReorderByTaskWeightOptions {
+  /** Conversation-stable key for the tie hash (`getConversationCacheKey`). Fixed key when absent. */
+  tieKey?: string | null;
+  /**
+   * Keep the input order between targets of equal score instead of hashing. Use it only when the
+   * input order is itself meaningful ranking evidence (the `auto` strategy hands over targets
+   * already ordered by its own scorer, whose tie-break is neutral), never when it is just the
+   * order the operator listed the models in.
+   */
+  preserveInputOrder?: boolean;
+}
+
+/**
  * Reorder ResolvedComboTarget[] so the best-fit model for the task comes first.
- * Stable: ties keep original order. Identity-returns when no reordering needed
- * (avoids allocations on the common path). Never removes targets.
+ * Targets with an equal score are ordered by a neutral, conversation-stable hash (pass the
+ * request's `getConversationCacheKey` as `tieKey`; without one a fixed key is used), so the
+ * listed order never decides between equal targets and one conversation keeps its order from
+ * turn to turn. Targets identical in provider, model and connection keep their listed order.
+ * Identity-returns when no reordering is needed (avoids allocations on the common path).
+ * Never removes targets.
  */
 export function reorderByTaskWeight(
   targets: ResolvedComboTarget[],
   task: TaskClassification = classifyTask({}),
-  required: Set<string> = new Set()
+  required: Set<string> = new Set(),
+  options: ReorderByTaskWeightOptions = {}
 ): ResolvedComboTarget[] {
   if (!Array.isArray(targets) || targets.length <= 1) return targets;
 
+  const key = options.tieKey ?? "";
+  const preserve = options.preserveInputOrder === true;
   const reordered = targets
-    .map((t, i) => ({ t, i, score: scoreModelForTask(t.modelStr, task, required) }))
-    .sort((a, b) => b.score - a.score || a.i - b.i)
+    .map((t, i) => ({
+      t,
+      i,
+      score: scoreModelForTask(t.modelStr, task, required),
+      tie: preserve ? "" : targetTieHash(t, key),
+    }))
+    .sort((a, b) => b.score - a.score || (a.tie < b.tie ? -1 : a.tie > b.tie ? 1 : 0) || a.i - b.i)
     .map((x) => x.t);
 
   return reordered.every((t, i) => t === targets[i]) ? targets : reordered;
@@ -1108,6 +1158,159 @@ export function getConversationCacheKey(body: Record<string, unknown>): string |
   ].filter(Boolean);
 
   return hashConversationSeed(seedParts.join("\n"));
+}
+
+// ── Conversation tie key (neutral tie-break seed) ─────────────────────────────
+
+function fullDigest(text: string): string {
+  return createHash("sha256").update(text.replace(/\s+/g, " ").trim()).digest("hex");
+}
+
+/** First text of the first matching-role entry, FULL length (never truncated). */
+function fullFirstRoleText(
+  items: unknown,
+  roles: Set<string>,
+  contentKey: "content" | "parts" = "content"
+): string {
+  if (!Array.isArray(items)) return "";
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    if (!roles.has(String(rec["role"] ?? ""))) continue;
+    const text = collectText(rec[contentKey]).join("\n").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function fullAllRoleText(
+  items: unknown,
+  roles: Set<string>,
+  contentKey: "content" | "parts" = "content"
+): string {
+  if (!Array.isArray(items)) return "";
+  return items
+    .filter(
+      (item): item is Record<string, unknown> =>
+        !!item &&
+        typeof item === "object" &&
+        roles.has(String((item as Record<string, unknown>)["role"] ?? ""))
+    )
+    .map((item) => collectText(item[contentKey]).join("\n"))
+    .filter(Boolean)
+    .join("\n");
+}
+
+// The older Claude Code form ends with `_session_<uuid>`; nothing looser counts as a session.
+const SESSION_IN_USER_ID_RE =
+  /_session_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+/**
+ * Session id carried by metadata.user_id: either a JSON object with `session_id`/`sessionId`
+ * (the form Claude Code sends and that claudeCodeCompatible.ts emits) or the older
+ * `user_<hash>_account_<uuid>_session_<uuid>` string (uuid-shaped, anchored at the end). A user_id without a session part is a
+ * user (or device) identifier, not a conversation, and yields null.
+ */
+function sessionFromUserId(userId: string): string | null {
+  const text = userId.trim();
+  if (!text) return null;
+  if (text.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      const id = parsed.session_id ?? parsed.sessionId;
+      return typeof id === "string" && id.trim() ? id.trim().toLowerCase() : null;
+    } catch {
+      /* fall through to the pattern */
+    }
+  }
+  const match = SESSION_IN_USER_ID_RE.exec(text);
+  return match ? match[1].toLowerCase() : null;
+}
+
+/**
+ * Conversation-stable, neutral seed for tie-breaks between candidates that are exactly equal on
+ * every score. The same conversation yields the same key on every turn, and different
+ * conversations yield different keys, whatever the length of the shared system prompt.
+ *
+ * Order of preference (first present wins):
+ *  1. an external, client-chosen session id (`ext:` ids from X-Session-Id style headers,
+ *     passed as `options.sessionId`);
+ *  2. a session id embedded in `metadata.user_id` (Claude Code sends
+ *     `user_<hash>_account_<uuid>_session_<uuid>` on /v1/messages);
+ *  3. explicit ids in the body: conversation_id, thread_id, session_id, metadata.* variants,
+ *     prompt_cache_key (Codex);
+ *  4. the server-derived session fingerprint (`options.sessionId` without the `ext:` prefix);
+ *  5. digests of the system prompt and of the FIRST user message, each over its full text, then
+ *     combined (a long, shared system prompt can no longer swallow the per-session part);
+ *  6. null, so the caller falls back to the ask.
+ *
+ * Nothing here reads a model, provider or list order. Never truncates a joined string.
+ * Known limit: a client-chosen id steers only ties between candidates that are already exactly
+ * equal on capability, evidence, quota and health; every admission gate still applies.
+ */
+export function getConversationTieKey(
+  body: Record<string, unknown>,
+  options: { sessionId?: string | null } = {}
+): string | null {
+  const tag = (kind: string, value: string) =>
+    `${kind}:${createHash("sha256").update(value).digest("hex").slice(0, 24)}`;
+  const sessionId = typeof options.sessionId === "string" ? options.sessionId.trim() : "";
+  if (sessionId.startsWith("ext:")) return tag("ext", sessionId);
+  if (!body || typeof body !== "object") return sessionId ? tag("sid", sessionId) : null;
+
+  const meta = (body["metadata"] ?? {}) as Record<string, unknown>;
+  const userId = typeof meta["user_id"] === "string" ? (meta["user_id"] as string) : "";
+  const embedded = sessionFromUserId(userId);
+  if (embedded) return tag("uid", embedded);
+
+  for (const value of [
+    body["conversation_id"],
+    body["conversationId"],
+    body["thread_id"],
+    body["threadId"],
+    body["session_id"],
+    body["sessionId"],
+    meta["conversation_id"],
+    meta["conversationId"],
+    meta["thread_id"],
+    meta["threadId"],
+    meta["session_id"],
+    meta["sessionId"],
+    body["prompt_cache_key"],
+  ]) {
+    if (value != null && String(value).trim()) return tag("explicit", String(value).trim());
+  }
+  if (sessionId) return tag("sid", sessionId);
+
+  const systemRoles = new Set(["system", "developer"]);
+  const userRoles = new Set(["user"]);
+  const contents =
+    body["contents"] ?? (body["request"] as Record<string, unknown> | undefined)?.["contents"];
+  const system = [
+    collectText(body["system"]).join("\n"),
+    collectText(body["instructions"]).join("\n"),
+    fullAllRoleText(body["messages"], systemRoles),
+    fullAllRoleText(body["input"], systemRoles),
+    fullAllRoleText(contents, systemRoles, "parts"),
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const firstUser = [
+    fullFirstRoleText(body["messages"], userRoles),
+    typeof body["input"] === "string"
+      ? (body["input"] as string)
+      : fullFirstRoleText(body["input"], userRoles),
+    fullFirstRoleText(contents, userRoles, "parts"),
+    typeof body["query"] === "string" ? (body["query"] as string) : "",
+    typeof body["url"] === "string" ? (body["url"] as string) : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  if (!system && !firstUser) return null;
+  return tag(
+    "conv",
+    `${system ? fullDigest(system) : ""}\0${firstUser ? fullDigest(firstUser) : ""}`
+  );
 }
 
 // ── Affinity management (for round-robin integration) ────────────────────────

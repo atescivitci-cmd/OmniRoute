@@ -1,228 +1,64 @@
 /**
- * Task Fitness Lookup Table
+ * Task Fitness
  *
- * Maps model patterns × task types → fitness score [0..1].
- * Supports wildcards and prefix matching.
+ * Maps model x task type -> fitness score [0..1], from VERIFIED evidence only. No model-name,
+ * vendor or provider table decides ranking: until 2026-11-20 a hand-written table rated
+ * claude-opus 0.95 / claude-haiku 0.7 against qwen 0.78 / minimax 0.72 and gave every newer
+ * model a default, which made one vendor win by design.
  *
- * Resolution chain (highest → lowest priority):
- * 1. User override — DB `model_intelligence` where source='user_override'
- * 2. Arena ELO — DB `model_intelligence` where source='arena_elo'
- * 3. Models.dev tier — derived from `model_capabilities` table capability data
- * 4. Static FITNESS_TABLE — existing hardcoded lookup (current behavior)
- * 5. Wildcard boosts — existing pattern matching boosts (current behavior)
+ * Resolution chain (highest -> lowest priority):
+ * 1. User override   - DB `model_intelligence` where source='user_override'        (owner's data)
+ * 2. Arena ELO       - DB `model_intelligence` where source='arena_elo'            (measured;
+ *                      refines the capability-derived value by a bounded +/-0.06, see below)
+ *                      (also resolves a `-free` variant through its base id)
+ * 3. Persisted tier  - DB `model_intelligence` where source='models_dev_tier'      (synced data)
+ * 4. Capability      - derived from the model's resolved capabilities (reasoning, tools,
+ *                      context window, output limit) by `capabilityStrength`, interpolated
+ *                      between the budget and premium tier values of the task type.
+ *                      source = "capability_derived". Monotone, continuous, name-blind.
+ * 5. No evidence     - neutral 0.5, source = "no_capability_evidence". Never boosted by name.
+ *
+ * Source labels removed on 2026-11-20: "fitness_table" (static vendor table) and
+ * "wildcard_boost" (name patterns). Consumers that read `taskFitnessSource` from
+ * routing_decisions.factors_json will see "capability_derived" / "no_capability_evidence"
+ * instead; older rows keep the old labels.
+ *
+ * Observed reliability, latency and validated answer quality are separate ranking factors in
+ * fitFirstPolicy and are not folded in here.
  */
 
-// ─── Static fitness table (unchanged, fallback layer 4) ─────────────────
-
-import { getDbInstance } from "../../../src/lib/db/core.ts";
 import {
   getModelIntelligenceBySource,
   setUserFitnessOverrideEntry,
   deleteUserFitnessOverrideEntry,
 } from "../../../src/lib/db/modelIntelligence.ts";
+import { getResolvedModelCapabilities } from "../modelCapabilities.ts";
+import { capabilityStrength, hasCapabilityEvidence } from "../capabilityStrength.ts";
 
-const FITNESS_TABLE: Record<string, Record<string, number>> = {
-  coding: {
-    "claude-sonnet": 0.95,
-    "claude-opus": 0.92,
-    "claude-haiku": 0.78,
-    "gpt-4o": 0.9,
-    "gpt-4o-mini": 0.8,
-    "gpt-4-turbo": 0.88,
-    o1: 0.93,
-    o3: 0.95,
-    "o4-mini": 0.88,
-    codex: 0.98,
-    "gemini-pro": 0.85,
-    "gemini-flash": 0.8,
-    "gemini-2.5-pro": 0.92,
-    "gemini-2.5-flash": 0.82,
-    "deepseek-coder": 0.9,
-    "deepseek-v3": 0.85,
-    "deepseek-r1": 0.88,
-    "deepseek-chat": 0.84, // DeepSeek V3.2 Chat — strong code performance
-    "deepseek-v3.2": 0.86, // Explicit V3.2 alias
-    qwen: 0.78,
-    llama: 0.72,
-    mistral: 0.75,
-    mixtral: 0.77,
-    // Grok-4 fast — good code, ultra-low latency (1143ms P50)
-    "grok-4-fast": 0.8,
-    "grok-4": 0.82,
-    "grok-3": 0.8,
-    // Kimi K2.5 — agentic with tool calling, good at code tasks
-    "kimi-k2": 0.82,
-    // GLM-5.1 / GLM-5 — Z.AI reasoning models, 200K context / 128k output
-    "glm-5.1": 0.78,
-    "glm-5": 0.78,
-    // MiniMax M2.5 — reasoning support helps complex code
-    "minimax-m2.5": 0.75,
-    "minimax-m2": 0.72,
-  },
-  review: {
-    "claude-sonnet": 0.92,
-    "claude-opus": 0.95,
-    "claude-haiku": 0.7,
-    "gpt-4o": 0.88,
-    "gpt-4o-mini": 0.72,
-    o1: 0.9,
-    o3: 0.92,
-    "gemini-pro": 0.9,
-    "gemini-2.5-pro": 0.93,
-    "gemini-flash": 0.75,
-    "deepseek-r1": 0.85,
-    "deepseek-v3": 0.8,
-  },
-  planning: {
-    "claude-opus": 0.95,
-    "claude-sonnet": 0.9,
-    "gpt-4o": 0.88,
-    o1: 0.92,
-    o3: 0.95,
-    "gemini-2.5-pro": 0.93,
-    "gemini-pro": 0.88,
-    "deepseek-r1": 0.85,
-  },
-  analysis: {
-    "claude-opus": 0.95,
-    "claude-sonnet": 0.92,
-    "gemini-2.5-pro": 0.95,
-    "gemini-pro": 0.88,
-    "gemini-3.1-pro": 0.95, // Gemini 3.1 Pro — 1M context, ideal for long analysis
-    "gpt-4o": 0.85,
-    o1: 0.9,
-    o3: 0.93,
-    "deepseek-r1": 0.88,
-    "deepseek-chat": 0.8,
-    "kimi-k2": 0.82, // Kimi K2.5 agentic — good for analysis
-    "glm-5.1": 0.82, // GLM-5.1 free reasoning, 200K context for long analysis
-    "glm-5": 0.78, // GLM-5 with 128k output for long analysis
-    "minimax-m2.5": 0.76,
-  },
-  debugging: {
-    "claude-sonnet": 0.93,
-    "claude-opus": 0.9,
-    "gpt-4o": 0.88,
-    o1: 0.85,
-    "deepseek-coder": 0.9,
-    "deepseek-v3": 0.82,
-    "gemini-flash": 0.78,
-    codex: 0.92,
-  },
-  documentation: {
-    "claude-sonnet": 0.9,
-    "claude-opus": 0.88,
-    "gpt-4o": 0.92,
-    "gpt-4o-mini": 0.85,
-    "gemini-pro": 0.88,
-    "gemini-flash": 0.82,
-    "deepseek-v3": 0.78,
-  },
-  math: {
-    o1: 0.96,
-    o3: 0.97,
-    "claude-opus": 0.93,
-    "claude-sonnet": 0.9,
-    "gemini-2.5-pro": 0.94,
-    "gemini-pro": 0.88,
-    "deepseek-r1": 0.94,
-    codex: 0.86,
-  },
-  creative: {
-    "claude-opus": 0.96,
-    "claude-sonnet": 0.93,
-    "gpt-4o": 0.92,
-    "gpt-4o-mini": 0.82,
-    "gemini-2.5-pro": 0.91,
-    "gemini-pro": 0.88,
-    "deepseek-v3": 0.78,
-    codex: 0.7,
-  },
-  default: {
-    "claude-sonnet": 0.85,
-    "claude-opus": 0.85,
-    "gpt-4o": 0.85,
-    "gemini-pro": 0.8,
-    "gemini-3.1-pro": 0.85,
-    "deepseek-v3": 0.75,
-    "deepseek-chat": 0.74,
-    "gemini-flash": 0.72,
-    // New models from ClawRouter analysis (2026-03-17):
-    "grok-4-fast": 0.72, // ultra-fast, suitable for all tasks
-    "grok-4": 0.74,
-    "grok-3": 0.73,
-    "kimi-k2": 0.76, // agentic multi-step tasks
-    "glm-5.1": 0.75,
-    "glm-5": 0.7,
-    "minimax-m2.5": 0.7,
-  },
-};
-
-// Wildcard patterns: model substrings → task type boosts
-const WILDCARD_BOOSTS: Array<{ pattern: string; taskType: string; boost: number }> = [
-  { pattern: "coder", taskType: "coding", boost: 0.15 },
-  { pattern: "code", taskType: "coding", boost: 0.1 },
-  { pattern: "fast", taskType: "coding", boost: 0.05 },
-  { pattern: "thinking", taskType: "planning", boost: 0.1 },
-  { pattern: "thinking", taskType: "analysis", boost: 0.1 },
-];
-
-// ─── Models.dev tier → task fitness mapping (resolution layer 3) ────────
+// ─── Capability -> task fitness mapping (resolution layer 4) ────────────
 
 /**
- * Intelligence tier derived from models.dev capability data.
- * Tier assignment rules:
- * - `reasoning === true` → "premium"
- * - `tool_call === true && context >= 128000` → "standard"
- * - `tool_call === true` → "fast"
- * - everything else → "budget"
+ * Fitness at the bottom (capability strength 0) and top (strength 1) of the capability range,
+ * per task type. A model's fitness is interpolated between them by its verified capability
+ * strength, so it is continuous and monotone: more verified capability never lowers it. The
+ * same curve applies to every provider and model name; the task type changes only the range.
+ * (The values are the former models.dev "budget" and "premium" tier rows.)
  */
-const TIER_TASK_FITNESS: Record<string, Record<string, number>> = {
-  premium: {
-    coding: 0.92,
-    review: 0.93,
-    planning: 0.94,
-    analysis: 0.95,
-    debugging: 0.9,
-    documentation: 0.88,
-    math: 0.95,
-    creative: 0.92,
-    default: 0.85,
-  },
-  standard: {
-    coding: 0.85,
-    review: 0.84,
-    planning: 0.85,
-    analysis: 0.85,
-    debugging: 0.82,
-    documentation: 0.85,
-    math: 0.84,
-    creative: 0.85,
-    default: 0.78,
-  },
-  fast: {
-    coding: 0.78,
-    review: 0.72,
-    planning: 0.7,
-    analysis: 0.72,
-    debugging: 0.75,
-    documentation: 0.8,
-    math: 0.72,
-    creative: 0.78,
-    default: 0.72,
-  },
-  budget: {
-    coding: 0.65,
-    review: 0.6,
-    planning: 0.55,
-    analysis: 0.58,
-    debugging: 0.6,
-    documentation: 0.7,
-    math: 0.58,
-    creative: 0.66,
-    default: 0.55,
-  },
+const TASK_FITNESS_RANGE: Record<string, { floor: number; ceil: number }> = {
+  coding: { floor: 0.65, ceil: 0.92 },
+  review: { floor: 0.6, ceil: 0.93 },
+  planning: { floor: 0.55, ceil: 0.94 },
+  analysis: { floor: 0.58, ceil: 0.95 },
+  debugging: { floor: 0.6, ceil: 0.9 },
+  documentation: { floor: 0.7, ceil: 0.88 },
+  math: { floor: 0.58, ceil: 0.95 },
+  creative: { floor: 0.66, ceil: 0.92 },
+  default: { floor: 0.55, ceil: 0.85 },
 };
+
+/** Fitness when there is no evidence at all. Below every verified floor above. */
+const NO_EVIDENCE_FITNESS = 0.5;
+
 // ─── DB access helpers ──────────────────────────────────────────────────
 
 const _intelligenceCache = new Map<string, number | null>();
@@ -245,128 +81,92 @@ function queryModelIntelligence(model: string, category: string, source: string)
   }
 }
 
-// ─── Models.dev capability → tier → fitness resolution ──────────────────
-
-let _capabilitiesCache: Record<string, ModelCapRow> | null = null;
-
-interface ModelCapRow {
-  tool_call: boolean | null;
-  reasoning: boolean | null;
-  limit_context: number | null;
+/** Persisted models.dev tier row (layer 3). Null when no row exists. */
+export function getModelsDevTierFitness(model: string, taskType: string): number | null {
+  return queryModelIntelligence(model.toLowerCase(), taskType.toLowerCase(), "models_dev_tier");
 }
 
-function deriveTierFromCapabilities(cap: ModelCapRow): string {
-  if (cap.reasoning === true) return "premium";
-  if (cap.tool_call === true && (cap.limit_context ?? 0) >= 128000) return "standard";
-  if (cap.tool_call === true) return "fast";
-  return "budget";
-}
-
-function loadModelCapabilities(): Record<string, ModelCapRow> | null {
-  if (_capabilitiesCache) return _capabilitiesCache;
-
+/**
+ * Fitness derived from the model's resolved capabilities (layer 4). Null when no capability is
+ * verified. Depends only on capability values, never on the provider or model name.
+ */
+export function getCapabilityDerivedFitness(model: string, taskType: string): number | null {
+  let caps;
   try {
-    const db = getDbInstance();
-    const tableExists = db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='model_capabilities'")
-      .get();
-    if (!tableExists) return null;
-
-    const rows = db.prepare("SELECT * FROM model_capabilities").all() as Record<string, unknown>[];
-    const cache: Record<string, ModelCapRow> = {};
-
-    for (const row of rows) {
-      const modelId = typeof row.model_id === "string" ? row.model_id : "";
-      if (!modelId) continue;
-
-      cache[modelId.toLowerCase()] = {
-        tool_call:
-          row.tool_call === true || row.tool_call === 1
-            ? true
-            : row.tool_call === false || row.tool_call === 0
-              ? false
-              : null,
-        reasoning:
-          row.reasoning === true || row.reasoning === 1
-            ? true
-            : row.reasoning === false || row.reasoning === 0
-              ? false
-              : null,
-        limit_context: typeof row.limit_context === "number" ? row.limit_context : null,
-      };
-    }
-
-    _capabilitiesCache = cache;
-    return cache;
+    caps = getResolvedModelCapabilities(model);
   } catch {
     return null;
   }
-}
-
-export function getModelsDevTierFitness(model: string, taskType: string): number | null {
-  const normalizedModel = model.toLowerCase();
-  const normalizedTask = taskType.toLowerCase();
-
-  const dbScore = queryModelIntelligence(normalizedModel, normalizedTask, "models_dev_tier");
-  if (dbScore !== null) return dbScore;
-
-  const caps = loadModelCapabilities();
-  if (!caps) return null;
-
-  const capRow = caps[normalizedModel];
-  if (!capRow) return null;
-
-  const tier = deriveTierFromCapabilities(capRow);
-  const tierScores = TIER_TASK_FITNESS[tier];
-  if (!tierScores) return null;
-
-  return tierScores[normalizedTask] ?? tierScores.default ?? null;
+  if (!hasCapabilityEvidence(caps)) return null;
+  const range = TASK_FITNESS_RANGE[taskType.toLowerCase()] ?? TASK_FITNESS_RANGE.default;
+  return range.floor + capabilityStrength(caps) * (range.ceil - range.floor);
 }
 
 // ─── Resolution chain ───────────────────────────────────────────────────
 
+export function getTaskFitness(model: string, taskType: string): number {
+  return getTaskFitnessWithSource(model, taskType).score;
+}
+
 /**
- * Resolve a model id against the static fitness table, LONGEST PATTERN FIRST (#8603).
- *
- * The shadowing itself is already fixed on `release/v3.8.49` (9f5be229b): matching used
- * to return the first `String.includes` hit in declaration order, so a shorter pattern
- * declared earlier shadowed a model's own, more specific row — `FITNESS_TABLE.coding`
- * declares `"gpt-4o": 0.9` before `"gpt-4o-mini": 0.8`, so `gpt-4o-mini` inherited the
- * flagship's 0.9 and its own row was unreachable (same for `deepseek-v3.2` vs
- * `deepseek-v3`). The length-ranked scan below is that upstream fix, unchanged.
- *
- * What this PR adds is only the exported seam: the surrounding resolution chain hits the
- * DB (user_override / arena_elo / models.dev tier) before reaching layer 4, so pinning
- * the ordering guarantee through `getTaskFitness` would depend on DB fixture state.
- * `taskFitness-pattern-order-8603.test.ts` calls this directly instead.
+ * Ids under which measured rows (user_override, arena_elo) are looked up, most specific first:
+ * the id as given (usually `provider/model`), then the model without its leading provider
+ * segment. Measured rows are written under the bare model name (arenaEloSync writes
+ * `claude-opus-4-7`, never `claude/claude-opus-4-7`), while the routers look models up by their
+ * provider-qualified id; trying both keeps measured evidence reachable from every path. There is
+ * deliberately no last-segment fallback: a bare row named `x` must not apply to `vendor/team/x`,
+ * a different model that merely ends the same way. Pure string handling, no model names.
  */
-export function getStaticFitnessTableScore(model: string, taskType: string): number | null {
-  const normalizedModel = model.toLowerCase();
-  const normalizedTask = taskType.toLowerCase();
-  const table = FITNESS_TABLE[normalizedTask] || FITNESS_TABLE.default;
-  const sortedEntries = Object.entries(table).sort((a, b) => b[0].length - a[0].length);
-  for (const [pattern, score] of sortedEntries) {
-    if (normalizedModel.includes(pattern)) return score;
+function measuredLookupIds(normalizedModel: string): string[] {
+  const ids = [normalizedModel];
+  const slash = normalizedModel.indexOf("/");
+  if (slash > 0) ids.push(normalizedModel.slice(slash + 1));
+  return [...new Set(ids.filter(Boolean))];
+}
+
+function firstMeasured(
+  ids: string[],
+  normalizedTask: string,
+  source: string
+): { score: number; id: string } | null {
+  for (const id of ids) {
+    const score = queryModelIntelligence(id, normalizedTask, source);
+    if (score !== null) return { score, id };
   }
   return null;
 }
 
-function lookupStaticFitnessTable(normalizedModel: string, normalizedTask: string): number | null {
-  return getStaticFitnessTableScore(normalizedModel, normalizedTask);
-}
+// Arena ratings are normalised per leaderboard onto this range (arenaEloSync: 0.4 + 0.58 x rank
+// position), so its midpoint is the rating of an "average" listed model.
+const ARENA_RATING_MID = 0.69;
+const ARENA_RATING_HALF_RANGE = 0.29;
+/**
+ * Largest move a rating can make to a model's fitness, either way. The best-rated model gains
+ * this much over an unrated one of equal capability and the worst-rated loses this much, so the
+ * full leaderboard spans 2 x 0.06 = 0.12 of fitness: enough to order models of similar verified
+ * capability (capability strength 0..1 moves fitness by 0.27-0.37), too small to lift a model
+ * above one with materially more verified capability (at least 0.12 / 0.37 = a third of the
+ * strength range). Final-score effect at the heavy/critical task weight 0.5: at most 0.03.
+ */
+const ARENA_RATING_BAND = 0.06;
 
-function lookupWildcardBoosts(normalizedModel: string, normalizedTask: string): number {
-  let baseScore = 0.5;
-  for (const wc of WILDCARD_BOOSTS) {
-    if (normalizedModel.includes(wc.pattern) && normalizedTask === wc.taskType) {
-      baseScore += wc.boost;
-    }
-  }
-  return Math.min(1.0, baseScore);
-}
-
-export function getTaskFitness(model: string, taskType: string): number {
-  return getTaskFitnessWithSource(model, taskType).score;
+/**
+ * A measured rating REFINES the capability-derived fitness instead of replacing it. Ratings live
+ * on the leaderboard's own 0.4-0.98 scale while unrated models keep a capability-derived value on
+ * a different scale, so using the raw rating as the fitness let leaderboard coverage (uneven
+ * across vendors) decide: an unrated model outranked every rated model below about 0.92. Here a
+ * rated model sits at its capability-derived value plus a bounded, monotone adjustment centred on
+ * the leaderboard midpoint: rated-high >= unrated >= rated-low for equal capability. With no
+ * capability evidence the 0.5 prior is adjusted the same way but never lifted above the lowest
+ * verified fitness of the task, so a rating cannot make an unverified model outrank a verified one.
+ */
+function refineWithRating(rating: number, normalizedTask: string, model: string): number {
+  const range = TASK_FITNESS_RANGE[normalizedTask] ?? TASK_FITNESS_RANGE.default;
+  const derived = getCapabilityDerivedFitness(model, normalizedTask);
+  const position = Math.max(-1, Math.min(1, (rating - ARENA_RATING_MID) / ARENA_RATING_HALF_RANGE));
+  const adjustment = position * ARENA_RATING_BAND;
+  if (derived === null) return Math.min(NO_EVIDENCE_FITNESS + adjustment, range.floor);
+  return Math.max(0, Math.min(1, derived + adjustment));
 }
 
 export function getTaskFitnessWithSource(
@@ -375,26 +175,35 @@ export function getTaskFitnessWithSource(
 ): { score: number; source: string } {
   const normalizedModel = model.toLowerCase();
   const normalizedTask = taskType.toLowerCase();
+  const ids = measuredLookupIds(normalizedModel);
 
-  const userOverride = queryModelIntelligence(normalizedModel, normalizedTask, "user_override");
-  if (userOverride !== null) {
-    return { score: userOverride, source: "user_override" };
+  // The owner's explicit override is outright: it replaces the fitness.
+  const userOverride = firstMeasured(ids, normalizedTask, "user_override");
+  if (userOverride) {
+    return { score: userOverride.score, source: "user_override" };
   }
 
-  // Try arena_elo with the literal model id first (e.g. "mimo-v2.5"). If that's
-  // a miss and the model id carries a "-free" suffix (e.g. "mimo-v2.5-free"),
+  // Try arena_elo with the literal model id first (e.g. "mimo-v2.5"), then its bare form. If
+  // that's a miss and the model id carries a "-free" suffix (e.g. "mimo-v2.5-free"),
   // try the un-suffixed base id so free-tier variants inherit the arena_elo
   // score of their paid counterpart. This is what operators expect: the
   // upstream's `mimo-v2.5` is benchmarked once, and `mimo-v2.5-free` should
-  // pick up the same signal rather than falling through to the wildcard 0.5
-  // and losing every free-vs-paid comparison.
-  const arenaElo = queryModelIntelligence(normalizedModel, normalizedTask, "arena_elo");
-  if (arenaElo !== null) {
-    return { score: arenaElo, source: "arena_elo" };
+  // pick up the same signal rather than losing every free-vs-paid comparison.
+  const arenaElo = firstMeasured(ids, normalizedTask, "arena_elo");
+  if (arenaElo) {
+    return {
+      score: refineWithRating(arenaElo.score, normalizedTask, model),
+      source: "arena_elo",
+    };
   }
-  const arenaEloBase = lookupFreeAliasArenaElo(normalizedModel, normalizedTask);
-  if (arenaEloBase !== null) {
-    return { score: arenaEloBase, source: "arena_elo_free_alias" };
+  for (const id of ids) {
+    const arenaEloBase = lookupFreeAliasArenaElo(id, normalizedTask);
+    if (arenaEloBase !== null) {
+      return {
+        score: refineWithRating(arenaEloBase, normalizedTask, model),
+        source: "arena_elo_free_alias",
+      };
+    }
   }
 
   const tierScore = getModelsDevTierFitness(normalizedModel, normalizedTask);
@@ -402,12 +211,12 @@ export function getTaskFitnessWithSource(
     return { score: tierScore, source: "models_dev_tier" };
   }
 
-  const staticScore = lookupStaticFitnessTable(normalizedModel, normalizedTask);
-  if (staticScore !== null) {
-    return { score: staticScore, source: "fitness_table" };
+  const derived = getCapabilityDerivedFitness(model, normalizedTask);
+  if (derived !== null) {
+    return { score: derived, source: "capability_derived" };
   }
 
-  return { score: lookupWildcardBoosts(normalizedModel, normalizedTask), source: "wildcard_boost" };
+  return { score: NO_EVIDENCE_FITNESS, source: "no_capability_evidence" };
 }
 
 /** Suffix used to mark free-tier model variants (e.g. "mimo-v2.5-free"). */
@@ -453,10 +262,9 @@ export function clearUserFitnessOverride(model: string, category: string): void 
 }
 
 export function getTaskTypes(): string[] {
-  return Object.keys(FITNESS_TABLE).filter((k) => k !== "default");
+  return Object.keys(TASK_FITNESS_RANGE).filter((k) => k !== "default");
 }
 
 export function invalidateFitnessCache(): void {
-  _capabilitiesCache = null;
   _intelligenceCache.clear();
 }
