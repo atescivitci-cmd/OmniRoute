@@ -645,6 +645,9 @@ test("demo: measured-slow model versus fast model, with thin and with adequate e
     assert.equal(before.ranked.length, 2);
     winners[label] = [keyOf(before.ranked[0].candidate), keyOf(after.ranked[0].candidate)];
   }
-  // With adequate evidence the measured-fast candidate overtakes the measured-slow one.
-  assert.deepEqual(winners["adequate (n=30)"], ["prov-a/model-x", "prov-b/model-y"]);
+  // Changed 2026-11-20: before this date the flag-off ranking preferred model-x purely because
+  // its declared size sat nearer the light "target", and the flag was what let model-y overtake.
+  // Fit is now sufficiency (a bigger verified model is never ranked below a smaller one), so the
+  // verified-larger, measured-fast candidate leads with and without the flag.
+  assert.deepEqual(winners["adequate (n=30)"], ["prov-b/model-y", "prov-b/model-y"]);
 });

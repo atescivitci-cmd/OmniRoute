@@ -6,6 +6,10 @@ import {
   rankFitFirstFreeCandidates,
 } from "../../open-sse/services/autoCombo/fitFirstPolicy.ts";
 import { resetDbInstance } from "../../src/lib/db/core.ts";
+import {
+  clearUserFitnessOverride,
+  setUserFitnessOverride,
+} from "../../open-sse/services/autoCombo/taskFitness.ts";
 
 test.after(() => resetDbInstance());
 
@@ -47,27 +51,36 @@ test("an ambiguous continuation uses project context", () => {
   assert.deepEqual(result, { taskType: "debugging", source: "project" });
 });
 
-test("task fit changes the winner instead of favoring one static model", () => {
+test("task fit changes the winner through evidence, not through a static vendor preference", () => {
+  // Changed 2026-11-20: this test used to assert that a built-in table made codex win coding and
+  // claude win planning. That table is gone (it decided between vendors by name). The winner now
+  // moves only when evidence says so, here owner-set per-task fitness overrides.
   const candidates = [candidate("codex", "gpt-5.6-sol"), candidate("claude", "claude-opus-4-7")];
   const freePool = ["codex", "claude"];
-
-  const coding = rankFitFirstFreeCandidates({
-    candidates,
-    body: {
-      messages: [{ role: "user", content: "Implement a TypeScript function and test suite." }],
-    },
-    zeroAdditionalCostProviders: freePool,
-  });
-  const planning = rankFitFirstFreeCandidates({
-    candidates,
-    body: { messages: [{ role: "user", content: "Plan the architecture and rollout." }] },
-    zeroAdditionalCostProviders: freePool,
-  });
-
-  assert.equal(coding.taskType, "coding");
-  assert.equal(coding.ranked[0].candidate.provider, "codex");
-  assert.equal(planning.taskType, "planning");
-  assert.equal(planning.ranked[0].candidate.provider, "claude");
+  const coding = {
+    messages: [{ role: "user", content: "Implement a TypeScript function and test suite." }],
+  };
+  const planning = { messages: [{ role: "user", content: "Plan the architecture and rollout." }] };
+  const run = (body: Record<string, unknown>) =>
+    rankFitFirstFreeCandidates({ candidates, body, zeroAdditionalCostProviders: freePool });
+  try {
+    setUserFitnessOverride("codex/gpt-5.6-sol", "coding", 0.99);
+    setUserFitnessOverride("claude/claude-opus-4-7", "coding", 0.6);
+    setUserFitnessOverride("codex/gpt-5.6-sol", "planning", 0.6);
+    setUserFitnessOverride("claude/claude-opus-4-7", "planning", 0.99);
+    const c = run(coding);
+    const p = run(planning);
+    assert.equal(c.taskType, "coding");
+    assert.equal(c.ranked[0].candidate.provider, "codex");
+    assert.equal(c.ranked[0].factors.taskFitnessSource, "user_override");
+    assert.equal(p.taskType, "planning");
+    assert.equal(p.ranked[0].candidate.provider, "claude");
+  } finally {
+    for (const t of ["coding", "planning"]) {
+      clearUserFitnessOverride("codex/gpt-5.6-sol", t);
+      clearUserFitnessOverride("claude/claude-opus-4-7", t);
+    }
+  }
 });
 
 test("unverified, quota-dead, status-dead and circuit-open candidates are excluded", () => {
@@ -173,8 +186,17 @@ test("catalog token price does not affect ranking inside the verified included p
     zeroAdditionalCostProviders: ["claude", "codex"],
   });
 
-  assert.equal(expensiveCatalog.ranked[0].candidate.provider, "claude");
-  assert.equal(reversedCatalog.ranked[0].candidate.provider, "claude");
+  // Changed 2026-11-20: the old assertion pinned the winner to claude, which only held because of
+  // the removed static vendor table. The property under test is that price does not move the
+  // ranking: the same candidate wins whichever way the catalog prices are assigned.
+  assert.equal(
+    expensiveCatalog.ranked[0].candidate.provider,
+    reversedCatalog.ranked[0].candidate.provider
+  );
+  assert.deepEqual(
+    expensiveCatalog.ranked.map((r) => r.factors.score),
+    reversedCatalog.ranked.map((r) => r.factors.score)
+  );
 });
 
 test("exact ties are deterministic and never depend on Math.random", () => {

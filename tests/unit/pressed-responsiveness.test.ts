@@ -23,7 +23,43 @@ const { getDbInstance, resetDbInstance } = await import("../../src/lib/db/core.t
 const { saveCallLog } = await import("../../src/lib/usage/callLogs.ts");
 const { installZeroCostEvidenceResolver } =
   await import("../../open-sse/services/autoCombo/zeroCostAdmission.ts");
+const { saveModelsDevCapabilities } = await import("../../src/lib/modelsDevSync.ts");
 const db = getDbInstance();
+// Fixture capabilities (2026-11-20). These tests used to rely on a static vendor/name table to
+// decide which catalog model is "the materially stronger fit". Ranking is now driven by verified
+// capability, so the fixture states that explicitly: kimi-k2.6 and glm-5.2 are the strongest,
+// the unknown llama sits just above minimax (which keeps its registry capabilities), and the
+// "catalog/option-*" ids are tool-capable, non-reasoning, 64K window / 16K output: weaker than
+// kimi-k2.6 by about 0.08 of score, so one deadline miss (-0.06) keeps kimi-k2.6 first and
+// two (-0.12) move it behind them, which is what these tests exercise.
+const capabilityRow = (limit_context: number, limit_output: number, reasoning = true) => ({
+  tool_call: true,
+  reasoning,
+  attachment: false,
+  structured_output: null,
+  temperature: null,
+  modalities_input: null,
+  modalities_output: null,
+  knowledge_cutoff: null,
+  release_date: null,
+  last_updated: null,
+  status: null,
+  family: null,
+  open_weights: null,
+  limit_context,
+  limit_input: null,
+  limit_output,
+  interleaved_field: null,
+});
+saveModelsDevCapabilities({
+  nvidia: {
+    "moonshotai/kimi-k2.6": capabilityRow(1_000_000, 128_000),
+    "z-ai/glm-5.2": capabilityRow(1_000_000, 128_000),
+    "meta/llama-3.2-11b-vision-instruct": capabilityRow(215_000, 128_000),
+    "catalog/option-a": capabilityRow(64_000, 16_000, false),
+    "catalog/option-b": capabilityRow(64_000, 16_000, false),
+  },
+});
 const comboName = "ac-pressed-zero-token-cost";
 const provider = "nvidia";
 const connection = "fixture-account";

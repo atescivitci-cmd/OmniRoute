@@ -2,7 +2,7 @@
  * Unit tests for Auto-Combo Engine (Phase 5)
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { calculateFactors, calculateScore, DEFAULT_WEIGHTS, validateWeights } from "../scoring";
 import type { ProviderCandidate, ScoringWeights } from "../scoring";
 import {
@@ -18,6 +18,39 @@ import { SelfHealingManager } from "../selfHealing";
 import { MODE_PACKS, getModePack, getModePackNames } from "../modePacks";
 import { getStrategy } from "../routerStrategy";
 import type { RoutingContext } from "../routerStrategy";
+import { clearModelsDevCapabilities, saveModelsDevCapabilities } from "@/lib/modelsDevSync";
+
+const capabilityEntry = (
+  limit_context: number | null,
+  limit_output: number | null,
+  reasoning: boolean | null,
+  tool_call: boolean | null
+) => ({
+  tool_call,
+  reasoning,
+  attachment: false,
+  structured_output: null,
+  temperature: null,
+  modalities_input: null,
+  modalities_output: null,
+  knowledge_cutoff: null,
+  release_date: null,
+  last_updated: null,
+  status: null,
+  family: null,
+  open_weights: null,
+  limit_context,
+  limit_input: null,
+  limit_output,
+  interleaved_field: null,
+});
+const STRONG = capabilityEntry(1_000_000, 128_000, true, true);
+const WEAK = capabilityEntry(32_000, 8_192, false, true);
+afterAll(() => clearModelsDevCapabilities());
+function seedCapabilities(map: Record<string, Record<string, ReturnType<typeof capabilityEntry>>>) {
+  saveModelsDevCapabilities(map);
+  invalidateFitnessCache();
+}
 
 describe("Scoring", () => {
   const candidate: ProviderCandidate = {
@@ -70,9 +103,13 @@ describe("Scoring", () => {
 });
 
 describe("Task Fitness", () => {
-  it("should return fitness score for known model+task", () => {
-    const score = getTaskFitness("claude-sonnet", "coding");
-    expect(score).toBeGreaterThan(0.5);
+  // Changed 2026-11-20: fitness no longer comes from a static vendor/name table or name wildcards
+  // (claude-sonnet 0.95, "coder" +0.15, ...). It comes from measured rows or verified capability.
+  it("should return a capability-derived fitness for a model with verified capabilities", () => {
+    seedCapabilities({ "fx-prov": { "fx-strong": STRONG } });
+    const result = getTaskFitnessWithSource("fx-prov/fx-strong", "coding");
+    expect(result.source).toBe("capability_derived");
+    expect(result.score).toBeGreaterThan(0.5);
   });
 
   it("should return 0.5 default for unknown model", () => {
@@ -88,10 +125,10 @@ describe("Task Fitness", () => {
     expect(types.length).toBeGreaterThanOrEqual(6);
   });
 
-  it("should boost wildcard patterns", () => {
+  it("name words earn nothing: a coder-named model is not boosted over a plain one", () => {
     const coderScore = getTaskFitness("some-coder-model", "coding");
     const normalScore = getTaskFitness("some-random-model", "coding");
-    expect(coderScore).toBeGreaterThan(normalScore);
+    expect(coderScore).toBe(normalScore);
   });
 
   describe("-free alias resolution (#4517)", () => {
@@ -488,34 +525,65 @@ describe("LKGP Strategy", () => {
 });
 
 describe("Task Fitness Resolution Chain", () => {
-  it("getTaskFitness should return static table score for known models", () => {
-    const score = getTaskFitness("claude-sonnet", "coding");
-    expect(score).toBe(0.95);
+  // Rewritten 2026-11-20. Chain: user_override > arena_elo > models_dev_tier rows >
+  // capability_derived > no_capability_evidence (0.5). The static table and name wildcards
+  // ("fitness_table", "wildcard_boost") were removed because they decided ranking by vendor/name.
+  it("unknown models get the neutral prior, labelled as such", () => {
+    expect(getTaskFitnessWithSource("totally-random-xyz", "coding")).toEqual({
+      score: 0.5,
+      source: "no_capability_evidence",
+    });
   });
 
-  it("getTaskFitness should return 0.5 for unknown models with no wildcard match", () => {
-    const score = getTaskFitness("unknown-model-xyz", "coding");
-    expect(score).toBe(0.5);
+  it("vendor and family words in an id do not change the fitness of an unverified model", () => {
+    for (const id of [
+      "claude-sonnet",
+      "claude-opus",
+      "gpt-4o",
+      "o3",
+      "codex",
+      "qwen",
+      "my-coder-pro",
+    ]) {
+      expect(getTaskFitnessWithSource(`zz-unverified-${id}`, "coding")).toEqual({
+        score: 0.5,
+        source: "no_capability_evidence",
+      });
+    }
   });
 
-  it("getTaskFitness should apply wildcard boosts for model name patterns", () => {
-    const score = getTaskFitness("deepseek-coder-v2", "coding");
-    expect(score).toBeGreaterThan(0.5);
+  it("no legacy sources are emitted", () => {
+    for (const id of ["claude-sonnet", "fast-model", "my-coder-pro", "my-thinking-model"]) {
+      for (const task of ["coding", "planning", "analysis", "review"]) {
+        const source = getTaskFitnessWithSource(`zz-${id}`, task).source;
+        expect(source).not.toBe("fitness_table");
+        expect(source).not.toBe("wildcard_boost");
+      }
+    }
   });
 
-  it("getTaskFitness should apply thinking wildcard for planning tasks", () => {
-    const score = getTaskFitness("some-thinking-model", "planning");
-    expect(score).toBeGreaterThan(0.5);
+  it("capability-derived fitness is identical for identical capabilities, whatever the id", () => {
+    seedCapabilities({
+      "vendor-one": { "model-claude-opus-max": STRONG },
+      "vendor-two": { "tiny-haiku-mini": STRONG },
+    });
+    for (const task of ["coding", "review", "planning", "analysis", "general"]) {
+      expect(getTaskFitnessWithSource("vendor-one/model-claude-opus-max", task)).toEqual(
+        getTaskFitnessWithSource("vendor-two/tiny-haiku-mini", task)
+      );
+    }
   });
 
-  it("getTaskFitnessWithSource should return source='fitness_table' for known static models", () => {
-    const result = getTaskFitnessWithSource("claude-sonnet", "coding");
-    expect(result).toEqual({ score: 0.95, source: "fitness_table" });
-  });
-
-  it("getTaskFitnessWithSource should return source='wildcard_boost' for wildcard-matched models", () => {
-    const result = getTaskFitnessWithSource("fast-model", "coding");
-    expect(result).toEqual({ score: expect.any(Number), source: "wildcard_boost" });
+  it("capability-derived fitness is monotone: stronger verified capability never scores lower", () => {
+    seedCapabilities({ "vendor-m": { weak: WEAK, strong: STRONG } });
+    for (const task of ["coding", "review", "planning", "analysis", "math", "general"]) {
+      expect(getTaskFitness("vendor-m/strong", task)).toBeGreaterThanOrEqual(
+        getTaskFitness("vendor-m/weak", task)
+      );
+      expect(getTaskFitness("vendor-m/weak", task)).toBeGreaterThanOrEqual(
+        getTaskFitness("vendor-nodata/never-synced", task)
+      );
+    }
   });
 
   it("getTaskTypes should return task types without 'default'", () => {
@@ -526,140 +594,52 @@ describe("Task Fitness Resolution Chain", () => {
     expect(types).not.toContain("default");
   });
 
-  it("unknown models should return 0.5 (default) when no DB or static entry exists", () => {
-    const score = getTaskFitness("completely-unknown-model-xyz-999", "coding");
-    expect(score).toBe(0.5);
-  });
-
-  it("wildcard boosts still work for models containing 'coder'", () => {
-    const score = getTaskFitness("my-coder-pro", "coding");
-    // Base 0.5 + coder boost 0.15 + code boost 0.1 = 0.75
-    // "coder" contains "code", so both wildcard patterns match
-    expect(score).toBe(0.75);
-  });
-
-  it("wildcard boosts still work for models containing 'thinking'", () => {
-    const score = getTaskFitness("my-thinking-model", "planning");
-    // Base 0.5 + thinking boost 0.1 = 0.6
-    expect(score).toBe(0.6);
-  });
-
-  it("wildcard boosts still work for models containing 'thinking' for analysis tasks", () => {
-    const score = getTaskFitness("my-thinking-model", "analysis");
-    // Base 0.5 + thinking boost 0.1 = 0.6
-    expect(score).toBe(0.6);
-  });
-
-  it("wildcard boosts for 'code' pattern apply to coding tasks", () => {
-    const score = getTaskFitness("my-code-generator", "coding");
-    // Base 0.5 + code boost 0.1 = 0.6
-    expect(score).toBe(0.6);
-  });
-
-  it("wildcard boosts for 'fast' pattern apply to coding tasks", () => {
-    const score = getTaskFitness("my-fast-model", "coding");
-    // Base 0.5 + fast boost 0.05 = 0.55
-    expect(score).toBe(0.55);
-  });
-
-  it("getTaskFitnessWithSource returns 'wildcard_boost' for pattern-matched unknown models", () => {
-    const result = getTaskFitnessWithSource("my-coder-pro", "coding");
-    expect(result.source).toBe("wildcard_boost");
-    expect(result.score).toBeGreaterThan(0.5);
-  });
-
-  it("getTaskFitnessWithSource returns 'fitness_table' for statically known models", () => {
-    const result = getTaskFitnessWithSource("claude-sonnet", "review");
-    expect(result.source).toBe("fitness_table");
-    expect(result.score).toBe(0.92);
-  });
-
-  it("getTaskFitnessWithSource returns 'wildcard_boost' with 0.5 for unknown models with no pattern", () => {
-    const result = getTaskFitnessWithSource("totally-random-xyz", "coding");
-    expect(result.source).toBe("wildcard_boost");
-    expect(result.score).toBe(0.5);
+  it("measured evidence outranks capability: a user override wins over capability_derived", () => {
+    seedCapabilities({ "vendor-o": { strong: STRONG } });
+    setUserFitnessOverride("vendor-o/strong", "coding", 0.31);
+    try {
+      expect(getTaskFitnessWithSource("vendor-o/strong", "coding")).toEqual({
+        score: 0.31,
+        source: "user_override",
+      });
+    } finally {
+      clearUserFitnessOverride("vendor-o/strong", "coding");
+      invalidateFitnessCache();
+    }
   });
 });
 
 describe("Task Fitness DB Resolution Chain", () => {
-  // These tests verify that when DB is available, the resolution chain
-  // (user_override → arena_elo → models_dev_tier → static → wildcard)
-  // works correctly. Since the DB module is loaded lazily via require(),
-  // these tests cover the cases where DB is NOT available (graceful fallback).
-
-  it("falls back to static FITNESS_TABLE when DB is not initialized", () => {
-    // In the test environment, DB is typically not initialized,
-    // so getTaskFitness should fall through to the static table
-    const score = getTaskFitness("claude-sonnet", "coding");
-    // Static table has claude-sonnet → 0.95 for coding
-    expect(score).toBe(0.95);
-  });
-
-  it("falls back to static FITNESS_TABLE for review task type", () => {
-    const score = getTaskFitness("claude-opus", "review");
-    // Static table has claude-opus → 0.95 for review
-    expect(score).toBe(0.95);
-  });
-
-  it("falls back to wildcard boosts when no static entry exists and DB unavailable", () => {
-    // "coder-unknown" has no static entry but matches "coder" wildcard
-    const score = getTaskFitness("coder-unknown", "coding");
-    expect(score).toBeGreaterThan(0.5);
-    expect(score).toBeLessThanOrEqual(1.0);
-  });
-
-  it("getModelsDevTierFitness returns null when DB is not initialized", () => {
-    // Without a running DB, this should return null gracefully
-    const score = getModelsDevTierFitness("claude-sonnet", "coding");
-    // Either null (no capabilities data) or a number from DB if DB happens to be up
-    if (score !== null) {
-      expect(score).toBeGreaterThanOrEqual(0);
-      expect(score).toBeLessThanOrEqual(1);
-    }
+  it("getModelsDevTierFitness returns null when no persisted tier row exists", () => {
+    expect(getModelsDevTierFitness("zz-no-such-model", "coding")).toBeNull();
   });
 
   it("invalidateFitnessCache does not throw", () => {
     expect(() => invalidateFitnessCache()).not.toThrow();
   });
 
-  it("resolution chain: static table matches longest pattern first (gpt-4o-mini vs gpt-4o)", () => {
-    // gpt-4o-mini must match "gpt-4o-mini" (0.8) rather than earlier "gpt-4o" (0.9)
-    const score = getTaskFitness("gpt-4o-mini", "coding");
-    expect(score).toBe(0.8);
-  });
-
-  it("resolution chain: static table takes priority over wildcard for known models", () => {
-    // "claude-sonnet" is in the static table with coding=0.95
-    // It does NOT match "coder" wildcard because the static table is checked first
-    const score = getTaskFitness("claude-sonnet", "coding");
-    expect(score).toBe(0.95); // From static table, NOT wildcard
-  });
-
-  it("getTaskFitnessWithSource identifies fitness_table as source for known models", () => {
-    const model = "claude-sonnet";
-    const category = "coding";
-
-    const result = getTaskFitnessWithSource(model, category);
-    expect(result.source).toBe("fitness_table");
-    expect(result.score).toBe(0.95);
-  });
-
-  it("case insensitivity: model names are lowercased before lookup", () => {
-    const upperScore = getTaskFitness("CLAUDE-SONNET", "coding");
-    const lowerScore = getTaskFitness("claude-sonnet", "coding");
-    expect(upperScore).toBe(lowerScore);
-  });
-
   it("case insensitivity: task types are lowercased before lookup", () => {
-    const upperScore = getTaskFitness("claude-sonnet", "CODING");
-    const lowerScore = getTaskFitness("claude-sonnet", "coding");
-    expect(upperScore).toBe(lowerScore);
+    seedCapabilities({ "vendor-c": { strong: STRONG } });
+    expect(getTaskFitness("vendor-c/strong", "CODING")).toBe(
+      getTaskFitness("vendor-c/strong", "coding")
+    );
   });
 
-  it("normalizes -free model suffix when looking up fitness table and wildcard boosts", () => {
-    const baseResult = getTaskFitnessWithSource("claude-sonnet", "coding");
-    const freeResult = getTaskFitnessWithSource("claude-sonnet-free", "coding");
-    expect(freeResult.source).toBe(baseResult.source);
-    expect(freeResult.score).toBe(baseResult.score);
+  it("model-id case does not change a persisted override lookup", () => {
+    setUserFitnessOverride("Vendor-X/Model-Y", "coding", 0.77);
+    try {
+      expect(getTaskFitness("vendor-x/model-y", "coding")).toBe(0.77);
+      expect(getTaskFitness("VENDOR-X/MODEL-Y", "coding")).toBe(0.77);
+    } finally {
+      clearUserFitnessOverride("Vendor-X/Model-Y", "coding");
+      invalidateFitnessCache();
+    }
+  });
+
+  it("a -free variant resolves like its base id only through arena_elo, not through a name table", () => {
+    expect(getTaskFitnessWithSource("claude-sonnet-free", "coding")).toEqual({
+      score: 0.5,
+      source: "no_capability_evidence",
+    });
   });
 });

@@ -43,7 +43,7 @@ OpenRouter-style suffixes separate **what kind of route** (category) from **how 
 
 Any valid `auto/<category>[:<tier>]` resolves on demand; a curated subset is advertised in `/v1/models` and the dashboard (`AUTO_SUFFIX_VARIANTS` in `open-sse/services/autoCombo/builtinCatalog.ts`). Filtering is **fail-open** — if a constraint matches no connected models, the full pool is used so routing never breaks. The core scorer (`combo.ts`) is unchanged; the category/tier filter is applied in `buildAutoCandidates`.
 
-> **Live model intelligence:** auto-routing fitness is informed by live **Arena ELO** rankings + **models.dev** tier data when the `ARENA_ELO_SYNC_ENABLED` flag is on (falls back to the static fitness map otherwise).
+> **Live model intelligence:** auto-routing fitness is informed by live **Arena ELO** rankings + **models.dev** tier data when the `ARENA_ELO_SYNC_ENABLED` flag is on (falls back to capability-derived fitness otherwise).
 
 **How to use:**
 
@@ -642,7 +642,17 @@ SLA-aware fields:
 
 ## Task Fitness
 
-30+ models scored across 6 task types (`coding`, `review`, `planning`, `analysis`, `debugging`, `documentation`). Supports wildcard patterns (e.g., `*-coder` → high coding score).
+Model x task-type fitness (`coding`, `review`, `planning`, `analysis`, `debugging`, `documentation`, `math`, `creative`) is resolved from evidence only, in this order:
+
+1. `user_override` (owner-set row in `model_intelligence`)
+2. `arena_elo` (measured; a `-free` variant resolves through its base id: `arena_elo_free_alias`)
+3. `models_dev_tier` (persisted tier row)
+4. `capability_derived`: interpolated per task type from the model's **verified** capabilities (reasoning, tool calling, context window, output limit) by `capabilityStrength()`. Continuous and monotone, and identical for identical capabilities whatever the provider or model name.
+5. `no_capability_evidence`: neutral 0.5.
+
+There is no vendor/name table and no name wildcard. The former `fitness_table` and `wildcard_boost` source labels (visible in older `routing_decisions.factors_json` rows) no longer occur.
+
+The fit-first `complexityFit` factor is sufficiency against the task level, not closeness to a target: verified power (0-150, from the same capability strength) earns fit up to `TASK_TARGET_POWER[level]`, then stops adding. The only deductions are genuine unmet requirements (prompt does not fit the context window, requested output above the output limit, required vision/reasoning/tools not verified). Equal candidates are separated only by a per-request hash tie-break (never by list order, provider, or catalog price).
 
 ## Auto Variants Recap
 

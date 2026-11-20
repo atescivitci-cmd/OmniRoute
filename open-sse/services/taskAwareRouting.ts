@@ -2,8 +2,8 @@
  * Task-aware routing layer for combo routing.
  *
  * Derives request difficulty (light / standard / heavy / critical) from cheap,
- * local structural signals — no LLM call. Routes heavier tasks toward higher-power
- * models using a continuous `modelPowerScore`. Also provides conversation-affinity
+ * local structural signals — no LLM call. Routes heavier tasks toward models with more
+ * VERIFIED capability using a continuous, name-blind `modelPowerScore`. Also provides conversation-affinity
  * sticky round-robin for prompt-cache efficiency.
  *
  * Ported from upstream PR #2045 (decolua/9router) by @nguyenxvotanminh3.
@@ -19,6 +19,7 @@
 
 import { createHash } from "node:crypto";
 import { getResolvedModelCapabilities } from "./modelCapabilities.ts";
+import { capabilityStrength } from "./capabilityStrength.ts";
 import type { ResolvedComboTarget } from "./combo/types.ts";
 
 // ── Task level constants ──────────────────────────────────────────────────────
@@ -32,6 +33,10 @@ export const TASK_LEVEL_WEIGHT = {
 
 export type TaskLevel = keyof typeof TASK_LEVEL_WEIGHT;
 
+/**
+ * Verified capability power (0-150, see `modelPowerScore`) at which more capability stops
+ * adding fit for a task level. A sufficiency ceiling, not a "closest to" target.
+ */
 export const TASK_TARGET_POWER: Record<TaskLevel, number> = {
   light: 35,
   standard: 65,
@@ -907,39 +912,20 @@ function classifyLightByAsk(
 // ── Model power scoring ───────────────────────────────────────────────────────
 
 /**
- * Estimate how capable a model is on a continuous 0–150 scale, using both
- * registry-derived capabilities and heuristic name matching.
+ * Verified capability power on a 0-150 scale (150 x capabilityStrength).
+ *
+ * Built ONLY from resolved capabilities (reasoning, tool calling, context window, output
+ * limit); it never reads a provider or model name, so two models with the same resolved
+ * capabilities get the same power, whoever made them. A capability the registry could not
+ * verify adds nothing (it is not guessed from the name and not penalised). Monotone: more
+ * verified capability never lowers the value.
+ *
+ * Before 2026-11-20 this also added +28 / -24 / +8 from brand and size words in the model id
+ * (opus, gpt-5, pro, haiku, mini, ...). That made the critical tier reachable only by models
+ * whose NAME matched, so one vendor won by design. See docs/routing/AUTO-COMBO.md.
  */
 export function modelPowerScore(modelStr: string): number {
-  const id = `${modelStr ?? ""}`.toLowerCase();
-  const caps = getResolvedModelCapabilities(modelStr);
-
-  let score = 35;
-  if (caps.reasoning) score += 18;
-  if (caps.supportsVision === true) score += 3;
-  if (caps.toolCalling) score += 3;
-
-  const ctx = caps.contextWindow ?? 0;
-  if (ctx >= 1_000_000) score += 22;
-  else if (ctx >= 400_000) score += 15;
-  else if (ctx >= 200_000) score += 9;
-  else if (ctx > 0 && ctx <= 32_000) score -= 10;
-
-  const maxOut = caps.maxOutputTokens ?? 0;
-  if (maxOut >= 128_000) score += 12;
-  else if (maxOut >= 64_000) score += 8;
-  else if (maxOut > 0 && maxOut <= 8_192) score -= 8;
-
-  if (
-    /\b(opus|mythos|gpt-5|o3|o4|pro|max|ultra|deepseek-v4-pro|sonnet-4|glm-5|kimi-k2\.7|minimax-m3|reasoner)\b/i.test(
-      id
-    )
-  )
-    score += 28;
-  if (/\b(coder|code|coding)\b/i.test(id)) score += 8;
-  if (/\b(haiku|flash|mini|lite|small|nano|instant|fast|turbo|3\.5|8b|7b)\b/i.test(id)) score -= 24;
-
-  return Math.max(0, Math.min(150, score));
+  return Math.round(capabilityStrength(getResolvedModelCapabilities(modelStr)) * 150);
 }
 
 // Hard capabilities: missing one drops request data (images, PDFs). Maps TS
@@ -949,6 +935,14 @@ const HARD_CAP_CHECKS = new Set(["vision"]);
 /**
  * Score a single model for a given task + capability requirements.
  * Higher score = better fit. Negative score = capability hard-miss.
+ *
+ * Fit is SUFFICIENCY, not closeness: `100 x min(1, power / TASK_TARGET_POWER[level])`. Verified
+ * capability earns fit up to what the task level asks for, then stops adding, so a bigger model
+ * is never ranked below a smaller one (monotone) and there is no "too powerful" or "below the
+ * threshold" cliff. Light asks therefore tie on this factor and are decided by evidence
+ * (reliability, latency, health, quota). The only deductions are GENUINE unmet requirements:
+ * context window cannot hold the prompt, output limit below the requested output, and a
+ * required vision / reasoning / tool capability that is not verified.
  */
 export function scoreModelForTask(
   modelStr: string,
@@ -957,8 +951,8 @@ export function scoreModelForTask(
 ): number {
   const caps = getResolvedModelCapabilities(modelStr);
   const target = TASK_TARGET_POWER[task.level];
-  const power = modelPowerScore(modelStr);
-  let score = 100 - Math.abs(power - target);
+  const power = Math.round(capabilityStrength(caps) * 150);
+  let score = 100 * Math.min(1, power / target);
 
   // Hard capability misses: drop score heavily so the model sorts to the back
   // but stays in the list (fallback still tries every model).
@@ -967,8 +961,10 @@ export function scoreModelForTask(
     if (cap === "vision" && caps.supportsVision !== true) score -= 10000;
   }
 
-  if ((required.has("reasoning") || task.weight >= TASK_LEVEL_WEIGHT.heavy) && !caps.reasoning)
-    score -= 120;
+  // A required capability that is not verified is an unmet requirement. The task level alone
+  // is not a requirement (it used to subtract 120 here for any heavy+ task on a model not
+  // known to reason).
+  if (required.has("reasoning") && caps.supportsThinking !== true) score -= 120;
   if (required.has("search") && !caps.toolCalling) score -= 30;
 
   const estimatedPromptTokens = Math.ceil((task.promptChars ?? 0) / 4);
@@ -977,11 +973,6 @@ export function scoreModelForTask(
 
   const maxOut = caps.maxOutputTokens ?? 0;
   if (maxOut > 0 && task.outputTokens > 0 && task.outputTokens > maxOut) score -= 80;
-
-  if (task.level === "light" && power > 95) score -= 35;
-  if (task.level === "standard" && power > 125) score -= 10;
-  if (task.level === "heavy" && power < 65) score -= 60;
-  if (task.level === "critical" && power < 85) score -= 100;
 
   return score;
 }

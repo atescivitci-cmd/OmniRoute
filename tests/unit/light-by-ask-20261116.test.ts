@@ -557,30 +557,41 @@ describe("tool-name rule table", () => {
   });
 });
 
-describe("selector regression: light prefers small/mid Claude, critical prefers Opus", () => {
+describe("selector regression: ranking follows verified capability, not model names", () => {
+  // Changed 2026-11-20. This block used to assert "light prefers small/mid Claude, critical
+  // prefers Opus", which held only because the power score added points for words like opus,
+  // haiku and sonnet in the id. The score is now name-blind: sufficiency against the task level.
   const OPUS = "claude/claude-opus-4-8";
   const SMALLER = ["claude/claude-sonnet-5", "claude/claude-haiku-4-5-20251001"];
 
-  it("light classification ranks sonnet-5 and haiku-4-5 above opus-4-8", () => {
+  it("light classification: smaller models are not ranked below opus-4-8", () => {
     const light = flagOn(() => classifyTask(codexBody("ok")));
     assert.equal(light.level, "light");
     for (const m of SMALLER) {
-      assert.ok(scoreModelForTask(m, light) > scoreModelForTask(OPUS, light), m);
+      assert.ok(scoreModelForTask(m, light) >= scoreModelForTask(OPUS, light), m);
     }
   });
 
-  it("critical classification (flag off) ranks opus-4-8 above sonnet-5 and haiku-4-5", () => {
+  it("critical classification (flag off): opus-4-8 is not ranked below sonnet-5 or haiku-4-5", () => {
     const critical = flagOff(() => classifyTask(codexBody("ok")));
     assert.equal(critical.level, "critical");
     for (const m of SMALLER) {
-      assert.ok(scoreModelForTask(OPUS, critical) > scoreModelForTask(m, critical), m);
+      assert.ok(scoreModelForTask(OPUS, critical) >= scoreModelForTask(m, critical), m);
     }
   });
 
-  it("a heavy ask keeps Opus on top with the flag on", () => {
+  it("a critical prompt that does not fit haiku-4-5's verified window ranks opus-4-8 above it", () => {
+    const t = flagOff(() => classifyTask(codexBody("ok")));
+    const big = { ...t, promptChars: 4 * 600_000 };
+    assert.ok(
+      scoreModelForTask(OPUS, big) > scoreModelForTask("claude/claude-haiku-4-5-20251001", big)
+    );
+  });
+
+  it("a heavy ask never ranks opus-4-8 below the smaller models with the flag on", () => {
     const t = flagOn(() => classifyTask(codexBody("debug why this crashes")));
     assert.equal(t.level, "critical");
-    for (const m of SMALLER) assert.ok(scoreModelForTask(OPUS, t) > scoreModelForTask(m, t), m);
+    for (const m of SMALLER) assert.ok(scoreModelForTask(OPUS, t) >= scoreModelForTask(m, t), m);
   });
 });
 

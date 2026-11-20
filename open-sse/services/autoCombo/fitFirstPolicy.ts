@@ -743,6 +743,15 @@ function requestFingerprint(body: Record<string, unknown>): string {
     .slice(0, 16);
 }
 
+/**
+ * Final, neutral tie-break for candidates whose score, task fitness and complexity fit are all
+ * exactly equal. It is a hash of the request fingerprint with the candidate's provider, model
+ * and connection: it does not depend on candidate list order, alphabetical order or any vendor
+ * constant, and because the fingerprint changes per request, equal candidates alternate rather
+ * than one always winning. Catalog price is deliberately NOT a tie-break: the pool is already
+ * limited to zero-additional-cost providers (see the "catalog token price" test), and evidence
+ * volume is not one either, since that would let the most-used model keep winning ties.
+ */
 function neutralTieBreaker(fingerprint: string, candidate: FitFirstCandidate): string {
   return createHash("sha256")
     .update(
@@ -754,12 +763,18 @@ function neutralTieBreaker(fingerprint: string, candidate: FitFirstCandidate): s
 // confidence = n / (n + 20), so 0.5 means at least 20 observed samples.
 const CONFIDENT_FAILURE_MIN_CONFIDENCE = 0.5;
 
-/** Classify the task-fitness source tag; reads a provenance label, never a model id. */
+/**
+ * Classify the task-fitness source tag; reads a provenance label, never a model id.
+ * `capability_derived` (verified capabilities) and the persisted `models_dev_tier` rows are the
+ * capability tier; `no_capability_evidence` (and legacy table labels in old rows) are a prior.
+ */
 function qualityEvidenceKind(source: string): "measured" | "capability_tier" | "table_prior" {
   if (source === "user_override" || source === "arena_elo" || source === "arena_elo_free_alias") {
     return "measured";
   }
-  return source === "models_dev_tier" ? "capability_tier" : "table_prior";
+  return source === "models_dev_tier" || source === "capability_derived"
+    ? "capability_tier"
+    : "table_prior";
 }
 
 function weightProfile(level: ReturnType<typeof classifyTask>["level"]) {
