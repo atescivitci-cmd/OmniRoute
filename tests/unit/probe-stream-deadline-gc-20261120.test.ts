@@ -110,6 +110,62 @@ for (const shape of ["chunk-then-silent", "reasoning-trickle"] as const) {
   });
 }
 
+test("a tagged probe whose stream completes is a success row, never a failure row, even after collections", async () => {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+    res.flushHeaders();
+    res.write(ROLE_CHUNK);
+    res.write(
+      'data: {"id":"p","object":"chat.completion.chunk","created":1,"model":"gpt-4o",' +
+        '"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n\n'
+    );
+    res.write(
+      'data: {"id":"p","object":"chat.completion.chunk","created":1,"model":"gpt-4o",' +
+        '"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],' +
+        '"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}\n\n'
+    );
+    res.write("data: [DONE]\n\n");
+    res.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  const connection = await createProviderConnection({
+    provider: "openai",
+    authType: "apikey",
+    name: `probe-gc-success-${Date.now()}`,
+    apiKey: `sk-probe-gc-success-${Date.now()}`,
+    isActive: true,
+    testStatus: "active",
+    providerSpecificData: { baseUrl: `http://127.0.0.1:${port}/v1` },
+  });
+  const connectionId = String(connection.id);
+  const gcTimer = setInterval(forceGc, 100);
+  try {
+    const outcome = await createDefaultRoutingEvidenceCanaryDeps().runProbe({
+      provider: "openai",
+      model: "gpt-4o",
+      modelStr: "openai/gpt-4o",
+      connectionId,
+      prompt: "Routing probe.",
+      maxTokens: 64,
+      timeoutMs: 6000,
+    });
+    assert.equal(outcome.ok, true, "the probe completed");
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const rows = usageRows(connectionId);
+    assert.equal(
+      rows.filter((row) => row.success === 0).length,
+      0,
+      `a finished probe must leave no failure row: ${JSON.stringify(rows)}`
+    );
+    assert.equal(rows.filter((row) => row.success === 1).length, 1, JSON.stringify(rows));
+  } finally {
+    clearInterval(gcTimer);
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(() => resolve(null)));
+  }
+});
+
 test("a real client that cancels a started stream (no provenance tag) is still a 499, never a probe_deadline", async () => {
   const { connectionId, stop } = await startServer("chunk-then-silent");
   const gcTimer = setInterval(forceGc, 100);

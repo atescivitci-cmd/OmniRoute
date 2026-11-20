@@ -9,6 +9,7 @@
  */
 
 import { CORS_HEADERS } from "../utils/cors";
+import { bindRequestSignal } from "../utils/requestSignal";
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(String(value), 10);
@@ -248,13 +249,19 @@ function rebuildRequest(request: Request, body: Uint8Array): Request {
   const headers = new Headers(request.headers);
   // The inbound value may be absent or dishonest. Let the runtime derive the correct value.
   headers.delete("content-length");
-  return new Request(request.url, {
-    method: request.method,
-    headers,
-    body,
-    signal: request.signal,
-    duplex: "half",
-  } as RequestInit & { duplex: "half" });
+  // The inbound signal is bound, not passed to the constructor. Downstream code keeps only
+  // `request.signal`, and a constructor-made follower signal is lost to garbage collection once
+  // this rebuilt Request is unreachable (see bindRequestSignal), after which a client disconnect
+  // or a probe deadline no longer reaches the upstream.
+  return bindRequestSignal(
+    new Request(request.url, {
+      method: request.method,
+      headers,
+      body,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" }),
+    request.signal
+  );
 }
 
 /**
