@@ -17,9 +17,15 @@ import http from "node:http";
 import { POST as postChatCompletion } from "@/app/api/v1/chat/completions/route";
 import { buildInternalChatRequest } from "@/lib/api/modelTestRunner.ts";
 import { createProviderConnection } from "@/lib/db/providers";
-import { getDbInstance } from "@/lib/db/core";
+import { getDbInstance, resetDbInstance } from "@/lib/db/core";
 import { runWithUsageSource } from "@/lib/usage/usageSourceContext";
 import { USAGE_SOURCE_ROUTING_CANARY } from "@/shared/constants/usageSource";
+
+// The route opens the SQLite singleton; release it and its cached state so the runner can exit
+// without --test-force-exit (repo rule: DB-backed tests close their handle in test.after).
+test.after(() => {
+  resetDbInstance();
+});
 
 type Shape = "headers-silent" | "chunk-then-silent" | "trickle";
 
@@ -61,6 +67,7 @@ async function abortedStream(shape: Shape, tagged: boolean) {
     client.signal,
     connectionId
   );
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   try {
     setTimeout(() => client.abort(), 900);
     const call = () => postChatCompletion(request);
@@ -71,14 +78,12 @@ async function abortedStream(shape: Shape, tagged: boolean) {
       ),
     ]);
     // Drain like a client that is still reading when the deadline fires.
-    const drain = response.body
-      ? response.body
-          .getReader()
-          .read()
-          .then(
-            () => null,
-            () => null
-          )
+    reader = response.body ? response.body.getReader() : null;
+    const drain = reader
+      ? reader.read().then(
+          () => null,
+          () => null
+        )
       : null;
     await new Promise((resolve) => setTimeout(resolve, 2200)); // abort, then the unawaited write
     await Promise.race([drain, new Promise((resolve) => setTimeout(resolve, 500))]);
@@ -94,6 +99,8 @@ async function abortedStream(shape: Shape, tagged: boolean) {
     }>;
     return { status: response.status, rows };
   } finally {
+    // An unread or half-read response stream keeps the route's timers alive and the runner open.
+    await reader?.cancel().catch(() => undefined);
     for (const timer of timers) clearInterval(timer);
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(() => resolve(null)));
