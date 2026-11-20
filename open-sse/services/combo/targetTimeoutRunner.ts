@@ -5,6 +5,7 @@ import {
   inheritRoutingResponseState,
 } from "./routingAttemptSafety.ts";
 import type { HandleSingleModel, SingleModelTarget, ComboLogger } from "./types.ts";
+import { createRoutingDeadlineReason } from "./routingDeadlineReason.ts";
 
 // Only errors emitted by this lifecycle wrapper carry trusted classification.
 // Upstream exception names/prose cannot impersonate a local deadline or cancel.
@@ -80,7 +81,7 @@ export function buildTargetTimeoutRunner(deps: {
       stop(
         shared ? "routing_deadline" : "target_timeout_execution_uncertain",
         shared ? 504 : 524,
-        new DOMException(shared ? "Combo deadline" : "Target headers deadline", "TimeoutError")
+        createRoutingDeadlineReason(shared ? "routing_deadline" : "target_timeout")
       );
     };
     if (!finished && Number.isFinite(targetTimeoutMs))
