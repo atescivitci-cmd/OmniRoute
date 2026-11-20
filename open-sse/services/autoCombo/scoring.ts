@@ -78,6 +78,12 @@ export function normalizeScoringWeights(
 export interface ProviderCandidate {
   provider: string;
   model: string;
+  /**
+   * Provider-qualified id as the router resolves it (`provider/model`). Optional; when absent
+   * it is derived from provider and model. Capability and fitness lookups use it, because the
+   * synced capability rows are keyed by provider.
+   */
+  modelStr?: string;
   quotaRemaining: number | null; // observed included-quota percentage; null when not observed
   /** Server-owned request policy, never read from the inference body or headers. */
   quotaPolicyBypassed?: boolean;
@@ -213,6 +219,16 @@ export function quotaRankingFactor(
     : clamp01(Number(candidate.quotaRemaining) / 100);
 }
 
+/**
+ * Id handed to task-fitness lookup. Always provider-qualified (the form the fit-first path uses),
+ * so a model's synced capabilities are found whatever its name. A bare id would miss the
+ * provider-keyed rows and fall back to "no capability evidence" for exactly the models that were
+ * synced.
+ */
+function candidateLookupId(candidate: Pick<ProviderCandidate, "provider" | "model" | "modelStr">) {
+  return candidate.modelStr || `${candidate.provider}/${candidate.model}`;
+}
+
 export function calculateFactors(
   candidate: ProviderCandidate,
   pool: ProviderCandidate[],
@@ -238,7 +254,7 @@ export function calculateFactors(
           : 0.0,
     costInv: clamp01(1 - candidate.costPer1MTokens / maxCost),
     latencyInv: clamp01(1 - candidate.p95LatencyMs / maxLatency),
-    taskFit: clamp01(getTaskFitness(candidate.model, taskType)),
+    taskFit: clamp01(getTaskFitness(candidateLookupId(candidate), taskType)),
     stability: clamp01(1 - candidate.latencyStdDev / maxStdDev),
     tierPriority: calculateTierScore(candidate.accountTier, candidate.quotaResetIntervalSecs),
     tierAffinity: calculateTierAffinity(candidate, manifestHint),

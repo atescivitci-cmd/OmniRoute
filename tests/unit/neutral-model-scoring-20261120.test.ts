@@ -302,15 +302,17 @@ test("P2: only a genuine unmet requirement subtracts", () => {
       scoreModelForTask("p/small", base) - 80
   );
   // required reasoning not verified
+  // (round 2: the required-reasoning -120 replaces the heavy/critical soft penalty of 10, so the
+  // gap to the unrequired score is 110 on heavy; it is never stacked.)
   assert.ok(
     scoreModelForTask("p/unknownthink", task("heavy"), new Set(["reasoning"])) <=
-      scoreModelForTask("p/unknownthink", task("heavy")) - 120
+      scoreModelForTask("p/unknownthink", task("heavy")) - 110
   );
   assert.equal(
     scoreModelForTask("p/big", task("heavy"), new Set(["reasoning"])),
     scoreModelForTask("p/big", task("heavy"))
   );
-  // heavy/critical without a stated requirement: no reasoning cliff for a non-reasoning model
+  // heavy/critical without a stated requirement: no reasoning cliff (only the bounded soft penalty)
   const noThink = scoreModelForTask("p/small", task("critical"));
   assert.ok(noThink > 0, `no unmet requirement, yet ${noThink}`);
   // an oversized power is not penalised on a light task

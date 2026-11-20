@@ -20,6 +20,7 @@ import type { ComboLike } from "../combo/types.ts";
 import { getResolvedModelCapabilities } from "../modelCapabilities.ts";
 import {
   classifyTask,
+  getConversationCacheKey,
   isLightByAskEnabled,
   scoreModelForTask,
   TASK_LEVEL_WEIGHT,
@@ -58,6 +59,9 @@ export interface FitFirstCandidate extends ProviderCandidate {
   latencySampleSource?: "successful_usage_24h" | "unqualified";
   successfulLatencySampleCount?: number;
 }
+
+export type QualityEvidenceKind =
+  "measured" | "capability_tier" | "capability_derived" | "no_evidence";
 
 export interface FitFirstFactors {
   deadlineResponsiveness?: {
@@ -102,8 +106,8 @@ export interface FitFirstFactors {
   latencyP95Ms?: number | null;
   latencyShrink?: number;
   reliabilityMeasured?: boolean;
-  /** Where the task-fitness value came from: a measurement, a capability tier, or a prior table. */
-  qualityEvidence?: "measured" | "capability_tier" | "table_prior";
+  /** Where the task-fitness value came from: a measurement, a capability tier, capabilities, or nothing. */
+  qualityEvidence?: QualityEvidenceKind;
 }
 
 export interface RankedFitFirstCandidate {
@@ -735,7 +739,27 @@ function isNonGenerativeSpecialtyModel(candidate: FitFirstCandidate): boolean {
   );
 }
 
+/**
+ * Conversation-stable seed for the neutral tie-break. Between turns of ONE conversation the
+ * latest ask changes every turn, so a hash of the ask made equal candidates alternate mid-session
+ * (lost prompt cache, mixed styles, broken tool-call continuity). The seed is therefore, in order:
+ *  1. an explicit session/thread/conversation id (or prompt_cache_key) carried by the request;
+ *  2. a hash of the system prompt plus the FIRST user message (`getConversationCacheKey`), which
+ *     does not change as the conversation grows;
+ *  3. only when neither exists (a bare single-turn call) a hash of the project text and the ask.
+ * None of these reads list order, provider, model or any vendor constant, and different
+ * conversations still land on different seeds, so equal candidates share conversations roughly
+ * evenly. Known limit: conversations that start with an identical system prompt and identical
+ * first message and carry no session id share a seed, hence a winner (while the candidate set and
+ * evidence are unchanged).
+ */
 function requestFingerprint(body: Record<string, unknown>): string {
+  const promptCacheKey = typeof body.prompt_cache_key === "string" ? body.prompt_cache_key : "";
+  if (promptCacheKey.trim()) {
+    return createHash("sha256").update(`pck\0${promptCacheKey.trim()}`).digest("hex").slice(0, 16);
+  }
+  const stable = getConversationCacheKey(body);
+  if (stable) return `conv:${stable}`;
   const { ask, project } = selectorInputs(body);
   return createHash("sha256")
     .update(`${project.slice(0, 4000)}\0${ask.slice(0, 12000)}`)
@@ -747,8 +771,9 @@ function requestFingerprint(body: Record<string, unknown>): string {
  * Final, neutral tie-break for candidates whose score, task fitness and complexity fit are all
  * exactly equal. It is a hash of the request fingerprint with the candidate's provider, model
  * and connection: it does not depend on candidate list order, alphabetical order or any vendor
- * constant, and because the fingerprint changes per request, equal candidates alternate rather
- * than one always winning. Catalog price is deliberately NOT a tie-break: the pool is already
+ * constant. The fingerprint is conversation-stable (see requestFingerprint): equal candidates
+ * alternate across conversations rather than one always winning, and one conversation keeps its
+ * pick from turn to turn while the candidate set and evidence are unchanged. Catalog price is deliberately NOT a tie-break: the pool is already
  * limited to zero-additional-cost providers (see the "catalog token price" test), and evidence
  * volume is not one either, since that would let the most-used model keep winning ties.
  */
@@ -765,16 +790,19 @@ const CONFIDENT_FAILURE_MIN_CONFIDENCE = 0.5;
 
 /**
  * Classify the task-fitness source tag; reads a provenance label, never a model id.
- * `capability_derived` (verified capabilities) and the persisted `models_dev_tier` rows are the
- * capability tier; `no_capability_evidence` (and legacy table labels in old rows) are a prior.
+ *  - measured: owner override or arena rating.
+ *  - capability_tier: a persisted models.dev tier row.
+ *  - capability_derived: computed from the model's verified capabilities.
+ *  - no_evidence: nothing verified, the neutral 0.5 prior (there is no static table any more).
+ * Renamed 2026-11-20: the last value used to be "table_prior" and the third did not exist.
  */
-function qualityEvidenceKind(source: string): "measured" | "capability_tier" | "table_prior" {
+function qualityEvidenceKind(source: string): QualityEvidenceKind {
   if (source === "user_override" || source === "arena_elo" || source === "arena_elo_free_alias") {
     return "measured";
   }
-  return source === "models_dev_tier" || source === "capability_derived"
-    ? "capability_tier"
-    : "table_prior";
+  if (source === "models_dev_tier") return "capability_tier";
+  if (source === "capability_derived") return "capability_derived";
+  return "no_evidence";
 }
 
 function weightProfile(level: ReturnType<typeof classifyTask>["level"]) {

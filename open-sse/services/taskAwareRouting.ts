@@ -928,6 +928,28 @@ export function modelPowerScore(modelStr: string): number {
   return Math.round(capabilityStrength(getResolvedModelCapabilities(modelStr)) * 150);
 }
 
+/**
+ * Soft, name-blind penalty (in fit points out of 100) on heavy and critical tasks for a model
+ * whose reasoning capability is not verified (`supportsThinking !== true`: false or unknown).
+ * It applies only when the request did not already require reasoning (that case takes the -120
+ * above) and never on light/standard tasks. Monotone: verifying reasoning can only raise a score.
+ *
+ * Sizing (strength weights: reasoning 0.35, tools 0.10, context 0.30, output 0.25). A
+ * non-reasoning 1M/128K model has strength 0.65 (power 98) and a reasoning 64K/16K model 0.65
+ * (power 97): without this term the two tie and the big non-reasoning window wins heavy and
+ * critical turns on overall score by 0.003. A penalty of 15 (critical) / 10 (heavy) fit points
+ * (about 0.05 / 0.03 of the final score at weights 0.32) breaks that tie toward verified
+ * reasoning, yet a reasoning model that is much smaller still loses where capacity decides:
+ * reasoning 8K/4K (power 68) scores 57 on critical against 82 - 15 = 67 for the huge
+ * non-reasoning one, and a prompt that does not fit takes the separate -200 overflow penalty.
+ */
+const UNVERIFIED_REASONING_SOFT_PENALTY: Record<TaskLevel, number> = {
+  light: 0,
+  standard: 0,
+  heavy: 10,
+  critical: 15,
+};
+
 // Hard capabilities: missing one drops request data (images, PDFs). Maps TS
 // ResolvedModelCapabilities fields that correspond to hard-cap modalities.
 const HARD_CAP_CHECKS = new Set(["vision"]);
@@ -965,6 +987,7 @@ export function scoreModelForTask(
   // is not a requirement (it used to subtract 120 here for any heavy+ task on a model not
   // known to reason).
   if (required.has("reasoning") && caps.supportsThinking !== true) score -= 120;
+  else if (caps.supportsThinking !== true) score -= UNVERIFIED_REASONING_SOFT_PENALTY[task.level];
   if (required.has("search") && !caps.toolCalling) score -= 30;
 
   const estimatedPromptTokens = Math.ceil((task.promptChars ?? 0) / 4);
@@ -978,20 +1001,56 @@ export function scoreModelForTask(
 }
 
 /**
+ * Neutral tie-break for targets with equal fit: a hash of a conversation-stable key and the
+ * target's provider, model and connection. Never list order, alphabetical order or a vendor.
+ */
+function targetTieHash(target: ResolvedComboTarget, tieKey: string): string {
+  return createHash("sha256")
+    .update(
+      `${tieKey}\0${target.provider ?? ""}\0${target.modelStr ?? ""}\0${target.connectionId ?? ""}`
+    )
+    .digest("hex");
+}
+
+export interface ReorderByTaskWeightOptions {
+  /** Conversation-stable key for the tie hash (`getConversationCacheKey`). Fixed key when absent. */
+  tieKey?: string | null;
+  /**
+   * Keep the input order between targets of equal score instead of hashing. Use it only when the
+   * input order is itself meaningful ranking evidence (the `auto` strategy hands over targets
+   * already ordered by its own scorer, whose tie-break is neutral), never when it is just the
+   * order the operator listed the models in.
+   */
+  preserveInputOrder?: boolean;
+}
+
+/**
  * Reorder ResolvedComboTarget[] so the best-fit model for the task comes first.
- * Stable: ties keep original order. Identity-returns when no reordering needed
- * (avoids allocations on the common path). Never removes targets.
+ * Targets with an equal score are ordered by a neutral, conversation-stable hash (pass the
+ * request's `getConversationCacheKey` as `tieKey`; without one a fixed key is used), so the
+ * listed order never decides between equal targets and one conversation keeps its order from
+ * turn to turn. Targets identical in provider, model and connection keep their listed order.
+ * Identity-returns when no reordering is needed (avoids allocations on the common path).
+ * Never removes targets.
  */
 export function reorderByTaskWeight(
   targets: ResolvedComboTarget[],
   task: TaskClassification = classifyTask({}),
-  required: Set<string> = new Set()
+  required: Set<string> = new Set(),
+  options: ReorderByTaskWeightOptions = {}
 ): ResolvedComboTarget[] {
   if (!Array.isArray(targets) || targets.length <= 1) return targets;
 
+  const key = options.tieKey ?? "";
+  const preserve = options.preserveInputOrder === true;
   const reordered = targets
-    .map((t, i) => ({ t, i, score: scoreModelForTask(t.modelStr, task, required) }))
-    .sort((a, b) => b.score - a.score || a.i - b.i)
+    .map((t, i) => ({
+      t,
+      i,
+      score: scoreModelForTask(t.modelStr, task, required),
+      tie: preserve ? "" : targetTieHash(t, key),
+    }))
+    .sort((a, b) => b.score - a.score || (a.tie < b.tie ? -1 : a.tie > b.tie ? 1 : 0) || a.i - b.i)
     .map((x) => x.t);
 
   return reordered.every((t, i) => t === targets[i]) ? targets : reordered;

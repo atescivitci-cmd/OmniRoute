@@ -89,6 +89,7 @@ before(() => {
   saveModelsDevCapabilities({
     "prov-strong": { "model-wide": capRow(1_000_000, 128_000, true) },
     "prov-weak": { "model-narrow": capRow(32_000, 8_192, false) },
+    "prov-mid": { "model-mid": capRow(256_000, 64_000, true) },
   });
 });
 after(() => {
@@ -228,27 +229,43 @@ describe("reorderByTaskWeight", () => {
     assert.strictEqual(out, targets);
   });
 
-  it("light tasks: a sufficient model is not outranked by a bigger one; insufficient capability sorts behind", () => {
+  it("light tasks: sufficiency, not size: a mid model ties the largest, and insufficient capability sorts behind", () => {
     // Changed 2026-11-20 (was "haiku before opus"): ordering by name or size is gone. A light ask
-    // asks little, so every model with enough verified capability scores the same and the
-    // original order is kept; the narrow model, which cannot even meet the light demand, sorts
-    // behind regardless of where it was listed.
-    const sameFit = [
-      makeTarget("prov-strong/model-wide", 0),
-      makeTarget("prov-strong/model-wide", 1),
-    ];
+    // asks little, so every model with enough verified capability scores the same and neither
+    // list order nor size decides between them; the narrow model, which cannot meet the light
+    // demand, sorts behind regardless of where it was listed.
     const lightTask = classifyTask({
       messages: [{ role: "user", content: "quick rewrite this sentence" }],
       max_tokens: 300,
     });
     assert.equal(lightTask.level, "light");
-    assert.strictEqual(reorderByTaskWeight(sameFit, lightTask, new Set()), sameFit);
-    const targets = [
-      makeTarget("prov-weak/model-narrow", 0),
-      makeTarget("prov-strong/model-wide", 1),
-    ];
-    const out = reorderByTaskWeight(targets, lightTask, new Set());
-    assert.equal(out[0].modelStr, "prov-strong/model-wide");
+    assert.equal(
+      scoreModelForTask("prov-mid/model-mid", lightTask),
+      scoreModelForTask("prov-strong/model-wide", lightTask),
+      "a sufficient mid model must tie the largest on a light ask"
+    );
+    assert.ok(
+      scoreModelForTask("prov-weak/model-narrow", lightTask) <
+        scoreModelForTask("prov-mid/model-mid", lightTask)
+    );
+    const forward = reorderByTaskWeight(
+      [makeTarget("prov-strong/model-wide", 0), makeTarget("prov-mid/model-mid", 1)],
+      lightTask
+    );
+    const reverse = reorderByTaskWeight(
+      [makeTarget("prov-mid/model-mid", 0), makeTarget("prov-strong/model-wide", 1)],
+      lightTask
+    );
+    assert.equal(forward[0].modelStr, reverse[0].modelStr, "ties must not follow list order");
+    const out = reorderByTaskWeight(
+      [
+        makeTarget("prov-weak/model-narrow", 0),
+        makeTarget("prov-strong/model-wide", 1),
+        makeTarget("prov-mid/model-mid", 2),
+      ],
+      lightTask
+    );
+    assert.equal(out.at(-1)?.modelStr, "prov-weak/model-narrow");
   });
 
   it("routes critical tasks to models with more verified capability", () => {

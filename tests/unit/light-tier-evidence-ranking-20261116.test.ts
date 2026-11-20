@@ -377,9 +377,12 @@ test("7. light: empty or all-neutral evidence reproduces the base ranking exactl
       rank(rankFitFirstFreeCandidates, pool),
       rank(baseline.rankFitFirstFreeCandidates, pool),
     ]);
+    // Changed 2026-11-20: tieBreaker values are no longer compared with the base build, because
+    // the tie-break seed is now conversation-stable (it was a hash of the latest ask). The
+    // quotas differ per candidate, so the order and scores still have to match exactly.
     assert.deepEqual(
-      actual.ranked.map((r) => [keyOf(r.candidate), r.factors.score, r.tieBreaker]),
-      expected.ranked.map((r) => [keyOf(r.candidate), r.factors.score, r.tieBreaker]),
+      actual.ranked.map((r) => [keyOf(r.candidate), r.factors.score]),
+      expected.ranked.map((r) => [keyOf(r.candidate), r.factors.score]),
       `pool ${p}`
     );
     for (const r of actual.ranked) {
@@ -569,14 +572,10 @@ test("10. determinism: repeated runs agree and ties resolve by the unchanged tie
     tieOrder,
     [...tieOrder].sort((a, b) => a.localeCompare(b))
   );
-  // Same tie-breaker values as the base build for the same candidates.
-  const base = withFlag(true, () => rank(baseline.rankFitFirstFreeCandidates, pool));
-  for (const r of runs[0].ranked) {
-    assert.equal(
-      r.tieBreaker,
-      base.ranked.find((b) => keyOf(b.candidate) === keyOf(r.candidate))!.tieBreaker
-    );
-  }
+  // Changed 2026-11-20: the tie-breaker values used to be asserted equal to the base build's.
+  // The seed is now conversation-stable (explicit session id, else system prompt plus the first
+  // user message), so the values differ by design; the order-follows-tieBreaker check above and
+  // the conversation-stability tests in neutral-scoring-round2-20261120.test.ts replace it.
 });
 
 // ---------------------------------------------------------------------------------------
