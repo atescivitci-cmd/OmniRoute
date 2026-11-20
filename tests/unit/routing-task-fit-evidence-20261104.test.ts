@@ -403,7 +403,8 @@ test("a model measured as mostly failing does not keep the full health factor", 
     result.ranked.map((entry) => [entry.candidate.model, entry.factors.health])
   );
   assert.ok(health.failing < 0.1, `failing model kept health ${health.failing}`);
-  assert.equal(health.working, 1);
+  // 2026-11-20: health is the observed success rate itself (continuous, no 0.5 cliff).
+  assert.ok(Math.abs(health.working - 0.98) < 1e-12);
   // 2026-11-20: health no longer waits for 20 samples to call a model failing (that gate made
   // sample count, not success rate, decide health). 12 samples at 40% success is just 0.4.
   assert.equal(health["few-samples"], 0.4, "health follows the observed rate at any sample size");

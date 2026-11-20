@@ -109,7 +109,7 @@ test("a mostly failing small sample can never beat a healthy proven one", () => 
   }
 });
 
-test("unobserved and stale evidence keep the neutral prior; observed health is never below it", () => {
+test("unobserved and stale evidence keep the neutral prior; a healthy observed RELIABILITY is above it", () => {
   const neutral = { score: 0.5, confidence: 0, sampleCount: 0, source: "neutral_prior" };
   const none = operationalReliability(health(0, 0), NOW);
   assert.deepEqual(
@@ -347,4 +347,181 @@ test("the scorer reads no identifier: renaming every candidate leaves the factor
     assert.equal(pick(a, i).r.health, pick(b, i).r.health);
     assert.equal(pick(a, i).r.score, pick(b, i).r.score);
   }
+});
+
+// ── 3. health factor: continuous in the observed rate, blind to volume ──────
+
+const healthOf = (d: ReturnType<typeof rank>, id: string) =>
+  d.ranked.find((r) => `${r.candidate.provider}/${r.candidate.model}` === id)!.factors.health;
+const scoreOfId = (d: ReturnType<typeof rank>, id: string) =>
+  d.ranked.find((r) => `${r.candidate.provider}/${r.candidate.model}` === id)!.factors.score;
+
+test("health is the observed success rate: continuous, monotone, no cliff at 0.5", () => {
+  let prev: { rate: number; health: number; score: number } | null = null;
+  let worstStep = 0;
+  for (const n of [10, 100]) {
+    prev = null;
+    for (let f = n; f >= 0; f--) {
+      const d = rank([cand("syna/zorbex-9", n, f)], `h-${n}-${f}`);
+      const h = healthOf(d, "syna/zorbex-9");
+      const sc = scoreOfId(d, "syna/zorbex-9");
+      const rate = 1 - f / n;
+      assert.ok(Math.abs(h - rate) < 1e-12, `n=${n} failures=${f}: health ${h} != rate ${rate}`);
+      if (prev) {
+        assert.ok(h >= prev.health, "health dropped as success rose");
+        assert.ok(sc >= prev.score - 1e-12, "score dropped as success rose");
+        worstStep = Math.max(worstStep, (sc - prev.score) / (rate - prev.rate));
+      }
+      prev = { rate, health: h, score: sc };
+    }
+  }
+  // At critical, reliability (0.05) and health (0.07) both follow the rate: a full-range swing is
+  // 0.12, so one point of success rate moves a critical score by at most 0.0012.
+  assert.ok(worstStep <= 0.12 + 1e-9, `score slope ${worstStep} per unit rate`);
+});
+
+test("49, 50 and 51 failures in 100 calls sit next to each other (no cliff at a coin flip)", () => {
+  const at = (f: number) => {
+    const d = rank([cand("syna/zorbex-9", 100, f), cand("synb/quillon-3", 0)], `coin-${f}`);
+    return { s: scoreOfId(d, "syna/zorbex-9"), h: healthOf(d, "syna/zorbex-9") };
+  };
+  const [a, b, c] = [at(49), at(50), at(51)];
+  assert.ok(a.s > b.s && b.s > c.s, "strictly monotone");
+  assert.ok(a.s - b.s < 0.002 && b.s - c.s < 0.002, `steps ${a.s - b.s} ${b.s - c.s}`);
+  assert.ok(
+    Math.abs(a.h - 0.51) < 1e-12 && Math.abs(b.h - 0.5) < 1e-12 && Math.abs(c.h - 0.49) < 1e-12
+  );
+});
+
+test("a coin-flip model scores exactly like an unobserved one; worse than a coin flip ranks below it", () => {
+  for (const n of [4, 10, 40, 500]) {
+    const d = rank([cand("syna/zorbex-9", n, n / 2), cand("synb/quillon-3", 0)], `flip-${n}`);
+    assert.equal(scoreOfId(d, "syna/zorbex-9"), scoreOfId(d, "synb/quillon-3"), `n=${n}`);
+  }
+  const worse = rank([cand("syna/zorbex-9", 40, 21), cand("synb/quillon-3", 0)], "worse");
+  assert.ok(scoreOfId(worse, "syna/zorbex-9") < scoreOfId(worse, "synb/quillon-3"));
+  const better = rank([cand("syna/zorbex-9", 40, 19), cand("synb/quillon-3", 0)], "better");
+  assert.ok(scoreOfId(better, "syna/zorbex-9") > scoreOfId(better, "synb/quillon-3"));
+});
+
+test("health, like reliability, ignores volume at equal observed rate and keeps the neutral prior", () => {
+  for (const [rate, sizes] of [
+    [1, [1, 3, 10, 29, 1000]],
+    [0.8, [5, 10, 100, 1000]],
+    [0.5, [2, 10, 100]],
+  ] as const) {
+    const hs = sizes.map((n) =>
+      healthOf(rank([cand("syna/zorbex-9", n, n * (1 - rate))], "v"), "syna/zorbex-9")
+    );
+    for (const h of hs) assert.ok(Math.abs(h - rate) < 1e-12, `rate ${rate}: ${hs}`);
+  }
+  assert.equal(healthOf(rank([cand("syna/zorbex-9", 0)], "u"), "syna/zorbex-9"), 0.5);
+  // an open breaker still reads neutral, as before
+  const open = { ...cand("syna/zorbex-9", 20), circuitBreakerState: "HALF_OPEN" as const };
+  assert.equal(healthOf(rank([open], "o"), "syna/zorbex-9"), 0.5);
+});
+
+test("an observed healthy model has health at or above an unobserved one at every sample size", () => {
+  for (const n of [1, 3, 9, 10, 29, 1000]) {
+    const d = rank([cand("syna/zorbex-9", n, 0), cand("synb/quillon-3", 0)], `hh-${n}`);
+    assert.ok(healthOf(d, "syna/zorbex-9") > healthOf(d, "synb/quillon-3"), `n=${n}`);
+  }
+});
+
+// ── 4. observation gate in production candidate assembly (combo.ts) ─────────
+
+async function assembled(n: number, failures: number, tag: string) {
+  const { saveRequestUsage } = await import("../../src/lib/usage/usageHistory.ts");
+  const { buildAutoCandidates } = await import("../../open-sse/services/combo.ts");
+  const provider = "nvidia";
+  const model = `gate-${tag}-${n}-${failures}`;
+  for (let i = 0; i < n; i++) {
+    const success = i >= failures;
+    await saveRequestUsage({
+      provider,
+      model,
+      success,
+      latencyMs: success ? 400 : 1,
+      timeToFirstTokenMs: 100,
+      tokens: { input: 1, output: success ? 5 : 0 },
+      timestamp: new Date(Date.now() - i * 1000).toISOString(),
+    });
+  }
+  const [c] = await buildAutoCandidates(
+    [
+      {
+        kind: "model",
+        provider,
+        modelStr: `${provider}/${model}`,
+        stepId: model,
+        executionKey: model,
+        connectionId: null,
+      },
+    ] as never,
+    "gate-fixture"
+  );
+  return c as unknown as FitFirstCandidate;
+}
+
+test("production assembly: from 3 usage samples the observed rate is ranking evidence; 1 and 2 stay neutral", async () => {
+  for (const n of [1, 2]) {
+    const c = await assembled(n, 0, "lo");
+    assert.equal(operationalReliability(c, Date.now()).source, "neutral_prior", `n=${n}`);
+  }
+  for (const n of [3, 5, 9, 10, 29]) {
+    const c = await assembled(n, 0, "ok");
+    const r = operationalReliability(c, Date.now());
+    assert.equal(r.source, "usage_24h", `n=${n}`);
+    assert.equal(r.sampleCount, n);
+    assert.equal(r.score, 1);
+  }
+});
+
+test("production assembly: no cliff between 9 and 10 samples, healthy or failing", async () => {
+  const d = (cands: FitFirstCandidate[]) =>
+    rankFitFirstFreeCandidates({
+      candidates: cands,
+      body: { messages: [{ role: "user", content: "x" }] },
+      zeroAdditionalCostProviders: ["nvidia"],
+      conversationKey: "k",
+      taskProfile: critical,
+      now: Date.now(),
+    });
+  const factors = (r: ReturnType<typeof d>, model: string) =>
+    r.ranked.find((x) => x.candidate.model === model)!.factors;
+  const h9 = await assembled(9, 0, "h");
+  const h10 = await assembled(10, 0, "h");
+  const f = d([h9, h10]);
+  assert.deepEqual(
+    f.excluded.map((e) => e.reason),
+    []
+  );
+  const a = factors(f, h9.model);
+  const b = factors(f, h10.model);
+  assert.equal(a.reliability, b.reliability);
+  assert.equal(a.health, b.health);
+  assert.equal(a.score, b.score, "one extra sample must not move a healthy model's score");
+  // a failing model does not climb to neutral by losing a sample: 8 of 10 failing vs 7 of 9
+  const x10 = await assembled(10, 8, "x");
+  const x9 = await assembled(9, 7, "x");
+  const g = d([x10, x9]);
+  for (const c of [x10, x9]) assert.ok(factors(g, c.model).reliability < 0.5);
+  assert.ok(factors(g, x9.model).score < 0.9 * factors(f, h9.model).score);
+  assert.ok(Math.abs(factors(g, x9.model).score - factors(g, x10.model).score) < 0.01);
+});
+
+test("production assembly: latency gates and the hard-veto floor are untouched by the lower rate gate", async () => {
+  const { healthEvidenceHasRecentSamples, healthEvidenceSupportsHardVeto } =
+    await import("../../open-sse/services/autoCombo/candidateProvenance.ts");
+  for (const n of [3, 5, 9]) {
+    const c = await assembled(n, 0, "lat");
+    assert.equal(healthEvidenceHasRecentSamples(c.provenance), false, `n=${n} veto floor`);
+    assert.equal(healthEvidenceSupportsHardVeto(c.provenance), false);
+    assert.equal(c.latencySampleSource, "unqualified", `n=${n}: latency still needs 10 samples`);
+    assert.equal(c.successfulLatencySampleCount, 0);
+    assert.equal(c.p95LatencyMs, 1500, "bootstrap p95 until 10 samples");
+  }
+  const c10 = await assembled(10, 0, "lat");
+  assert.equal(healthEvidenceHasRecentSamples(c10.provenance), true);
+  assert.equal(c10.latencySampleSource, "successful_usage_24h");
 });

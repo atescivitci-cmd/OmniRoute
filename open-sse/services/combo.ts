@@ -308,7 +308,24 @@ const DEFAULT_MODEL_P95_MS: Record<string, number> = {
   "claude-opus-4.6": 6000,
   "deepseek-chat": 2000,
 };
+/**
+ * Usage-window samples needed before the 24 h latency statistics (p95, spread, successful-latency
+ * count, speed telemetry) are trusted. Unchanged: latency percentiles over fewer samples are noise.
+ */
 const MIN_HISTORY_SAMPLES = 10;
+/**
+ * Usage-window samples needed before the observed success RATE counts as ranking evidence
+ * (`errorRate` and the `usage_24h` provenance that `operationalReliability` reads). Lower than
+ * MIN_HISTORY_SAMPLES on purpose. With the rate scored directly (volume-blind), the old 10-sample
+ * gate made 9 samples neutral (0.5 reliability, 0.5 health) and 10 samples the full record, a 0.06
+ * swing at critical (about 0.14 at light) from one extra call; and because fit-first-free never
+ * explores, a model stuck at 9 samples could not earn its 10th. A failing model that aged from 10
+ * to 9 samples was also laundered up to neutral. Three samples is the smallest count at which one
+ * unlucky or lucky call cannot decide a model's rate on its own (2 of 3 = 0.67, not 0 or 1); it
+ * matches the existing minimum for successful-latency evidence. The observation gate for the hard
+ * veto lives in `healthEvidenceHasRecentSamples` (>= 10) and is not touched by this constant.
+ */
+const MIN_OBSERVED_OUTCOME_SAMPLES = 3;
 const OUTPUT_TOKEN_RATIO = 0.4;
 
 function calculateTargetContextAffinity(
@@ -413,6 +430,8 @@ export async function buildAutoCandidates(
       const historicalTotal = Number(historicalModelMetric?.totalRequests);
       const hasHistoricalSignal =
         Number.isFinite(historicalTotal) && historicalTotal >= MIN_HISTORY_SAMPLES;
+      const hasObservedOutcomes =
+        Number.isFinite(historicalTotal) && historicalTotal >= MIN_OBSERVED_OUTCOME_SAMPLES;
 
       let costPer1MTokens = 1;
       try {
@@ -456,7 +475,7 @@ export async function buildAutoCandidates(
           ? avgLatency
           : getBootstrapLatencyMs(model);
 
-      const errorRate = hasHistoricalSignal
+      const errorRate = hasObservedOutcomes
         ? Number.isFinite(historicalSuccessRate) &&
           historicalSuccessRate >= 0 &&
           historicalSuccessRate <= 1
@@ -578,7 +597,7 @@ export async function buildAutoCandidates(
         provenance: candidateProvenance({
           provider,
           connectionId: target.connectionId,
-          historical: hasHistoricalSignal,
+          historical: hasObservedOutcomes,
           historicalSamples: historicalTotal,
           runtimeSamples: modelMetric?.requests,
           runtimeLatest: modelMetric?.lastUsedAt,

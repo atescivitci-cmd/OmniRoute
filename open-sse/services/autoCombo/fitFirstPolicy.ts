@@ -20,6 +20,7 @@ import {
   getConversationTieKey,
   isLightByAskEnabled,
   scoreModelForTask,
+  capabilityDemandForTask,
   TASK_LEVEL_WEIGHT,
 } from "../taskAwareRouting.ts";
 import {
@@ -969,6 +970,9 @@ export function rankFitFirstFreeCandidates(args: {
   const required = new Set(
     requiredCapabilities.map((capability) => (capability === "tools" ? "search" : capability))
   );
+  // What THIS request needs, from its own signals. Task fitness and complexity fit are both
+  // measured against it, so candidates that cover it tie on both whatever larger spec they have.
+  const demand = capabilityDemandForTask(task, required);
   const legacyWeights = weightProfile(task.level);
   // Light asks, flag on only: weight moves from the size-closeness term to the measured
   // latency and reliability terms, and only for terms with measured evidence in this pool.
@@ -987,23 +991,21 @@ export function rankFitFirstFreeCandidates(args: {
   const ranked = eligible
     .map((candidate): RankedFitFirstCandidate => {
       const modelStr = candidateModelString(candidate);
-      const fitness = getTaskFitnessWithSource(modelStr, taskDecision.taskType);
+      const fitness = getTaskFitnessWithSource(modelStr, taskDecision.taskType, demand);
       const complexityFit = clamp01(scoreModelForTask(modelStr, task, required) / 100);
       const operational = evidence.get(candidate)!;
-      // Health is a function of the OBSERVED success rate, never of how many samples there
-      // are. Any fresh bounded-window observation (n >= 1, the same evidence the reliability
-      // term uses) with a closed breaker earns the full factor, unless the observed success
-      // rate is below 0.5, in which case the rate itself is the factor, so a mostly failing
-      // model ranks below an untried one (0.5) at every sample size. The earlier gates here
-      // (>= 10 samples to earn the factor at all, >= 20 to be called failing) made volume
-      // worth up to 0.035 at heavy/critical, more than the whole reliability term. The
+      // Health is the OBSERVED success rate itself, never a function of how many samples
+      // produced it: a fresh bounded-window observation with a closed breaker scores its rate
+      // (1.0 at 100%, 0.5 at a coin flip, 0 at all-failing); no observation scores the neutral
+      // 0.5. It is continuous and monotone, so no single failure moves a score by more than its
+      // proportional weight, and a model observed to fail more than half the time ranks below
+      // an unobserved one at every sample size. Earlier versions gave 1.0 for any observed
+      // window and the rate only below 0.5 (a 0.5 cliff: 50% failing outranked an unobserved
+      // model, 51% did not) and gated on 10 and 20 samples (volume decided health). The
       // hard-veto floor (healthEvidenceSupportsHardVeto, >= 10 samples) is separate and unchanged.
-      const observed = operational.reason === "observed";
       const health =
-        candidate.circuitBreakerState === "CLOSED" && observed
-          ? operational.score < 0.5
-            ? operational.score
-            : 1
+        candidate.circuitBreakerState === "CLOSED" && operational.reason === "observed"
+          ? operational.score
           : 0.5;
       const quota = quotaRankingFactor(candidate);
       const reliability = operational.score;

@@ -33,7 +33,12 @@ import {
   deleteUserFitnessOverrideEntry,
 } from "../../../src/lib/db/modelIntelligence.ts";
 import { getResolvedModelCapabilities } from "../modelCapabilities.ts";
-import { capabilityStrength, hasCapabilityEvidence } from "../capabilityStrength.ts";
+import {
+  demandedCapabilityStrength,
+  hasCapabilityEvidence,
+  NEUTRAL_DEMAND,
+  type CapabilityDemand,
+} from "../capabilityStrength.ts";
 
 // ─── Capability -> task fitness mapping (resolution layer 4) ────────────
 
@@ -88,9 +93,17 @@ export function getModelsDevTierFitness(model: string, taskType: string): number
 
 /**
  * Fitness derived from the model's resolved capabilities (layer 4). Null when no capability is
- * verified. Depends only on capability values, never on the provider or model name.
+ * verified. Depends only on capability values and the request's demand, never on the provider
+ * or model name. The strength is DEMAND-RELATIVE (`demandedCapabilityStrength`): every model
+ * whose verified capabilities cover what the request needs gets the same fitness, whatever
+ * larger spec it has. Callers without a request (the legacy scorer, the combo inspector) omit
+ * `demand` and get the documented neutral demand, identical for every model.
  */
-export function getCapabilityDerivedFitness(model: string, taskType: string): number | null {
+export function getCapabilityDerivedFitness(
+  model: string,
+  taskType: string,
+  demand: CapabilityDemand = NEUTRAL_DEMAND
+): number | null {
   let caps;
   try {
     caps = getResolvedModelCapabilities(model);
@@ -99,13 +112,17 @@ export function getCapabilityDerivedFitness(model: string, taskType: string): nu
   }
   if (!hasCapabilityEvidence(caps)) return null;
   const range = TASK_FITNESS_RANGE[taskType.toLowerCase()] ?? TASK_FITNESS_RANGE.default;
-  return range.floor + capabilityStrength(caps) * (range.ceil - range.floor);
+  return range.floor + demandedCapabilityStrength(caps, demand) * (range.ceil - range.floor);
 }
 
 // ─── Resolution chain ───────────────────────────────────────────────────
 
-export function getTaskFitness(model: string, taskType: string): number {
-  return getTaskFitnessWithSource(model, taskType).score;
+export function getTaskFitness(
+  model: string,
+  taskType: string,
+  demand: CapabilityDemand = NEUTRAL_DEMAND
+): number {
+  return getTaskFitnessWithSource(model, taskType, demand).score;
 }
 
 /**
@@ -160,9 +177,14 @@ const ARENA_RATING_BAND = 0.06;
  * capability evidence the 0.5 prior is adjusted the same way but never lifted above the lowest
  * verified fitness of the task, so a rating cannot make an unverified model outrank a verified one.
  */
-function refineWithRating(rating: number, normalizedTask: string, model: string): number {
+function refineWithRating(
+  rating: number,
+  normalizedTask: string,
+  model: string,
+  demand: CapabilityDemand
+): number {
   const range = TASK_FITNESS_RANGE[normalizedTask] ?? TASK_FITNESS_RANGE.default;
-  const derived = getCapabilityDerivedFitness(model, normalizedTask);
+  const derived = getCapabilityDerivedFitness(model, normalizedTask, demand);
   const position = Math.max(-1, Math.min(1, (rating - ARENA_RATING_MID) / ARENA_RATING_HALF_RANGE));
   const adjustment = position * ARENA_RATING_BAND;
   if (derived === null) return Math.min(NO_EVIDENCE_FITNESS + adjustment, range.floor);
@@ -171,7 +193,8 @@ function refineWithRating(rating: number, normalizedTask: string, model: string)
 
 export function getTaskFitnessWithSource(
   model: string,
-  taskType: string
+  taskType: string,
+  demand: CapabilityDemand = NEUTRAL_DEMAND
 ): { score: number; source: string } {
   const normalizedModel = model.toLowerCase();
   const normalizedTask = taskType.toLowerCase();
@@ -192,7 +215,7 @@ export function getTaskFitnessWithSource(
   const arenaElo = firstMeasured(ids, normalizedTask, "arena_elo");
   if (arenaElo) {
     return {
-      score: refineWithRating(arenaElo.score, normalizedTask, model),
+      score: refineWithRating(arenaElo.score, normalizedTask, model, demand),
       source: "arena_elo",
     };
   }
@@ -200,7 +223,7 @@ export function getTaskFitnessWithSource(
     const arenaEloBase = lookupFreeAliasArenaElo(id, normalizedTask);
     if (arenaEloBase !== null) {
       return {
-        score: refineWithRating(arenaEloBase, normalizedTask, model),
+        score: refineWithRating(arenaEloBase, normalizedTask, model, demand),
         source: "arena_elo_free_alias",
       };
     }
@@ -211,7 +234,7 @@ export function getTaskFitnessWithSource(
     return { score: tierScore, source: "models_dev_tier" };
   }
 
-  const derived = getCapabilityDerivedFitness(model, normalizedTask);
+  const derived = getCapabilityDerivedFitness(model, normalizedTask, demand);
   if (derived !== null) {
     return { score: derived, source: "capability_derived" };
   }

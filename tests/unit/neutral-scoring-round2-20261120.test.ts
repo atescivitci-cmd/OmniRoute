@@ -395,21 +395,23 @@ test("R4: exact size, monotone, name-blind, off for light/standard, replaced (no
     level("syna/zz-b", HUGE_REASON, "heavy") - level("syna/zz-b", HUGE_NO_REASON, "heavy"),
     10
   );
-  // critical: the non-reasoning model is not saturated (power 98 of 120); penalty 15 on top.
-  assert.ok(
-    Math.abs(level("syna/zz-b", HUGE_NO_REASON, "critical") - (100 * 98) / 120 + 15) < 1e-9
-  );
+  // critical: the 1M/128K non-reasoning model covers the (reasoning-free) demand fully, so it
+  // scores 100 and only the soft penalty (15) applies. (Until 2026-11-20 it scored 100 x 98/120
+  // against a fixed per-level target power; fit is now measured against the request's demand.)
+  assert.ok(Math.abs(level("syna/zz-b", HUGE_NO_REASON, "critical") - (100 - 15)) < 1e-9);
   for (const lvl of ["heavy", "critical"] as TaskLevel[]) {
     const unknown = level("syna/zz-c", { ...SMALL_REASON, think: null }, lvl);
     const no = level("syna/zz-c", { ...SMALL_REASON, think: false }, lvl);
     const yes = level("syna/zz-c", { ...SMALL_REASON, think: true }, lvl);
     assert.ok(yes > no && no === unknown, `${lvl}: ${yes} ${no} ${unknown}`);
-    // Required reasoning takes the -120 gate instead of the soft penalty, never both.
-    const penalty = lvl === "heavy" ? 10 : 15;
+    // Required reasoning takes the -120 gate instead of the soft penalty, never both. Since
+    // 2026-11-20 a required reasoning dimension is also scored in the demand-relative strength
+    // (weights ctx 0.30 + out 0.25 covered, reasoning 0.35 missing = 0.55 / 0.90), so the
+    // expectation is that strength minus 120, with no soft penalty on top.
     assert.ok(
       Math.abs(
         level("syna/zz-c", { ...SMALL_REASON, think: false }, lvl, new Set(["reasoning"])) -
-          (no + penalty - 120)
+          (100 * (0.55 / 0.9) - 120)
       ) < 1e-9
     );
   }
