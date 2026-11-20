@@ -6,11 +6,7 @@ import {
 import { operationalReliability } from "./rankingEvidence.ts";
 import { TASK_LEVELS, type TaskProfileResolution, type TaskProfile } from "./taskProfile.ts";
 import { providerSupportsEmulatedToolCalling } from "../combo/comboStructure.ts";
-import {
-  healthEvidenceHasRecentSamples,
-  healthEvidenceSupportsHardVeto,
-  type CandidateProvenance,
-} from "./candidateProvenance.ts";
+import { healthEvidenceSupportsHardVeto, type CandidateProvenance } from "./candidateProvenance.ts";
 import { classifyToolContinuation } from "./toolContinuation.ts";
 import { createHash } from "node:crypto";
 import { localFallbackTier } from "./localFallbackPolicy.ts";
@@ -814,9 +810,6 @@ function neutralTieBreaker(fingerprint: string, candidate: FitFirstCandidate): s
   return `${identity}${entry}`;
 }
 
-// confidence = n / (n + 20), so 0.5 means at least 20 observed samples.
-const CONFIDENT_FAILURE_MIN_CONFIDENCE = 0.5;
-
 /**
  * Classify the task-fitness source tag; reads a provenance label, never a model id.
  *  - measured: owner override or arena rating.
@@ -997,19 +990,18 @@ export function rankFitFirstFreeCandidates(args: {
       const fitness = getTaskFitnessWithSource(modelStr, taskDecision.taskType);
       const complexityFit = clamp01(scoreModelForTask(modelStr, task, required) / 100);
       const operational = evidence.get(candidate)!;
-      // Recent samples earned the full health factor whether the calls succeeded or
-      // failed. Under the heavy/critical profile reliability weighs 0.05, so a model
-      // with a measured 2% success rate still outscored one that had never been tried
-      // (health 1 vs 0.5) and kept winning. A model observed often enough (>= 20
-      // samples) and failing most of the time gets its reliability as health instead.
-      const confidentlyFailing =
-        operational.reason === "observed" &&
-        operational.confidence >= CONFIDENT_FAILURE_MIN_CONFIDENCE &&
-        operational.score < 0.5;
+      // Health is a function of the OBSERVED success rate, never of how many samples there
+      // are. Any fresh bounded-window observation (n >= 1, the same evidence the reliability
+      // term uses) with a closed breaker earns the full factor, unless the observed success
+      // rate is below 0.5, in which case the rate itself is the factor, so a mostly failing
+      // model ranks below an untried one (0.5) at every sample size. The earlier gates here
+      // (>= 10 samples to earn the factor at all, >= 20 to be called failing) made volume
+      // worth up to 0.035 at heavy/critical, more than the whole reliability term. The
+      // hard-veto floor (healthEvidenceSupportsHardVeto, >= 10 samples) is separate and unchanged.
+      const observed = operational.reason === "observed";
       const health =
-        candidate.circuitBreakerState === "CLOSED" &&
-        healthEvidenceHasRecentSamples(candidate.provenance)
-          ? confidentlyFailing
+        candidate.circuitBreakerState === "CLOSED" && observed
+          ? operational.score < 0.5
             ? operational.score
             : 1
           : 0.5;
@@ -1019,7 +1011,8 @@ export function rankFitFirstFreeCandidates(args: {
         ? latencyEvidenceFit(
             validLatency(candidate) ? candidate.p95LatencyMs : null,
             candidate.successfulLatencySampleCount,
-            operational.reason === "observed" ? operational.score : undefined
+            // A 0% success rate has no finite time-to-success: never let it read as "unknown".
+            operational.reason === "observed" ? Math.max(operational.score, 1e-6) : undefined
           )
         : null;
       const latencyFit = lightLatency
