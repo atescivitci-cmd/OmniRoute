@@ -109,6 +109,13 @@ async function drain(response: Response) {
   }
 }
 
+// Before any response the deadline row is new. After the first chunk the stream path already wrote
+// its own failure row (the client_disconnected finalizer) and is intentionally unchanged: the combo
+// deadline can also end a healthy long stream, so it is not relabelled a provider stall.
+const ACCEPTED_CODES: Record<Shape, string[]> = {
+  "hold-headers": ["routing_deadline", "target_timeout"],
+  "chunk-then-silent": ["client_disconnected"],
+};
 for (const [shape, stream, model] of [
   ["hold-headers", false, "gpt-4o"],
   ["hold-headers", true, "gpt-4o-mini"],
@@ -135,8 +142,8 @@ for (const [shape, stream, model] of [
       assert.equal(failures[0].provider, "openai");
       assert.equal(failures[0].model, model);
       assert.ok(
-        ["routing_deadline", "target_timeout"].includes(String(failures[0].error_code)),
-        `the row says the routing deadline cut it: ${JSON.stringify(failures[0])}`
+        ACCEPTED_CODES[shape].includes(String(failures[0].error_code)),
+        `unexpected failure row code: ${JSON.stringify(failures[0])}`
       );
       assert.ok(
         Number(failures[0].latency_ms) >= 2000,

@@ -648,9 +648,11 @@ export async function handleChatCore({
   // request's own signal must also be aborted, because the abort branches match by message and
   // would otherwise label a local stream glitch ("controller is already closed") a deadline.
   const requestUsageSource = getUsageSource();
-  // The same holds for any request OmniRoute's own routing deadline cuts (combo or target
-  // deadline): the provider did not answer in time, so the model's usage record must say so, or the
-  // router never learns that it stalls and keeps choosing it. The abort reason is matched by
+  // The same holds for a request OmniRoute's own routing deadline cuts BEFORE any response (combo
+  // or target deadline): the provider did not answer in time, so the model's usage record must say
+  // so, or the router never learns that it stalls and keeps choosing it. A stream that was already
+  // delivering is left as it was: the combo deadline can also end a healthy long answer, and that
+  // path already records its own failure row. The abort reason is matched by
   // identity (see routingDeadlineReason.ts), never by message, so an upstream error cannot pose as
   // a local deadline. A client that gives up carries no such reason and stays unrecorded.
   const persistProbeDeadlineUsage = () => {
@@ -5608,14 +5610,6 @@ export async function handleChatCore({
         persistFailureUsage(HTTP_STATUS.GATEWAY_TIMEOUT, "probe_deadline")
       );
       return;
-    }
-    if (statusCode === 499 && errorCode === "client_disconnected") {
-      // A stream our own routing deadline cut is the provider stalling, not a client leaving.
-      const deadlineKind = routingDeadlineKind(clientRawRequest?.signal?.reason);
-      if (deadlineKind) {
-        persistFailureUsage(HTTP_STATUS.GATEWAY_TIMEOUT, deadlineKind);
-        return;
-      }
     }
     persistFailureUsage(statusCode, errorCode);
   };
