@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   classifyTask,
-  getConversationCacheKey,
+  getConversationTieKey,
   modelPowerScore,
   reorderByTaskWeight,
   scoreModelForTask,
@@ -304,7 +304,7 @@ test("R3: ties are conversation-stable and spread across conversations", () => {
   const firsts = new Map(EQUAL.map((i) => [i, 0]));
   const N = 400;
   for (let c = 0; c < N; c++) {
-    const key = getConversationCacheKey({ messages: [{ role: "user", content: `ask ${c}` }] });
+    const key = getConversationTieKey({ messages: [{ role: "user", content: `ask ${c}` }] });
     const a = reorderByTaskWeight(EQUAL.map(targetFor), t, new Set(), { tieKey: key })[0].modelStr;
     const b = reorderByTaskWeight(EQUAL.map(targetFor), t, new Set(), { tieKey: key })[0].modelStr;
     assert.equal(a, b);

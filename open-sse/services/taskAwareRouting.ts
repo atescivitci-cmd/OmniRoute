@@ -1160,6 +1160,157 @@ export function getConversationCacheKey(body: Record<string, unknown>): string |
   return hashConversationSeed(seedParts.join("\n"));
 }
 
+// ── Conversation tie key (neutral tie-break seed) ─────────────────────────────
+
+function fullDigest(text: string): string {
+  return createHash("sha256").update(text.replace(/\s+/g, " ").trim()).digest("hex");
+}
+
+/** First text of the first matching-role entry, FULL length (never truncated). */
+function fullFirstRoleText(
+  items: unknown,
+  roles: Set<string>,
+  contentKey: "content" | "parts" = "content"
+): string {
+  if (!Array.isArray(items)) return "";
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    if (!roles.has(String(rec["role"] ?? ""))) continue;
+    const text = collectText(rec[contentKey]).join("\n").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function fullAllRoleText(
+  items: unknown,
+  roles: Set<string>,
+  contentKey: "content" | "parts" = "content"
+): string {
+  if (!Array.isArray(items)) return "";
+  return items
+    .filter(
+      (item): item is Record<string, unknown> =>
+        !!item &&
+        typeof item === "object" &&
+        roles.has(String((item as Record<string, unknown>)["role"] ?? ""))
+    )
+    .map((item) => collectText(item[contentKey]).join("\n"))
+    .filter(Boolean)
+    .join("\n");
+}
+
+const SESSION_IN_USER_ID_RE = /session[_:-]([A-Za-z0-9][A-Za-z0-9-]{7,})/i;
+
+/**
+ * Session id carried by metadata.user_id: either a JSON object with `session_id`/`sessionId`
+ * (the form Claude Code sends and that claudeCodeCompatible.ts emits) or the older
+ * `user_<hash>_account_<uuid>_session_<uuid>` string. A user_id without a session part is a
+ * user (or device) identifier, not a conversation, and yields null.
+ */
+function sessionFromUserId(userId: string): string | null {
+  const text = userId.trim();
+  if (!text) return null;
+  if (text.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      const id = parsed.session_id ?? parsed.sessionId;
+      return typeof id === "string" && id.trim() ? id.trim().toLowerCase() : null;
+    } catch {
+      /* fall through to the pattern */
+    }
+  }
+  const match = SESSION_IN_USER_ID_RE.exec(text);
+  return match ? match[1].toLowerCase() : null;
+}
+
+/**
+ * Conversation-stable, neutral seed for tie-breaks between candidates that are exactly equal on
+ * every score. The same conversation yields the same key on every turn, and different
+ * conversations yield different keys, whatever the length of the shared system prompt.
+ *
+ * Order of preference (first present wins):
+ *  1. an external, client-chosen session id (`ext:` ids from X-Session-Id style headers,
+ *     passed as `options.sessionId`);
+ *  2. a session id embedded in `metadata.user_id` (Claude Code sends
+ *     `user_<hash>_account_<uuid>_session_<uuid>` on /v1/messages);
+ *  3. explicit ids in the body: conversation_id, thread_id, session_id, metadata.* variants,
+ *     prompt_cache_key (Codex);
+ *  4. the server-derived session fingerprint (`options.sessionId` without the `ext:` prefix);
+ *  5. digests of the system prompt and of the FIRST user message, each over its full text, then
+ *     combined (a long, shared system prompt can no longer swallow the per-session part);
+ *  6. null, so the caller falls back to the ask.
+ *
+ * Nothing here reads a model, provider or list order. Never truncates a joined string.
+ * Known limit: a client-chosen id steers only ties between candidates that are already exactly
+ * equal on capability, evidence, quota and health; every admission gate still applies.
+ */
+export function getConversationTieKey(
+  body: Record<string, unknown>,
+  options: { sessionId?: string | null } = {}
+): string | null {
+  const tag = (kind: string, value: string) =>
+    `${kind}:${createHash("sha256").update(value).digest("hex").slice(0, 24)}`;
+  const sessionId = typeof options.sessionId === "string" ? options.sessionId.trim() : "";
+  if (sessionId.startsWith("ext:")) return tag("ext", sessionId);
+  if (!body || typeof body !== "object") return sessionId ? tag("sid", sessionId) : null;
+
+  const meta = (body["metadata"] ?? {}) as Record<string, unknown>;
+  const userId = typeof meta["user_id"] === "string" ? (meta["user_id"] as string) : "";
+  const embedded = sessionFromUserId(userId);
+  if (embedded) return tag("uid", embedded);
+
+  for (const value of [
+    body["conversation_id"],
+    body["conversationId"],
+    body["thread_id"],
+    body["threadId"],
+    body["session_id"],
+    body["sessionId"],
+    meta["conversation_id"],
+    meta["conversationId"],
+    meta["thread_id"],
+    meta["threadId"],
+    meta["session_id"],
+    meta["sessionId"],
+    body["prompt_cache_key"],
+  ]) {
+    if (value != null && String(value).trim()) return tag("explicit", String(value).trim());
+  }
+  if (sessionId) return tag("sid", sessionId);
+
+  const systemRoles = new Set(["system", "developer"]);
+  const userRoles = new Set(["user"]);
+  const contents =
+    body["contents"] ?? (body["request"] as Record<string, unknown> | undefined)?.["contents"];
+  const system = [
+    collectText(body["system"]).join("\n"),
+    collectText(body["instructions"]).join("\n"),
+    fullAllRoleText(body["messages"], systemRoles),
+    fullAllRoleText(body["input"], systemRoles),
+    fullAllRoleText(contents, systemRoles, "parts"),
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const firstUser = [
+    fullFirstRoleText(body["messages"], userRoles),
+    typeof body["input"] === "string"
+      ? (body["input"] as string)
+      : fullFirstRoleText(body["input"], userRoles),
+    fullFirstRoleText(contents, userRoles, "parts"),
+    typeof body["query"] === "string" ? (body["query"] as string) : "",
+    typeof body["url"] === "string" ? (body["url"] as string) : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  if (!system && !firstUser) return null;
+  return tag(
+    "conv",
+    `${system ? fullDigest(system) : ""}\0${firstUser ? fullDigest(firstUser) : ""}`
+  );
+}
+
 // ── Affinity management (for round-robin integration) ────────────────────────
 
 /** @internal exported for testing */

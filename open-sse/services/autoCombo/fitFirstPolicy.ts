@@ -18,9 +18,10 @@ import { noThinkingIntent, noThinkingHandling } from "../reasoningEffortCompatib
 
 import type { ComboLike } from "../combo/types.ts";
 import { getResolvedModelCapabilities } from "../modelCapabilities.ts";
+import { resolveCanonicalProviderModel } from "../model.ts";
 import {
   classifyTask,
-  getConversationCacheKey,
+  getConversationTieKey,
   isLightByAskEnabled,
   scoreModelForTask,
   TASK_LEVEL_WEIGHT,
@@ -740,26 +741,19 @@ function isNonGenerativeSpecialtyModel(candidate: FitFirstCandidate): boolean {
 }
 
 /**
- * Conversation-stable seed for the neutral tie-break. Between turns of ONE conversation the
- * latest ask changes every turn, so a hash of the ask made equal candidates alternate mid-session
- * (lost prompt cache, mixed styles, broken tool-call continuity). The seed is therefore, in order:
- *  1. an explicit session/thread/conversation id (or prompt_cache_key) carried by the request;
- *  2. a hash of the system prompt plus the FIRST user message (`getConversationCacheKey`), which
- *     does not change as the conversation grows;
- *  3. only when neither exists (a bare single-turn call) a hash of the project text and the ask.
- * None of these reads list order, provider, model or any vendor constant, and different
- * conversations still land on different seeds, so equal candidates share conversations roughly
- * evenly. Known limit: conversations that start with an identical system prompt and identical
- * first message and carry no session id share a seed, hence a winner (while the candidate set and
- * evidence are unchanged).
+ * Conversation-stable seed for the neutral tie-break (see `getConversationTieKey` for the order
+ * of preference and why long shared system prompts cannot collapse it). Between turns of ONE
+ * conversation the latest ask changes every turn, so hashing the ask made equal candidates
+ * alternate mid-session. When the request carries no conversation material at all (a bare
+ * single-turn call) the seed is a hash of the project text and the ask.
  */
-function requestFingerprint(body: Record<string, unknown>): string {
-  const promptCacheKey = typeof body.prompt_cache_key === "string" ? body.prompt_cache_key : "";
-  if (promptCacheKey.trim()) {
-    return createHash("sha256").update(`pck\0${promptCacheKey.trim()}`).digest("hex").slice(0, 16);
-  }
-  const stable = getConversationCacheKey(body);
-  if (stable) return `conv:${stable}`;
+function requestFingerprint(
+  body: Record<string, unknown>,
+  conversationKey?: string | null
+): string {
+  if (typeof conversationKey === "string" && conversationKey) return conversationKey;
+  const stable = getConversationTieKey(body);
+  if (stable) return stable;
   const { ask, project } = selectorInputs(body);
   return createHash("sha256")
     .update(`${project.slice(0, 4000)}\0${ask.slice(0, 12000)}`)
@@ -768,21 +762,59 @@ function requestFingerprint(body: Record<string, unknown>): string {
 }
 
 /**
+ * Identity used to count a model ONCE in the tie draw. Entries that are the same model reached
+ * through several accounts, aliases or snapshot ids (for example `x` and `x@default`) would
+ * otherwise each get a full draw, so a provider that lists many aliases of one model won
+ * proportionally more ties (measured on a synced pool of 256 listed ids: 24 of 68 exactly tied
+ * entries belonged to one provider, only 16 of them distinct models). Two entries share an identity only when they come from
+ * the same provider AND the resolver reports the same family, release date, knowledge cutoff and
+ * every capability (a metadata match, not a name match). When that metadata is missing the
+ * identity is the provider plus the canonical model id, so models without metadata are never
+ * merged with each other.
+ */
+function tieIdentity(candidate: FitFirstCandidate): string {
+  const caps = getResolvedModelCapabilities(candidateModelString(candidate));
+  if (caps.family && caps.releaseDate) {
+    return [
+      "meta",
+      candidate.provider,
+      caps.family,
+      caps.releaseDate,
+      caps.knowledgeCutoff ?? "",
+      caps.contextWindow ?? "",
+      caps.maxOutputTokens ?? "",
+      caps.supportsTools ?? "",
+      caps.supportsThinking ?? "",
+      caps.supportsVision ?? "",
+    ].join("|");
+  }
+  const canonical = resolveCanonicalProviderModel(candidate.provider, candidate.model);
+  return `id|${canonical.provider}|${canonical.model ?? candidate.model}`;
+}
+
+/**
  * Final, neutral tie-break for candidates whose score, task fitness and complexity fit are all
- * exactly equal. It is a hash of the request fingerprint with the candidate's provider, model
- * and connection: it does not depend on candidate list order, alphabetical order or any vendor
- * constant. The fingerprint is conversation-stable (see requestFingerprint): equal candidates
- * alternate across conversations rather than one always winning, and one conversation keeps its
- * pick from turn to turn while the candidate set and evidence are unchanged. Catalog price is deliberately NOT a tie-break: the pool is already
- * limited to zero-additional-cost providers (see the "catalog token price" test), and evidence
- * volume is not one either, since that would let the most-used model keep winning ties.
+ * exactly equal. Two stages, both hashes of the conversation-stable fingerprint (see
+ * requestFingerprint): first the candidate's tie identity (a model counts once, however many
+ * accounts or aliases list it), then the candidate's own provider, model and connection to pick
+ * within that identity. Neither reads list order, alphabetical order or a vendor constant, so
+ * equal candidates alternate across conversations while one conversation keeps its pick from turn
+ * to turn while the candidate set and evidence are unchanged. The two 64-hex halves are
+ * concatenated, so comparing the strings compares identity first, then entry. Catalog price is
+ * deliberately NOT a tie-break: the pool is already limited to zero-additional-cost providers
+ * (see the "catalog token price" test), and evidence volume is not one either, since that would
+ * let the most-used model keep winning ties.
  */
 function neutralTieBreaker(fingerprint: string, candidate: FitFirstCandidate): string {
-  return createHash("sha256")
+  const identity = createHash("sha256")
+    .update(`${fingerprint}\0${tieIdentity(candidate)}`)
+    .digest("hex");
+  const entry = createHash("sha256")
     .update(
       `${fingerprint}\0${candidate.provider}\0${candidate.model}\0${candidate.connectionId ?? ""}`
     )
     .digest("hex");
+  return `${identity}${entry}`;
 }
 
 // confidence = n / (n + 20), so 0.5 means at least 20 observed samples.
@@ -849,6 +881,8 @@ export function rankFitFirstFreeCandidates(args: {
   taskProfile?: TaskProfileResolution;
   now?: number;
   answerQualityEvidence?: Map<string, AnswerQualityEvidence>;
+  /** Precomputed conversation tie key (`getConversationTieKey`); derived from the body when absent. */
+  conversationKey?: string | null;
 }): FitFirstDecision {
   const task = classifyTask(args.body);
   const { profile: _taskProfileProposal, ...taskIntent } = inferFitFirstIntent(args.body);
@@ -959,7 +993,7 @@ export function rankFitFirstFreeCandidates(args: {
   const weights = lightEvidence
     ? lightEvidenceWeights(legacyWeights, lightCoverage)
     : legacyWeights;
-  const fingerprint = requestFingerprint(args.body);
+  const fingerprint = requestFingerprint(args.body, args.conversationKey);
   const ranked = eligible
     .map((candidate): RankedFitFirstCandidate => {
       const modelStr = candidateModelString(candidate);

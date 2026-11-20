@@ -40,6 +40,7 @@ import { isProviderInCooldown } from "../providerCooldownTracker.ts";
 import {
   classifyTask,
   getConversationCacheKey,
+  getConversationTieKey,
   isTaskRoutingStrategy,
   reorderByTaskWeight,
 } from "../taskAwareRouting.ts";
@@ -572,7 +573,7 @@ function applyTaskAwareOrdering(
   // by the auto scorer (evidence-ranked, with its own neutral tie-break), so equal task fit keeps
   // that order rather than discarding it.
   const taskReordered = reorderByTaskWeight(orderedTargets, task, undefined, {
-    tieKey: conversationCacheKey,
+    tieKey: getConversationTieKey(body, { sessionId: deps.relayOptions?.sessionId }),
     preserveInputOrder: strategy === "auto",
   });
   // #4945 regression guard: when an explicit auto router (lkgp/cost/…) pinned

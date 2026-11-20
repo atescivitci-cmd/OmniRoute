@@ -107,31 +107,65 @@ export function getTaskFitness(model: string, taskType: string): number {
   return getTaskFitnessWithSource(model, taskType).score;
 }
 
+/**
+ * Ids under which measured rows (user_override, arena_elo) are looked up, most specific first:
+ * the id as given (usually `provider/model`), then the model without its leading provider
+ * segment, then the last path segment. Measured rows are written under the bare model name
+ * (arenaEloSync writes `claude-opus-4-7`, never `claude/claude-opus-4-7`), while the routers
+ * look models up by their provider-qualified id; trying both keeps measured evidence reachable
+ * from every path. Pure string handling of the id's shape, no model or vendor names.
+ */
+function measuredLookupIds(normalizedModel: string): string[] {
+  const ids = [normalizedModel];
+  const slash = normalizedModel.indexOf("/");
+  if (slash > 0) {
+    ids.push(normalizedModel.slice(slash + 1));
+    const leaf = normalizedModel.slice(normalizedModel.lastIndexOf("/") + 1);
+    if (leaf) ids.push(leaf);
+  }
+  return [...new Set(ids.filter(Boolean))];
+}
+
+function firstMeasured(
+  ids: string[],
+  normalizedTask: string,
+  source: string
+): { score: number; id: string } | null {
+  for (const id of ids) {
+    const score = queryModelIntelligence(id, normalizedTask, source);
+    if (score !== null) return { score, id };
+  }
+  return null;
+}
+
 export function getTaskFitnessWithSource(
   model: string,
   taskType: string
 ): { score: number; source: string } {
   const normalizedModel = model.toLowerCase();
   const normalizedTask = taskType.toLowerCase();
+  const ids = measuredLookupIds(normalizedModel);
 
-  const userOverride = queryModelIntelligence(normalizedModel, normalizedTask, "user_override");
-  if (userOverride !== null) {
-    return { score: userOverride, source: "user_override" };
+  const userOverride = firstMeasured(ids, normalizedTask, "user_override");
+  if (userOverride) {
+    return { score: userOverride.score, source: "user_override" };
   }
 
-  // Try arena_elo with the literal model id first (e.g. "mimo-v2.5"). If that's
-  // a miss and the model id carries a "-free" suffix (e.g. "mimo-v2.5-free"),
+  // Try arena_elo with the literal model id first (e.g. "mimo-v2.5"), then its bare forms. If
+  // that's a miss and the model id carries a "-free" suffix (e.g. "mimo-v2.5-free"),
   // try the un-suffixed base id so free-tier variants inherit the arena_elo
   // score of their paid counterpart. This is what operators expect: the
   // upstream's `mimo-v2.5` is benchmarked once, and `mimo-v2.5-free` should
   // pick up the same signal rather than losing every free-vs-paid comparison.
-  const arenaElo = queryModelIntelligence(normalizedModel, normalizedTask, "arena_elo");
-  if (arenaElo !== null) {
-    return { score: arenaElo, source: "arena_elo" };
+  const arenaElo = firstMeasured(ids, normalizedTask, "arena_elo");
+  if (arenaElo) {
+    return { score: arenaElo.score, source: "arena_elo" };
   }
-  const arenaEloBase = lookupFreeAliasArenaElo(normalizedModel, normalizedTask);
-  if (arenaEloBase !== null) {
-    return { score: arenaEloBase, source: "arena_elo_free_alias" };
+  for (const id of ids) {
+    const arenaEloBase = lookupFreeAliasArenaElo(id, normalizedTask);
+    if (arenaEloBase !== null) {
+      return { score: arenaEloBase, source: "arena_elo_free_alias" };
+    }
   }
 
   const tierScore = getModelsDevTierFitness(normalizedModel, normalizedTask);
