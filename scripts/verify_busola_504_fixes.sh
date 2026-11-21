@@ -127,6 +127,11 @@ check_dist() {
     # ... and the rule applied to the candidate's breaker state: inlined, or a function that is CALLED with it.
     expr="(\"CLOSED\"===[^&?:]{1,80}|[^&?:]{1,80}===\"CLOSED\")&&(\"observed\"===$id\.reason|$id\.reason===\"observed\")\?$id\.score:(\.5|0\.5)"
     grep -Eq "\"CLOSED\"===$id\.circuitBreakerState&&(\"observed\"===$id\.reason|$id\.reason===\"observed\")\?$id\.score:(\.5|0\.5)|$id\.circuitBreakerState===\"CLOSED\"&&(\"observed\"===$id\.reason|$id\.reason===\"observed\")\?$id\.score:(\.5|0\.5)" "$f" 2>/dev/null && return 0
+    # SWC inlines the helper as a comma expression with a temp for the parameter, e.g. the real
+    # 2026-11-21 build prints  w=(o=t.circuitBreakerState,"CLOSED"===o&&"observed"===v.reason?v.score:.5)
+    # (no backreference: POSIX ERE has none; the assignment from .circuitBreakerState must be the
+    # expression's immediate left operand of the comma).
+    grep -Eq "[(,]$id=$id\.circuitBreakerState,(\"CLOSED\"===$id|$id===\"CLOSED\")&&(\"observed\"===$id\.reason|$id\.reason===\"observed\")\?$id\.score:(\.5|0\.5)\)" "$f" 2>/dev/null && return 0
     fn=$(grep -Eo "function $id\($id,$id\)\{return ?$expr" "$f" 2>/dev/null | head -1 | sed -E 's/^function ([A-Za-z_$][A-Za-z0-9_$]*)\(.*/\1/')
     if [ -z "$fn" ]; then
       fn=$(grep -Eo "(const|let|var) $id=\($id,$id\)=>$expr" "$f" 2>/dev/null | head -1 | sed -E 's/^(const|let|var) ([A-Za-z_$][A-Za-z0-9_$]*)=.*/\2/')
