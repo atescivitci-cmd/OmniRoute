@@ -184,9 +184,16 @@ test("zero errors without samples is neutral, not perfect or answer quality", ()
     reason: "missing_or_stale",
   });
 });
-test("recent HTTP samples receive bounded Bayesian operational evidence", () => {
+test("recent HTTP samples score their observed success rate, bounded in sample count", () => {
+  // 2026-11-20: the score used to be a Beta(2,2) posterior mean, (2 + successes) / (4 + n),
+  // which made 10 clean samples score 12/14 and a thousand score ~1, so usage volume ranked
+  // equally reliable models. The score is now the observed rate; confidence is informational.
   const result = operationalReliability({ errorRate: 0, provenance: provenance(10) }, now);
-  assert.equal(result.score, 12 / 14);
+  assert.equal(result.score, 1);
+  assert.equal(
+    operationalReliability({ errorRate: 0.4, provenance: provenance(10) }, now).score,
+    0.6
+  );
   assert.equal(result.confidence, 10 / 30);
   assert.equal(
     operationalReliability({ errorRate: 0, provenance: provenance(1000000) }, now).sampleCount,
@@ -396,8 +403,12 @@ test("a model measured as mostly failing does not keep the full health factor", 
     result.ranked.map((entry) => [entry.candidate.model, entry.factors.health])
   );
   assert.ok(health.failing < 0.1, `failing model kept health ${health.failing}`);
-  assert.equal(health.working, 1);
-  assert.equal(health["few-samples"], 1, "too few samples to call a model failing");
+  // 2026-11-20: health is the observed success rate itself (continuous, no 0.5 cliff).
+  assert.ok(Math.abs(health.working - 0.98) < 1e-12);
+  // 2026-11-20: health no longer waits for 20 samples to call a model failing (that gate made
+  // sample count, not success rate, decide health). 12 samples at 40% success is just 0.4.
+  assert.equal(health["few-samples"], 0.4, "health follows the observed rate at any sample size");
+  assert.ok(health["few-samples"] < health.untried);
   assert.equal(health.untried, 0.5);
   assert.ok(
     health.failing < health.untried,

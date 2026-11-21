@@ -6,11 +6,7 @@ import {
 import { operationalReliability } from "./rankingEvidence.ts";
 import { TASK_LEVELS, type TaskProfileResolution, type TaskProfile } from "./taskProfile.ts";
 import { providerSupportsEmulatedToolCalling } from "../combo/comboStructure.ts";
-import {
-  healthEvidenceHasRecentSamples,
-  healthEvidenceSupportsHardVeto,
-  type CandidateProvenance,
-} from "./candidateProvenance.ts";
+import { healthEvidenceSupportsHardVeto, type CandidateProvenance } from "./candidateProvenance.ts";
 import { classifyToolContinuation } from "./toolContinuation.ts";
 import { createHash } from "node:crypto";
 import { localFallbackTier } from "./localFallbackPolicy.ts";
@@ -24,6 +20,7 @@ import {
   getConversationTieKey,
   isLightByAskEnabled,
   scoreModelForTask,
+  capabilityDemandForTask,
   TASK_LEVEL_WEIGHT,
 } from "../taskAwareRouting.ts";
 import {
@@ -814,9 +811,6 @@ function neutralTieBreaker(fingerprint: string, candidate: FitFirstCandidate): s
   return `${identity}${entry}`;
 }
 
-// confidence = n / (n + 20), so 0.5 means at least 20 observed samples.
-const CONFIDENT_FAILURE_MIN_CONFIDENCE = 0.5;
-
 /**
  * Classify the task-fitness source tag; reads a provenance label, never a model id.
  *  - measured: owner override or arena rating.
@@ -976,6 +970,9 @@ export function rankFitFirstFreeCandidates(args: {
   const required = new Set(
     requiredCapabilities.map((capability) => (capability === "tools" ? "search" : capability))
   );
+  // What THIS request needs, from its own signals. Task fitness and complexity fit are both
+  // measured against it, so candidates that cover it tie on both whatever larger spec they have.
+  const demand = capabilityDemandForTask(task, required);
   const legacyWeights = weightProfile(task.level);
   // Light asks, flag on only: weight moves from the size-closeness term to the measured
   // latency and reliability terms, and only for terms with measured evidence in this pool.
@@ -994,24 +991,21 @@ export function rankFitFirstFreeCandidates(args: {
   const ranked = eligible
     .map((candidate): RankedFitFirstCandidate => {
       const modelStr = candidateModelString(candidate);
-      const fitness = getTaskFitnessWithSource(modelStr, taskDecision.taskType);
+      const fitness = getTaskFitnessWithSource(modelStr, taskDecision.taskType, demand);
       const complexityFit = clamp01(scoreModelForTask(modelStr, task, required) / 100);
       const operational = evidence.get(candidate)!;
-      // Recent samples earned the full health factor whether the calls succeeded or
-      // failed. Under the heavy/critical profile reliability weighs 0.05, so a model
-      // with a measured 2% success rate still outscored one that had never been tried
-      // (health 1 vs 0.5) and kept winning. A model observed often enough (>= 20
-      // samples) and failing most of the time gets its reliability as health instead.
-      const confidentlyFailing =
-        operational.reason === "observed" &&
-        operational.confidence >= CONFIDENT_FAILURE_MIN_CONFIDENCE &&
-        operational.score < 0.5;
+      // Health is the OBSERVED success rate itself, never a function of how many samples
+      // produced it: a fresh bounded-window observation with a closed breaker scores its rate
+      // (1.0 at 100%, 0.5 at a coin flip, 0 at all-failing); no observation scores the neutral
+      // 0.5. It is continuous and monotone, so no single failure moves a score by more than its
+      // proportional weight, and a model observed to fail more than half the time ranks below
+      // an unobserved one at every sample size. Earlier versions gave 1.0 for any observed
+      // window and the rate only below 0.5 (a 0.5 cliff: 50% failing outranked an unobserved
+      // model, 51% did not) and gated on 10 and 20 samples (volume decided health). The
+      // hard-veto floor (healthEvidenceSupportsHardVeto, >= 10 samples) is separate and unchanged.
       const health =
-        candidate.circuitBreakerState === "CLOSED" &&
-        healthEvidenceHasRecentSamples(candidate.provenance)
-          ? confidentlyFailing
-            ? operational.score
-            : 1
+        candidate.circuitBreakerState === "CLOSED" && operational.reason === "observed"
+          ? operational.score
           : 0.5;
       const quota = quotaRankingFactor(candidate);
       const reliability = operational.score;
@@ -1019,7 +1013,8 @@ export function rankFitFirstFreeCandidates(args: {
         ? latencyEvidenceFit(
             validLatency(candidate) ? candidate.p95LatencyMs : null,
             candidate.successfulLatencySampleCount,
-            operational.reason === "observed" ? operational.score : undefined
+            // A 0% success rate has no finite time-to-success: never let it read as "unknown".
+            operational.reason === "observed" ? Math.max(operational.score, 1e-6) : undefined
           )
         : null;
       const latencyFit = lightLatency

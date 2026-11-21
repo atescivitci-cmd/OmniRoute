@@ -229,24 +229,23 @@ describe("reorderByTaskWeight", () => {
     assert.strictEqual(out, targets);
   });
 
-  it("light tasks: sufficiency, not size: a mid model ties the largest, and insufficient capability sorts behind", () => {
-    // Changed 2026-11-20 (was "haiku before opus"): ordering by name or size is gone. A light ask
-    // asks little, so every model with enough verified capability scores the same and neither
-    // list order nor size decides between them; the narrow model, which cannot meet the light
-    // demand, sorts behind regardless of where it was listed.
+  it("light tasks: sufficiency, not size: every model that covers the ask ties, a shortfall sorts behind", () => {
+    // Changed 2026-11-20 (was "haiku before opus"): ordering by name or size is gone, and capability
+    // credit is relative to what the request needs. A light ask with a 300-token answer needs very
+    // little, so a 32K/8K model covers it exactly like a 1M/128K one and neither list order nor
+    // size decides between them. A model sorts behind only where the request exceeds what it
+    // can hold, here a prompt larger than 85% of its window.
     const lightTask = classifyTask({
       messages: [{ role: "user", content: "quick rewrite this sentence" }],
       max_tokens: 300,
     });
     assert.equal(lightTask.level, "light");
+    const wide = scoreModelForTask("prov-strong/model-wide", lightTask);
+    assert.equal(scoreModelForTask("prov-mid/model-mid", lightTask), wide);
     assert.equal(
-      scoreModelForTask("prov-mid/model-mid", lightTask),
-      scoreModelForTask("prov-strong/model-wide", lightTask),
-      "a sufficient mid model must tie the largest on a light ask"
-    );
-    assert.ok(
-      scoreModelForTask("prov-weak/model-narrow", lightTask) <
-        scoreModelForTask("prov-mid/model-mid", lightTask)
+      scoreModelForTask("prov-weak/model-narrow", lightTask),
+      wide,
+      "a narrow model that covers the light ask ties"
     );
     const forward = reorderByTaskWeight(
       [makeTarget("prov-strong/model-wide", 0), makeTarget("prov-mid/model-mid", 1)],
@@ -257,13 +256,19 @@ describe("reorderByTaskWeight", () => {
       lightTask
     );
     assert.equal(forward[0].modelStr, reverse[0].modelStr, "ties must not follow list order");
+    // Same ask, but a context that does not fit the narrow model's 32K window.
+    const longTask = { ...lightTask, promptChars: 4 * 40_000 };
+    assert.ok(
+      scoreModelForTask("prov-weak/model-narrow", longTask) <
+        scoreModelForTask("prov-mid/model-mid", longTask)
+    );
     const out = reorderByTaskWeight(
       [
         makeTarget("prov-weak/model-narrow", 0),
         makeTarget("prov-strong/model-wide", 1),
         makeTarget("prov-mid/model-mid", 2),
       ],
-      lightTask
+      longTask
     );
     assert.equal(out.at(-1)?.modelStr, "prov-weak/model-narrow");
   });
