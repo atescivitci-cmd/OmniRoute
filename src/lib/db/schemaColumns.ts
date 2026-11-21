@@ -142,6 +142,10 @@ export function ensureUsageHistoryColumns(db: SqliteDatabase) {
       db.exec("ALTER TABLE usage_history ADD COLUMN source TEXT DEFAULT NULL");
       console.log("[DB] Added usage_history.source column");
     }
+    if (!columnNames.has("request_class")) {
+      db.exec("ALTER TABLE usage_history ADD COLUMN request_class TEXT DEFAULT NULL");
+      console.log("[DB] Added usage_history.request_class column");
+    }
     if (!columnNames.has("account_key")) {
       db.exec("ALTER TABLE usage_history ADD COLUMN account_key TEXT");
       console.log("[DB] Added usage_history.account_key column");

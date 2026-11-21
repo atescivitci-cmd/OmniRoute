@@ -3,10 +3,24 @@ import {
   validatedQualityAdjustment,
   type AnswerQualityEvidence,
 } from "./validatedAnswerQuality.ts";
-import { operationalReliability } from "./rankingEvidence.ts";
+import { operationalReliability, type ReliabilityEvidence } from "./rankingEvidence.ts";
+import { deriveRequestClass, requestClassTier } from "./requestClass.ts";
+import {
+  classHealthFactor,
+  classReliability,
+  tierCovered,
+  type ClassReliability,
+  type PoolClassEvidence,
+} from "./classEvidence.ts";
+import { fairSelectionSettings, type FairSelectionSettings } from "./fairSelectionSettings.ts";
+import { applyBand, type BandNote } from "./bandSelection.ts";
 import { TASK_LEVELS, type TaskProfileResolution, type TaskProfile } from "./taskProfile.ts";
 import { providerSupportsEmulatedToolCalling } from "../combo/comboStructure.ts";
-import { healthEvidenceSupportsHardVeto, type CandidateProvenance } from "./candidateProvenance.ts";
+import {
+  healthEvidenceHasRecentSamples,
+  healthEvidenceSupportsHardVeto,
+  type CandidateProvenance,
+} from "./candidateProvenance.ts";
 import { classifyToolContinuation } from "./toolContinuation.ts";
 import { createHash } from "node:crypto";
 import { localFallbackTier } from "./localFallbackPolicy.ts";
@@ -20,7 +34,6 @@ import {
   getConversationTieKey,
   isLightByAskEnabled,
   scoreModelForTask,
-  capabilityDemandForTask,
   TASK_LEVEL_WEIGHT,
 } from "../taskAwareRouting.ts";
 import {
@@ -53,6 +66,13 @@ export interface FitFirstCandidate extends ProviderCandidate {
   stepId?: string;
   quotaCutoffBlocked?: boolean;
   statusPenalty?: boolean;
+  /**
+   * Class-specific outcome evidence of the whole pool (shared by every candidate of one
+   * assembly). Read only while ROUTING_CLASS_EVIDENCE is on; see classEvidence.ts.
+   */
+  classEvidencePool?: PoolClassEvidence;
+  /** Set by assembly when class evidence was requested but could not be read: "unavailable:<why>". */
+  classEvidenceStatus?: string;
   /** Only bounded successful-request timings can earn measured speed credit. */
   latencySampleSource?: "successful_usage_24h" | "unqualified";
   successfulLatencySampleCount?: number;
@@ -94,13 +114,6 @@ export interface FitFirstFactors {
   latencyFit: number;
   score: number;
   /**
-   * Which health rule produced `health`. Always "observed_rate": health is the observed success
-   * rate (see `observedHealthFactor`). Recorded in every decision so the rule is visible in
-   * routing_decisions.factors_json and in the compiled build, where scripts/verify_busola_504_fixes.sh
-   * checks for it.
-   */
-  healthRule: "observed_rate";
-  /**
    * Present only for `light` asks while ROUTING_LIGHT_BY_ASK is on. Raw inputs behind the
    * evidence-weighted light profile, so every decision shows why it ranked as it did.
    */
@@ -113,6 +126,25 @@ export interface FitFirstFactors {
   reliabilityMeasured?: boolean;
   /** Where the task-fitness value came from: a measurement, a capability tier, capabilities, or nothing. */
   qualityEvidence?: QualityEvidenceKind;
+  /**
+   * Present only while ROUTING_CLASS_EVIDENCE is on: "active", "no_rows" (nothing to read yet) or
+   * "unavailable:<why>" (the read failed). The last two mean the OLD evidence was used.
+   */
+  classEvidenceStatus?: string;
+  /** Present only while ROUTING_CLASS_EVIDENCE is on and the pool has classified rows. */
+  requestClass?: string;
+  classEvidence?: {
+    score: number;
+    rate: number;
+    tier: "light" | "heavy";
+    cellSamples: number;
+    tierSamples: number;
+    tierRate: number;
+    poolRate: number;
+    verified: boolean;
+  };
+  /** Present when band selection chose this entry (see bandSelection.ts). */
+  bandSelection?: BandNote;
 }
 
 export interface RankedFitFirstCandidate {
@@ -806,7 +838,11 @@ function tieIdentity(candidate: FitFirstCandidate): string {
  * (see the "catalog token price" test), and evidence volume is not one either, since that would
  * let the most-used model keep winning ties.
  */
-function neutralTieBreaker(fingerprint: string, candidate: FitFirstCandidate): string {
+function neutralTieBreaker(
+  fingerprint: string,
+  candidate: FitFirstCandidate,
+  spreadAcrossProviders = false
+): string {
   const identity = createHash("sha256")
     .update(`${fingerprint}\0${tieIdentity(candidate)}`)
     .digest("hex");
@@ -815,8 +851,21 @@ function neutralTieBreaker(fingerprint: string, candidate: FitFirstCandidate): s
       `${fingerprint}\0${candidate.provider}\0${candidate.model}\0${candidate.connectionId ?? ""}`
     )
     .digest("hex");
-  return `${identity}${entry}`;
+  // ROUTING_SPREAD_TIEBREAK: draw the PROVIDER first (each provider counts once however many
+  // models it lists), then the model within it, so a provider with a long model list does not win
+  // proportionally more ties. Still a hash of the conversation key, so one conversation is stable.
+  const provider = spreadAcrossProviders
+    ? createHash("sha256")
+        .update(
+          `${fingerprint}\0provider\0${resolveCanonicalProviderModel(candidate.provider, candidate.model).provider}`
+        )
+        .digest("hex")
+    : "";
+  return `${provider}${identity}${entry}`;
 }
+
+// confidence = n / (n + 20), so 0.5 means at least 20 observed samples.
+const CONFIDENT_FAILURE_MIN_CONFIDENCE = 0.5;
 
 /**
  * Classify the task-fitness source tag; reads a provenance label, never a model id.
@@ -869,28 +918,6 @@ function weightProfile(level: ReturnType<typeof classifyTask>["level"]) {
   };
 }
 
-/**
- * Health factor for the fit-first ranking. This is the successor of the Busola-504 "Fix 1"
- * (a model observed to fail more than half the time must NOT get health 1.0; origin branch
- * ates/busola-504-stability-20261111). The earlier fix gated on a confidence threshold
- * (CONFIDENT_FAILURE_MIN_CONFIDENCE, >= 20 samples) and left a step at 0.5; this rule is
- * stronger and has no volume gate: with a CLOSED breaker and a fresh observed window, health is
- * the observed success rate itself (1.0 at 100%, 0.5 at a coin flip, below 0.5 for a mostly
- * failing model, 0 at all-failing); otherwise it is the neutral 0.5. It never returns 1.0 for a
- * model whose observed success rate is below 1.0, and it never depends on how many samples
- * produced the rate. scripts/verify_busola_504_fixes.sh checks this function by name and shape;
- * change it only together with that guard and the tests in
- * tests/unit/busola-504-guard-20261121.test.ts.
- */
-export function observedHealthFactor(
-  circuitBreakerState: string | undefined,
-  operational: { reason: string; score: number }
-): number {
-  return circuitBreakerState === "CLOSED" && operational.reason === "observed"
-    ? operational.score
-    : 0.5;
-}
-
 export function rankFitFirstFreeCandidates(args: {
   candidates: FitFirstCandidate[];
   body: Record<string, unknown>;
@@ -903,6 +930,8 @@ export function rankFitFirstFreeCandidates(args: {
   answerQualityEvidence?: Map<string, AnswerQualityEvidence>;
   /** Precomputed conversation tie key (`getConversationTieKey`); derived from the body when absent. */
   conversationKey?: string | null;
+  /** Fair-selection settings; read from the process environment when absent (all off by default). */
+  settings?: FairSelectionSettings;
 }): FitFirstDecision {
   const task = classifyTask(args.body);
   const { profile: _taskProfileProposal, ...taskIntent } = inferFitFirstIntent(args.body);
@@ -981,8 +1010,50 @@ export function rankFitFirstFreeCandidates(args: {
     });
     return false;
   });
-  const evidence = new Map(
-    eligible.map((candidate) => [candidate, operationalReliability(candidate, now)])
+  const fair = args.settings ?? fairSelectionSettings();
+  const requestClass = fair.classEvidence ? deriveRequestClass(args.body) : null;
+  const classPool = requestClass
+    ? eligible.find((candidate) => candidate.classEvidencePool)?.classEvidencePool
+    : undefined;
+  // With no classified row anywhere, or too few real rows of this request's tier, the class
+  // evidence has nothing reliable to say: keep the old rule and say why.
+  const requestTier = requestClass ? requestClassTier(requestClass) : null;
+  const covered =
+    !!classPool &&
+    classPool.classifiedRows > 0 &&
+    !!requestTier &&
+    tierCovered(classPool, requestTier);
+  const classActive = !!requestClass && covered;
+  const classEvidenceStatus = !fair.classEvidence
+    ? undefined
+    : classActive
+      ? "active"
+      : (eligible.find((candidate) => candidate.classEvidenceStatus)?.classEvidenceStatus ??
+        (classPool && classPool.classifiedRows > 0
+          ? `insufficient_coverage:${requestTier ?? "unknown"}`
+          : "no_rows"));
+  const classByCandidate = new Map<FitFirstCandidate, ClassReliability>();
+  const evidence = new Map<FitFirstCandidate, ReliabilityEvidence>(
+    eligible.map((candidate) => {
+      const legacy = operationalReliability(candidate, now);
+      const byClass = classActive
+        ? classReliability(classPool!, candidate.provider, candidate.model, requestClass!)
+        : null;
+      if (!byClass) return [candidate, legacy];
+      classByCandidate.set(candidate, byClass);
+      // Below CLASS_VERIFIED_MIN_SAMPLES the evidence is thin: neutral health, and the score was
+      // already blended down (it may only lower).
+      return [
+        candidate,
+        {
+          ...legacy,
+          score: byClass.score,
+          confidence: byClass.tierSamples / (byClass.tierSamples + 20),
+          source: "usage_24h_class" as const,
+          reason: byClass.verified ? ("observed" as const) : ("insufficient_samples" as const),
+        },
+      ];
+    })
   );
   const validLatency = (candidate: FitFirstCandidate) =>
     evidence.get(candidate)!.sampleCount > 0 &&
@@ -999,9 +1070,6 @@ export function rankFitFirstFreeCandidates(args: {
   const required = new Set(
     requiredCapabilities.map((capability) => (capability === "tools" ? "search" : capability))
   );
-  // What THIS request needs, from its own signals. Task fitness and complexity fit are both
-  // measured against it, so candidates that cover it tie on both whatever larger spec they have.
-  const demand = capabilityDemandForTask(task, required);
   const legacyWeights = weightProfile(task.level);
   // Light asks, flag on only: weight moves from the size-closeness term to the measured
   // latency and reliability terms, and only for terms with measured evidence in this pool.
@@ -1017,30 +1085,42 @@ export function rankFitFirstFreeCandidates(args: {
     ? lightEvidenceWeights(legacyWeights, lightCoverage)
     : legacyWeights;
   const fingerprint = requestFingerprint(args.body, args.conversationKey);
+  const verifiedRank = (entry: RankedFitFirstCandidate) =>
+    entry.factors.classEvidence?.verified ? 1 : 0;
   const ranked = eligible
     .map((candidate): RankedFitFirstCandidate => {
       const modelStr = candidateModelString(candidate);
-      const fitness = getTaskFitnessWithSource(modelStr, taskDecision.taskType, demand);
+      const fitness = getTaskFitnessWithSource(modelStr, taskDecision.taskType);
       const complexityFit = clamp01(scoreModelForTask(modelStr, task, required) / 100);
       const operational = evidence.get(candidate)!;
-      // Health is the OBSERVED success rate itself, never a function of how many samples
-      // produced it: a fresh bounded-window observation with a closed breaker scores its rate
-      // (1.0 at 100%, 0.5 at a coin flip, 0 at all-failing); no observation scores the neutral
-      // 0.5. It is continuous and monotone, so no single failure moves a score by more than its
-      // proportional weight, and a model observed to fail more than half the time ranks below
-      // an unobserved one at every sample size. Earlier versions gave 1.0 for any observed
-      // window and the rate only below 0.5 (a 0.5 cliff: 50% failing outranked an unobserved
-      // model, 51% did not) and gated on 10 and 20 samples (volume decided health). The
-      // hard-veto floor (healthEvidenceSupportsHardVeto, >= 10 samples) is separate and unchanged.
-      const health = observedHealthFactor(candidate.circuitBreakerState, operational);
+      // Recent samples earned the full health factor whether the calls succeeded or
+      // failed. Under the heavy/critical profile reliability weighs 0.05, so a model
+      // with a measured 2% success rate still outscored one that had never been tried
+      // (health 1 vs 0.5) and kept winning. A model observed often enough (>= 20
+      // samples) and failing most of the time gets its reliability as health instead.
+      const confidentlyFailing =
+        operational.reason === "observed" &&
+        operational.confidence >= CONFIDENT_FAILURE_MIN_CONFIDENCE &&
+        operational.score < 0.5;
+      const classEvidenceHealth = classByCandidate.has(candidate)
+        ? classHealthFactor(candidate.circuitBreakerState, operational)
+        : null;
+      const health =
+        classEvidenceHealth !== null
+          ? classEvidenceHealth
+          : candidate.circuitBreakerState === "CLOSED" &&
+              healthEvidenceHasRecentSamples(candidate.provenance)
+            ? confidentlyFailing
+              ? operational.score
+              : 1
+            : 0.5;
       const quota = quotaRankingFactor(candidate);
       const reliability = operational.score;
       const lightLatency = lightEvidence
         ? latencyEvidenceFit(
             validLatency(candidate) ? candidate.p95LatencyMs : null,
             candidate.successfulLatencySampleCount,
-            // A 0% success rate has no finite time-to-success: never let it read as "unknown".
-            operational.reason === "observed" ? Math.max(operational.score, 1e-6) : undefined
+            operational.reason === "observed" ? operational.score : undefined
           )
         : null;
       const latencyFit = lightLatency
@@ -1070,7 +1150,6 @@ export function rankFitFirstFreeCandidates(args: {
           taskFitnessSource: fitness.source,
           complexityFit,
           health,
-          healthRule: "observed_rate",
           quota,
           reliability,
           reliabilityConfidence: operational.confidence,
@@ -1083,6 +1162,11 @@ export function rankFitFirstFreeCandidates(args: {
           latencyEvidence: validLatency(candidate) ? "observed" : "neutral_prior",
           latencyFit,
           score,
+          ...(classEvidenceStatus && { classEvidenceStatus }),
+          ...(classByCandidate.has(candidate) && {
+            requestClass: requestClass!,
+            classEvidence: classByCandidate.get(candidate)!,
+          }),
           ...(lightLatency && {
             lightProfile: "evidence-weighted" as const,
             lightWeights: weights,
@@ -1094,7 +1178,7 @@ export function rankFitFirstFreeCandidates(args: {
             qualityEvidence: qualityEvidenceKind(fitness.source),
           }),
         },
-        tieBreaker: neutralTieBreaker(fingerprint, candidate),
+        tieBreaker: neutralTieBreaker(fingerprint, candidate, fair.spreadTieBreak),
       };
     })
     .sort(
@@ -1104,8 +1188,22 @@ export function rankFitFirstFreeCandidates(args: {
         b.factors.score - a.factors.score ||
         b.factors.taskFitness - a.factors.taskFitness ||
         b.factors.complexityFit - a.factors.complexityFit ||
+        // ROUTING_SPREAD_TIEBREAK: among exact ties a candidate verified for this request class
+        // goes before one that is not, so a tie is never won by the thinner evidence.
+        (fair.spreadTieBreak ? verifiedRank(b) - verifiedRank(a) : 0) ||
         a.tieBreaker.localeCompare(b.tieBreaker)
     );
+
+  // Band selection only reorders the head of the list, only with its own setting above zero, and
+  // only when no local-last tier split the list.
+  const oneTier = ranked.every(
+    (entry) =>
+      localFallbackTier(entry.candidate.provider, args.localFallbackPolicy) ===
+      localFallbackTier(ranked[0].candidate.provider, args.localFallbackPolicy)
+  );
+  if (classActive && ranked.length > 1 && oneTier) {
+    if (fair.tieBand > 0) applyBand(ranked, fair.tieBand);
+  }
 
   return {
     taskIntent,

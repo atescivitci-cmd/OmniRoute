@@ -27,6 +27,7 @@ export {
   saveRequestUsage,
   getUsageHistory,
   getModelLatencyStats,
+  getModelOutcomeRows,
   appendRequestLog,
   getRecentLogs,
 } from "./usage/usageHistory";

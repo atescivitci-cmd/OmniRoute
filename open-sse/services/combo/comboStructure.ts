@@ -516,7 +516,9 @@ function hasKnownCompatibleContextLimit(
 ): boolean {
   if (requirements.requiredContextTokens <= 0) return false;
   const capabilities = getResolvedModelCapabilities(target.modelStr);
-  return evaluateContextLimit(capabilities, requirements, target.modelStr) === true;
+  return (
+    evaluateContextLimit(capabilities, requirements, target.modelStr, target.connectionId) === true
+  );
 }
 
 function hasOnlyContextWindowFailures(reasons: string[]): boolean {
@@ -604,7 +606,12 @@ function getTargetCompatibilityFailures(
     failures.push("output_tokens");
   }
 
-  const contextVerdict = evaluateContextLimit(capabilities, requirements, target.modelStr);
+  const contextVerdict = evaluateContextLimit(
+    capabilities,
+    requirements,
+    target.modelStr,
+    target.connectionId
+  );
   if (requirements.requiredContextTokens > 0 && contextVerdict === false) {
     failures.push("context_window");
   }

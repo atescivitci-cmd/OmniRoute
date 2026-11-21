@@ -318,10 +318,7 @@ test("R3: contracts: never removes targets, identity when already ordered, equal
     ...Object.fromEntries(EQUAL.map((i) => [i, STRONG])),
     "synz/zz-small": { think: false, tools: true, ctx: 32_000, out: 8_192 },
   });
-  // 2026-11-20: the unverified-reasoning soft penalty is gone and fit is demand-relative, so the
-  // small model sorts behind only where the request exceeds what it can hold: a 40K-token prompt
-  // does not fit its 32K window.
-  const t = task("critical", { promptChars: 4 * 40_000 });
+  const t = task("critical");
   const targets = [...EQUAL, "synz/zz-small"].map(targetFor);
   const out = reorderByTaskWeight(targets, t, new Set(), { tieKey: "k" });
   assert.equal(out.length, targets.length);
@@ -356,43 +353,23 @@ function level(id: string, caps: Caps, lvl: TaskLevel, required = new Set<string
   return scoreModelForTask(id, task(lvl), required);
 }
 
-test("R4: reasoning the request does not demand neither rewards nor penalises (heavy/critical)", () => {
-  // 2026-11-20: until now an unverified-reasoning model took a flat 10 (heavy) / 15 (critical)
-  // point soft penalty even when the request never asked for reasoning, which rewarded an
-  // undemanded capability. Verified, unverified and unknown reasoning now tie when the model's
-  // capacity covers the demand; a request that DEMANDS reasoning (explicit control or required)
-  // still prefers the model that verifies it.
+test("R4: on heavy/critical, verified reasoning at a materially smaller window outranks a huge non-reasoning model", () => {
   for (const lvl of ["heavy", "critical"] as TaskLevel[]) {
     install({ "syna/zz-huge": HUGE_NO_REASON, "synb/zz-small": SMALL_REASON });
-    assert.equal(
-      scoreModelForTask("syna/zz-huge", task(lvl)),
-      scoreModelForTask("synb/zz-small", task(lvl)),
-      `${lvl}: covering models tie`
-    );
-    const profile = {
-      source: "interpreter" as const,
-      fallbackReason: null,
-      profile: {
-        taskType: "general" as const,
-        complexity: lvl,
-        requiredCapabilities: [],
-        confidence: 1,
+    const huge = scoreModelForTask("syna/zz-huge", task(lvl));
+    const small = scoreModelForTask("synb/zz-small", task(lvl));
+    assert.ok(small > huge, `${lvl}: reasoning 64K ${small} vs non-reasoning 1M ${huge}`);
+    const d = rankFitFirstFreeCandidates({
+      candidates: [cand("syna/zz-huge"), cand("synb/zz-small")],
+      body: { messages: [{ role: "user", content: "Handle the request." }] },
+      zeroAdditionalCostProviders: ["syna", "synb"],
+      taskProfile: {
+        source: "interpreter",
+        fallbackReason: null,
+        profile: { taskType: "general", complexity: lvl, requiredCapabilities: [], confidence: 1 },
       },
-    };
-    const rank = (body: Record<string, unknown>) =>
-      rankFitFirstFreeCandidates({
-        candidates: [cand("syna/zz-huge"), cand("synb/zz-small")],
-        body,
-        zeroAdditionalCostProviders: ["syna", "synb"],
-        taskProfile: profile,
-      });
-    const plain = rank({ messages: [{ role: "user", content: "Handle the request." }] });
-    assert.equal(plain.ranked[0].factors.score, plain.ranked[1].factors.score, `${lvl}: no reward`);
-    const asked = rank({
-      messages: [{ role: "user", content: "Handle the request." }],
-      thinking: { type: "enabled", budget_tokens: 8000 },
     });
-    assert.equal(asked.ranked[0].candidate.model, "zz-small", `${lvl}: demanded reasoning wins`);
+    assert.equal(d.ranked[0].candidate.model, "zz-small", `${lvl}: final ranking`);
   }
 });
 
@@ -408,29 +385,32 @@ test("R4: the penalty is bounded: a much smaller reasoning model still loses whe
   assert.ok(scoreModelForTask("syna/zz-huge", big) > scoreModelForTask("synb/zz-small", big));
 });
 
-test("R4: no soft penalty at any level; required reasoning takes the -120 gate with the demanded credit", () => {
+test("R4: exact size, monotone, name-blind, off for light/standard, replaced (not stacked) by the required-reasoning gate", () => {
   const HUGE_REASON: Caps = { ...HUGE_NO_REASON, think: true };
-  for (const lvl of ["light", "standard", "heavy", "critical"] as TaskLevel[]) {
-    // 2026-11-20: was 0 / 0 / 10 / 15 fit points for an unverified model; now nothing.
+  for (const lvl of ["light", "standard"] as TaskLevel[]) {
     assert.equal(level("syna/zz-a", HUGE_NO_REASON, lvl), level("syna/zz-a", HUGE_REASON, lvl));
-    assert.equal(level("syna/zz-a", HUGE_NO_REASON, lvl), 100);
   }
+  // heavy: both saturate the target, so the whole difference is the soft penalty (10).
+  assert.equal(
+    level("syna/zz-b", HUGE_REASON, "heavy") - level("syna/zz-b", HUGE_NO_REASON, "heavy"),
+    10
+  );
+  // critical: the non-reasoning model is not saturated (power 98 of 120); penalty 15 on top.
+  assert.ok(
+    Math.abs(level("syna/zz-b", HUGE_NO_REASON, "critical") - (100 * 98) / 120 + 15) < 1e-9
+  );
   for (const lvl of ["heavy", "critical"] as TaskLevel[]) {
     const unknown = level("syna/zz-c", { ...SMALL_REASON, think: null }, lvl);
     const no = level("syna/zz-c", { ...SMALL_REASON, think: false }, lvl);
     const yes = level("syna/zz-c", { ...SMALL_REASON, think: true }, lvl);
-    assert.ok(yes === no && no === unknown, `${lvl}: ${yes} ${no} ${unknown}`);
-    // Required reasoning: the -120 gate, plus the demanded reasoning dimension in the strength
-    // (weights ctx 0.30 + out 0.25 covered, reasoning 0.35 missing = 0.55 / 0.90).
+    assert.ok(yes > no && no === unknown, `${lvl}: ${yes} ${no} ${unknown}`);
+    // Required reasoning takes the -120 gate instead of the soft penalty, never both.
+    const penalty = lvl === "heavy" ? 10 : 15;
     assert.ok(
       Math.abs(
         level("syna/zz-c", { ...SMALL_REASON, think: false }, lvl, new Set(["reasoning"])) -
-          (100 * (0.55 / 0.9) - 120)
+          (no + penalty - 120)
       ) < 1e-9
-    );
-    assert.equal(
-      level("syna/zz-c", { ...SMALL_REASON, think: true }, lvl, new Set(["reasoning"])),
-      yes
     );
   }
   install({ "claude/zz-opus-pro": HUGE_NO_REASON, "synq/zz-tiny-nano": HUGE_NO_REASON });

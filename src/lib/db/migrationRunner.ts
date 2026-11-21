@@ -416,6 +416,8 @@ function isSchemaAlreadyApplied(
       return hasColumn(db, "usage_history", "service_tier");
     case "137":
       return hasColumn(db, "usage_history", "source") && hasColumn(db, "call_logs", "source");
+    case "139":
+      return hasColumn(db, "usage_history", "request_class");
     case "062":
       return hasColumn(db, "usage_history", "combo_strategy");
     case "070":
@@ -502,6 +504,16 @@ function applyUsageSourceMigration(db: SqliteAdapter): void {
     "call_logs",
     "source",
     "ALTER TABLE call_logs ADD COLUMN source TEXT DEFAULT NULL"
+  );
+}
+
+// Migration 139: nullable request class on usage_history (see 139_usage_history_request_class.sql).
+function applyRequestClassMigration(db: SqliteAdapter): void {
+  ensureColumn(
+    db,
+    "usage_history",
+    "request_class",
+    "ALTER TABLE usage_history ADD COLUMN request_class TEXT DEFAULT NULL"
   );
 }
 
@@ -998,6 +1010,8 @@ export function runMigrations(db: SqliteAdapter, options?: { isNewDb?: boolean }
         applyApiKeyLifecycleMigration(db);
       } else if (migration.version === "137" && migration.name === "usage_history_source") {
         applyUsageSourceMigration(db);
+      } else if (migration.version === "139" && migration.name === "usage_history_request_class") {
+        applyRequestClassMigration(db);
       } else if (migration.version === "041" && migration.name === "compression_receipts") {
         applyCompressionReceiptsMigration(db);
       } else if (migration.version === "042") {

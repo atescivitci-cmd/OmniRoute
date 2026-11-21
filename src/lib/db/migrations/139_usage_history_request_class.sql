@@ -1,0 +1,11 @@
+-- Migration 139: request class on usage_history
+-- NULL = written before the class existed, or written while ROUTING_REQUEST_CLASS_WRITE is off.
+-- The class (three characters such as t2s or c0n, see open-sse/services/autoCombo/requestClass.ts)
+-- says what KIND of request a row describes, so success evidence can be read per class.
+-- Nullable and idempotent. No index: the evidence query filters on the timestamp index first.
+--
+-- NOTE: the runner applies this migration in code (applyRequestClassMigration in
+-- migrationRunner.ts) so a column that already exists is not an error. This file is the readable
+-- record of the change and is not executed as-is.
+--   ALTER TABLE usage_history ADD COLUMN request_class TEXT DEFAULT NULL;
+SELECT 1;

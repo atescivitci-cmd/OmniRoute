@@ -23,6 +23,7 @@
  */
 
 import { getModelContextOverride } from "../../../src/lib/db/modelContextOverrides";
+import { learnedCapExcludes } from "../../../src/lib/db/learnedContextCaps";
 import { parseModel } from "../model.ts";
 
 /**
@@ -60,13 +61,30 @@ function resolveContextOverrideVerdict(
 export function evaluateContextLimit(
   capabilities: { maxInputTokens?: number | null; contextWindow?: number | null },
   requirements: { estimatedInputTokens: number; requiredContextTokens: number },
-  modelStr?: string
+  modelStr?: string,
+  connectionId?: string | null
 ): boolean | null {
   const overrideVerdict = resolveContextOverrideVerdict(
     modelStr,
     requirements.requiredContextTokens
   );
   if (overrideVerdict !== undefined) return overrideVerdict;
+
+  // A limit the provider itself enforced (ROUTING_LEARNED_CONTEXT_CAP=enforce) outranks the
+  // catalog numbers below, which are unverified. Never raises a verdict: it can only exclude.
+  if (modelStr) {
+    const parsed = parseModel(modelStr);
+    if (
+      learnedCapExcludes(
+        parsed.provider,
+        parsed.model,
+        requirements.requiredContextTokens,
+        connectionId
+      )
+    ) {
+      return false;
+    }
+  }
 
   const hasMaxInput = capabilities.maxInputTokens != null;
   const hasContextWindow = capabilities.contextWindow != null;
