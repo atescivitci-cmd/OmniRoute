@@ -105,6 +105,30 @@ export function createLatencyBucket(provider: string, model: string): LatencyBuc
   };
 }
 
+/**
+ * A `client_disconnected` row shorter than this is a client leaving, not evidence about the model.
+ *
+ * The streaming pipeline writes `client_disconnected` for every close before completion, whoever
+ * closed it. Live (2026-11-21): a Claude terminal session's two rows lasted 2.7 s and 3.1 s with no
+ * output (a user interrupt), while every NVIDIA row over seven days lasted 40 s or longer (real
+ * provider stalls cut by a deadline). The ranking's reliability evidence skips the short ones
+ * (`excludeClientAbandons`) so pressing Escape does not lower a model's score; long ones keep
+ * counting. One threshold for every provider and model.
+ */
+export const CLIENT_ABANDON_MAX_MS = 10_000;
+
+/** True for a stream a client closed within seconds of starting it (see CLIENT_ABANDON_MAX_MS). */
+export function isClientAbandon(errorCode: unknown, latencyMs: unknown): boolean {
+  if (errorCode !== "client_disconnected") return false;
+  // A row with no recorded duration (null, undefined, blank, boolean) says nothing about how long
+  // the stream ran, so it is not shown to be short: it keeps counting. (Number(null) is 0 and
+  // Number("") is 0, which would otherwise read as an instant close.)
+  if (typeof latencyMs !== "number" && typeof latencyMs !== "string") return false;
+  if (typeof latencyMs === "string" && latencyMs.trim() === "") return false;
+  const ms = typeof latencyMs === "number" ? latencyMs : Number(latencyMs);
+  return Number.isFinite(ms) && ms >= 0 && ms < CLIENT_ABANDON_MAX_MS;
+}
+
 /** Aggregate view returned per provider/model key by getModelLatencyStats(). */
 export interface ModelLatencyStatsEntry {
   provider: string;

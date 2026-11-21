@@ -281,6 +281,11 @@ import { adaptBodyForCompression } from "../services/compression/bodyAdapter.ts"
 import { ensureEngineBreakdown } from "../services/compression/engineBreakdown.ts";
 import { handleBypassRequest } from "../utils/bypassHandler.ts";
 import { saveRequestUsage, trackPendingRequest, appendRequestLog } from "@/lib/usageDb";
+import { runWithRequestClass } from "@/lib/usage/requestClassContext";
+import { deriveRequestClass } from "../services/autoCombo/requestClass.ts";
+import { fairSelectionSettings } from "../services/autoCombo/fairSelectionSettings.ts";
+import { isLearnableContextRejection, recordContextRejection } from "@/lib/db/learnedContextCaps";
+import { deriveRequestCompatibilityRequirements } from "../services/combo/comboStructure.ts";
 import { finalizePendingScope, updatePendingScope } from "@/lib/usage/pendingRequestScope";
 import { recordCost } from "@/domain/costRules";
 import { calculateCost } from "@/lib/usage/costCalculator";
@@ -465,7 +470,24 @@ import { isSmallEnoughForSemanticCache } from "../utils/estimateSize.ts";
 // extractSystemRoleMessages extracted to chatCore/claudeSystemRole.ts (#3501); re-exported above so
 // existing importers (e.g. tests/unit/system-role-extraction.test.ts) keep resolving it from here.
 
-export async function handleChatCore({
+/**
+ * Entry point of the chat pipeline. With ROUTING_REQUEST_CLASS_WRITE on it binds the request class
+ * (see autoCombo/requestClass.ts) to the async context, so every usage row this request writes
+ * carries it without threading an argument through each writer. With it off this is a plain call.
+ */
+export async function handleChatCore(args: Parameters<typeof handleChatCoreRequest>[0]) {
+  let requestClass: string | null = null;
+  try {
+    if (fairSelectionSettings().requestClassWrite) requestClass = deriveRequestClass(args?.body);
+  } catch {
+    requestClass = null;
+  }
+  return requestClass
+    ? runWithRequestClass(requestClass, () => handleChatCoreRequest(args))
+    : handleChatCoreRequest(args);
+}
+
+async function handleChatCoreRequest({
   requireZeroCostAdmission = false,
   costAdmissionConnectionIds = null,
   body,
@@ -4070,6 +4092,23 @@ export async function handleChatCore({
     if (nativeNvidiaRejection) upstreamErrorCode = NVIDIA_MODEL_NEGATIVE_CODE;
     if (isCodexSelectionUnsupported(provider, statusCode, currentModel, message))
       upstreamErrorCode = ACCOUNT_MODEL_INELIGIBLE_CODE;
+
+    // ROUTING_LEARNED_CONTEXT_CAP: a clear "too long for the context" rejection is a fact about
+    // this provider and model. Record the size it rejected (no-op unless learn or enforce).
+    if (isLearnableContextRejection(statusCode, message)) {
+      try {
+        recordContextRejection({
+          provider,
+          model: currentModel,
+          connectionId: getCurrentConnectionId(),
+          requiredTokens: deriveRequestCompatibilityRequirements(body).requiredContextTokens,
+          status: statusCode,
+          message,
+        });
+      } catch {
+        /* learning must never change the failure path */
+      }
+    }
 
     const signatureRecovery = routingAttemptToken
       ? { attempted: false, succeeded: false, execution: null, error: null }

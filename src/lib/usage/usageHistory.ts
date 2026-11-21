@@ -18,6 +18,7 @@ import {
   asRecord,
   buildLatencyStatsEntry,
   createLatencyBucket,
+  isClientAbandon,
   normalizeServiceTier,
   resolvePositiveOption,
   toNumber,
@@ -33,6 +34,8 @@ import {
 } from "./completedRequestDetails";
 import { shouldPersistToDisk } from "./migrations";
 import { getUsageSource } from "./usageSourceContext";
+import { getRequestClass } from "./requestClassContext";
+import { relaxLearnedCap } from "../db/learnedContextCaps";
 import { emitUsageRecorded } from "./usageEvents";
 import {
   getLoggedInputTokens,
@@ -612,6 +615,11 @@ export interface UsageEntry {
    * usage source (see usageSourceContext) is used, so pipeline writers need no extra plumbing.
    */
   source?: string | null;
+  /**
+   * Request class (three characters, see requestClass.ts). Omit to use the class bound to the
+   * request by the chat core, which is only set while ROUTING_REQUEST_CLASS_WRITE is on.
+   */
+  requestClass?: string | null;
 }
 
 /**
@@ -630,6 +638,21 @@ export function hasUsageRowSince(connectionId: string, source: string, sinceIso:
     // Unknown means do not assume a row exists: the caller then records its own.
     return false;
   }
+}
+
+const requestClassColumn = new WeakMap<object, boolean>();
+function hasRequestClassColumn(db: ReturnType<typeof getDbInstance>): boolean {
+  const known = requestClassColumn.get(db);
+  if (known !== undefined) return known;
+  let present = false;
+  try {
+    const columns = db.prepare("PRAGMA table_info(usage_history)").all() as Array<{ name: string }>;
+    present = columns.some((column) => column.name === "request_class");
+  } catch {
+    present = false;
+  }
+  requestClassColumn.set(db, present);
+  return present;
 }
 
 /**
@@ -735,7 +758,28 @@ export async function saveRequestUsage(entry: UsageEntry) {
       );
 
       inserted = true;
+
+      // The request class is set after the insert, and only for a row that has one, so a database
+      // without the column (not migrated, restored from an older backup) and every row written
+      // while ROUTING_REQUEST_CLASS_WRITE is off take exactly the path they always did.
+      const requestClass = entry.requestClass || getRequestClass();
+      if (requestClass && hasRequestClassColumn(db)) {
+        db.prepare("UPDATE usage_history SET request_class = ? WHERE id = last_insert_rowid()").run(
+          requestClass
+        );
+      }
     })();
+
+    // ROUTING_LEARNED_CONTEXT_CAP: a request this size was accepted, so a learned cap at or
+    // below it was wrong. No-op while the setting is off.
+    if (inserted && entry.success !== false) {
+      relaxLearnedCap({
+        provider: entry.provider,
+        model: entry.model,
+        connectionId: entry.connectionId,
+        inputTokens: tokensInput,
+      });
+    }
 
     // Decoupled via the event bus so usageHistory never imports providerLimits
     // (which would pull the executors/translator graph into the type-check surface).
@@ -816,6 +860,7 @@ export async function getUsageHistory(filter: UsageHistoryFilter = {}) {
 }
 
 export type { ModelLatencyStatsEntry } from "./usageHistory/helpers";
+export { CLIENT_ABANDON_MAX_MS } from "./usageHistory/helpers";
 
 /**
  * Aggregate rolling latency stats per provider/model from usage_history.
@@ -830,6 +875,12 @@ export async function getModelLatencyStats(
     maxRows?: number;
     provider?: string;
     model?: string;
+    /**
+     * Skip `client_disconnected` rows shorter than CLIENT_ABANDON_MAX_MS: a client leaving within
+     * seconds is neither a success nor a failure of the model. Off by default, so the dashboard and
+     * the canary's evidence counts keep reading every row; the ranking evidence asks for it.
+     */
+    excludeClientAbandons?: boolean;
   } = {}
 ): Promise<Record<string, ModelLatencyStatsEntry>> {
   const windowHours = resolvePositiveOption(options.windowHours, 24);
@@ -846,6 +897,7 @@ export async function getModelLatencyStats(
     latency_ms: number | null;
     ttft_ms: number | null;
     tokens_output: number | null;
+    error_code: string | null;
   };
 
   const conditions = ["timestamp >= @sinceIso", "provider IS NOT NULL", "model IS NOT NULL"];
@@ -862,7 +914,7 @@ export async function getModelLatencyStats(
   const rows = db
     .prepare(
       `
-      SELECT provider, model, success, latency_ms, ttft_ms, tokens_output
+      SELECT provider, model, success, latency_ms, ttft_ms, tokens_output, error_code
       FROM usage_history
       WHERE ${conditions.join(" AND ")}
       ORDER BY timestamp DESC
@@ -877,6 +929,11 @@ export async function getModelLatencyStats(
     const provider = toStringOrNull(row.provider);
     const model = toStringOrNull(row.model);
     if (!provider || !model) continue;
+
+    // A client leaving within seconds says nothing about the model: not a request, not a failure.
+    if (options.excludeClientAbandons === true && isClientAbandon(row.error_code, row.latency_ms)) {
+      continue;
+    }
 
     const key = `${provider}/${model}`;
     if (!grouped.has(key)) grouped.set(key, createLatencyBucket(provider, model));
@@ -911,6 +968,59 @@ export async function getModelLatencyStats(
  * Legacy compatibility shim.
  * Request summary lines are no longer written to data/log.txt.
  */
+/**
+ * Raw outcome rows of a bounded window, for the class-specific ranking evidence
+ * (open-sse/services/autoCombo/classEvidence.ts). Read-only. It THROWS when the table or the
+ * request_class column cannot be read, because an empty list would be indistinguishable from "no
+ * traffic" and would silently return the ranking to the evidence that caused the incident; the
+ * caller records the failure (see buildAutoCandidates).
+ */
+export async function getModelOutcomeRows(
+  options: { windowHours?: number; maxRows?: number; sinceIso?: string; untilIso?: string } = {}
+): Promise<
+  Array<{
+    provider: string;
+    model: string;
+    success: boolean;
+    errorCode: string | null;
+    latencyMs: number | null;
+    tokensOutput: number | null;
+    source: string | null;
+    requestClass: string | null;
+  }>
+> {
+  const windowHours = resolvePositiveOption(options.windowHours, 24);
+  const maxRows = resolvePositiveOption(options.maxRows, 20000);
+  const sinceIso =
+    options.sinceIso ?? new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString();
+  const db = getDbInstance();
+  const conditions = ["timestamp >= @sinceIso", "provider IS NOT NULL", "model IS NOT NULL"];
+  const params: Record<string, string> = { sinceIso };
+  if (options.untilIso) {
+    conditions.push("timestamp < @untilIso");
+    params.untilIso = options.untilIso;
+  }
+  const rows = db
+    .prepare(
+      `SELECT provider, model, success, error_code, latency_ms, tokens_output, source, request_class
+       FROM usage_history
+       WHERE ${conditions.join(" AND ")}
+       ORDER BY timestamp DESC
+       LIMIT ${Math.floor(maxRows)}`
+    )
+    .all(params) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    provider: String(row.provider),
+    model: String(row.model),
+    success: Number(row.success) !== 0,
+    errorCode: toStringOrNull(row.error_code),
+    latencyMs: row.latency_ms == null ? null : Number(row.latency_ms),
+    tokensOutput: row.tokens_output == null ? null : Number(row.tokens_output),
+    source: toStringOrNull(row.source),
+    requestClass: toStringOrNull(row.request_class),
+  }));
+}
+
 export async function appendRequestLog({
   model: _model,
   provider: _provider,

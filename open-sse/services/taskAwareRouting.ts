@@ -19,13 +19,7 @@
 
 import { createHash } from "node:crypto";
 import { getResolvedModelCapabilities } from "./modelCapabilities.ts";
-import {
-  CONTEXT_OVERFLOW_LIMIT,
-  deriveCapabilityDemand,
-  demandedCapabilityStrength,
-  NEUTRAL_DEMAND,
-  type CapabilityDemand,
-} from "./capabilityStrength.ts";
+import { capabilityStrength } from "./capabilityStrength.ts";
 import type { ResolvedComboTarget } from "./combo/types.ts";
 
 // ── Task level constants ──────────────────────────────────────────────────────
@@ -38,6 +32,17 @@ export const TASK_LEVEL_WEIGHT = {
 } as const;
 
 export type TaskLevel = keyof typeof TASK_LEVEL_WEIGHT;
+
+/**
+ * Verified capability power (0-150, see `modelPowerScore`) at which more capability stops
+ * adding fit for a task level. A sufficiency ceiling, not a "closest to" target.
+ */
+export const TASK_TARGET_POWER: Record<TaskLevel, number> = {
+  light: 35,
+  standard: 65,
+  heavy: 95,
+  critical: 120,
+};
 
 // ReDoS-safe: all alternations are fixed-length word literals under \b anchors.
 // No overlapping or nested quantifiers.
@@ -907,51 +912,43 @@ function classifyLightByAsk(
 // ── Model power scoring ───────────────────────────────────────────────────────
 
 /**
- * Verified capability power on a 0-150 scale (150 x demand-relative strength).
+ * Verified capability power on a 0-150 scale (150 x capabilityStrength).
  *
  * Built ONLY from resolved capabilities (reasoning, tool calling, context window, output
- * limit) measured against a demand (`NEUTRAL_DEMAND` when none is given); it never reads a
- * provider or model name, so two models with the same resolved capabilities get the same power,
- * whoever made them. A capability the registry could not verify adds nothing (it is not guessed
- * from the name and not penalised). Monotone: more verified capability never lowers the value,
- * and capability beyond the demand adds nothing.
+ * limit); it never reads a provider or model name, so two models with the same resolved
+ * capabilities get the same power, whoever made them. A capability the registry could not
+ * verify adds nothing (it is not guessed from the name and not penalised). Monotone: more
+ * verified capability never lowers the value.
  *
  * Before 2026-11-20 this also added +28 / -24 / +8 from brand and size words in the model id
  * (opus, gpt-5, pro, haiku, mini, ...). That made the critical tier reachable only by models
  * whose NAME matched, so one vendor won by design. See docs/routing/AUTO-COMBO.md.
  */
-export function modelPowerScore(
-  modelStr: string,
-  demand: CapabilityDemand = NEUTRAL_DEMAND
-): number {
-  return Math.round(
-    demandedCapabilityStrength(getResolvedModelCapabilities(modelStr), demand) * 150
-  );
+export function modelPowerScore(modelStr: string): number {
+  return Math.round(capabilityStrength(getResolvedModelCapabilities(modelStr)) * 150);
 }
 
 /**
- * What this request needs from a model, from the request's own signals only: estimated prompt
- * tokens, the requested output limit (a documented default when it sends none), whether reasoning
- * is required or explicitly requested on the wire, and whether it carries tools. `required` is
- * the capability set the scorer already receives (`tools` is spelled `search` by fit-first).
- * Shared by `scoreModelForTask` and the fit-first task-fitness term, so both describe the same
- * demand.
+ * Soft, name-blind penalty (in fit points out of 100) on heavy and critical tasks for a model
+ * whose reasoning capability is not verified (`supportsThinking !== true`: false or unknown).
+ * It applies only when the request did not already require reasoning (that case takes the -120
+ * above) and never on light/standard tasks. Monotone: verifying reasoning can only raise a score.
+ *
+ * Sizing (strength weights: reasoning 0.35, tools 0.10, context 0.30, output 0.25). A
+ * non-reasoning 1M/128K model has strength 0.65 (power 98) and a reasoning 64K/16K model 0.65
+ * (power 97): without this term the two tie and the big non-reasoning window wins heavy and
+ * critical turns on overall score by 0.003. A penalty of 15 (critical) / 10 (heavy) fit points
+ * (about 0.05 / 0.03 of the final score at weights 0.32) breaks that tie toward verified
+ * reasoning, yet a reasoning model that is much smaller still loses where capacity decides:
+ * reasoning 8K/4K (power 68) scores 57 on critical against 82 - 15 = 67 for the huge
+ * non-reasoning one, and a prompt that does not fit takes the separate -200 overflow penalty.
  */
-export function capabilityDemandForTask(
-  task: Pick<TaskClassification, "promptChars" | "outputTokens"> &
-    Partial<Pick<TaskClassification, "hasExplicitReasoning">>,
-  required: Set<string> = new Set()
-): CapabilityDemand {
-  return deriveCapabilityDemand({
-    promptChars: task.promptChars,
-    outputTokens: task.outputTokens,
-    reasoning: required.has("reasoning") || task.hasExplicitReasoning === true,
-    tools: required.has("tools") || required.has("search"),
-  });
-}
-
-/** Largest penalty for a requested output far above the model's own output cap. */
-const OUTPUT_SHORTFALL_MAX_PENALTY = 80;
+const UNVERIFIED_REASONING_SOFT_PENALTY: Record<TaskLevel, number> = {
+  light: 0,
+  standard: 0,
+  heavy: 10,
+  critical: 15,
+};
 
 // Hard capabilities: missing one drops request data (images, PDFs). Maps TS
 // ResolvedModelCapabilities fields that correspond to hard-cap modalities.
@@ -961,16 +958,13 @@ const HARD_CAP_CHECKS = new Set(["vision"]);
  * Score a single model for a given task + capability requirements.
  * Higher score = better fit. Negative score = capability hard-miss.
  *
- * Fit is DEMAND-RELATIVE sufficiency: `100 x demandedCapabilityStrength(caps, demand)`, where the
- * demand is what this request needs (`capabilityDemandForTask`). Every model whose verified
- * capabilities cover the demand gets the same fit whatever larger spec it has, a shortfall lowers
- * it continuously and in proportion, and a capability the request does not demand earns nothing
- * and costs nothing. A bigger model is never ranked below a smaller one (monotone) and there is
- * no "too powerful" or "below the threshold" cliff. Models that cover the request therefore tie
- * on this factor and are decided by evidence (reliability, latency, health, quota). The
- * deductions are GENUINE unmet requirements: context window cannot hold the prompt, output limit
- * below the requested output, and a required vision / reasoning / tool capability that is not
- * verified.
+ * Fit is SUFFICIENCY, not closeness: `100 x min(1, power / TASK_TARGET_POWER[level])`. Verified
+ * capability earns fit up to what the task level asks for, then stops adding, so a bigger model
+ * is never ranked below a smaller one (monotone) and there is no "too powerful" or "below the
+ * threshold" cliff. Light asks therefore tie on this factor and are decided by evidence
+ * (reliability, latency, health, quota). The only deductions are GENUINE unmet requirements:
+ * context window cannot hold the prompt, output limit below the requested output, and a
+ * required vision / reasoning / tool capability that is not verified.
  */
 export function scoreModelForTask(
   modelStr: string,
@@ -978,8 +972,9 @@ export function scoreModelForTask(
   required: Set<string> = new Set()
 ): number {
   const caps = getResolvedModelCapabilities(modelStr);
-  const demand = capabilityDemandForTask(task, required);
-  let score = 100 * demandedCapabilityStrength(caps, demand);
+  const target = TASK_TARGET_POWER[task.level];
+  const power = Math.round(capabilityStrength(caps) * 150);
+  let score = 100 * Math.min(1, power / target);
 
   // Hard capability misses: drop score heavily so the model sorts to the back
   // but stays in the list (fallback still tries every model).
@@ -991,23 +986,16 @@ export function scoreModelForTask(
   // A required capability that is not verified is an unmet requirement. The task level alone
   // is not a requirement (it used to subtract 120 here for any heavy+ task on a model not
   // known to reason).
-  // A required reasoning capability that is not verified takes the -120 gate. Reasoning the
-  // request does not demand neither rewards nor penalises: until 2026-11-20 a flat 10/15-point
-  // soft penalty on heavy/critical asks scored an undemanded capability, which is removed. A
-  // demanded reasoning dimension is scored in `demandedCapabilityStrength` as well.
   if (required.has("reasoning") && caps.supportsThinking !== true) score -= 120;
+  else if (caps.supportsThinking !== true) score -= UNVERIFIED_REASONING_SOFT_PENALTY[task.level];
   if (required.has("search") && !caps.toolCalling) score -= 30;
 
+  const estimatedPromptTokens = Math.ceil((task.promptChars ?? 0) / 4);
   const ctxLimit = caps.contextWindow ?? 0;
-  if (ctxLimit > 0 && demand.promptTokens > ctxLimit * CONTEXT_OVERFLOW_LIMIT) score -= 200;
+  if (ctxLimit > 0 && estimatedPromptTokens > ctxLimit * 0.85) score -= 200;
 
-  // A requested output above the model's own cap is a shortfall, penalised in proportion to its
-  // size (0 at or above the cap, growing linearly to -80 as the cap approaches 0), so there is no
-  // step at the cap. It adds to the proportional output credit already lost in the strength.
   const maxOut = caps.maxOutputTokens ?? 0;
-  if (maxOut > 0 && Number.isFinite(task.outputTokens) && task.outputTokens > maxOut) {
-    score -= OUTPUT_SHORTFALL_MAX_PENALTY * ((task.outputTokens - maxOut) / task.outputTokens);
-  }
+  if (maxOut > 0 && task.outputTokens > 0 && task.outputTokens > maxOut) score -= 80;
 
   return score;
 }

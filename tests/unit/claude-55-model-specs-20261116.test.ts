@@ -279,17 +279,9 @@ test("power scores of the 5.5 models come from resolved specs only", () => {
     modelPowerScore("claude/claude-opus-5-5")
   );
   assert.equal(modelPowerScore("claude/claude-haiku-5-5"), 150);
-  // Power is demand-relative since 2026-11-20: a model whose verified window/output covers the
-  // demand scores exactly like a larger one (Haiku 4.5, 200K/64K, covers the neutral demand), and
-  // one that falls short of the demand scores lower, never higher.
-  assert.equal(
-    modelPowerScore("claude/claude-haiku-4-5-20251001"),
-    modelPowerScore("claude/claude-haiku-5-5")
-  );
-  const bigOutput = { promptTokens: 1_000, outputTokens: 128_000, reasoning: false, tools: false };
+  // A model with a smaller verified window/output scores lower, never higher.
   assert.ok(
-    modelPowerScore("claude/claude-haiku-4-5-20251001", bigOutput) <
-      modelPowerScore("claude/claude-haiku-5-5", bigOutput)
+    modelPowerScore("claude/claude-haiku-4-5-20251001") < modelPowerScore("claude/claude-haiku-5-5")
   );
 });
 

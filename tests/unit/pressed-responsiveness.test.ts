@@ -56,13 +56,8 @@ saveModelsDevCapabilities({
     "moonshotai/kimi-k2.6": capabilityRow(1_000_000, 128_000),
     "z-ai/glm-5.2": capabilityRow(1_000_000, 128_000),
     "meta/llama-3.2-11b-vision-instruct": capabilityRow(215_000, 128_000),
-    // 2026-11-20: capability credit is demand-relative. The ask needs the default 8192-token
-    // answer, which the 16K output cap of these two covered as fully as kimi's 128K, so kimi's
-    // lead vanished. Their output cap now sits below the default demand (5000 of 8192) so kimi
-    // keeps a genuine native lead of about 0.067, the same size as before this change, which is what the responsiveness tests below measure
-    // against.
-    "catalog/option-a": capabilityRow(64_000, 5_000, false),
-    "catalog/option-b": capabilityRow(64_000, 5_000, false),
+    "catalog/option-a": capabilityRow(64_000, 16_000, false),
+    "catalog/option-b": capabilityRow(64_000, 16_000, false),
   },
 });
 const comboName = "ac-pressed-zero-token-cost";

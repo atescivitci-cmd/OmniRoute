@@ -29,6 +29,7 @@
 import { logger } from "@omniroute/open-sse/utils/logger.ts";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error.ts";
 import { parseModel } from "@omniroute/open-sse/services/model.ts";
+import { fairSelectionSettings } from "@omniroute/open-sse/services/autoCombo/fairSelectionSettings.ts";
 import { isModelLocked } from "@omniroute/open-sse/services/accountFallback.ts";
 import {
   expandProviderWildcardsInCollection,
@@ -569,6 +570,10 @@ export function createDefaultRoutingEvidenceCanaryDeps(): RoutingEvidenceCanaryD
         windowHours: 24,
         minSamples: 1,
         maxRows: 10000,
+        // These counts decide whether the ranking already has enough evidence about a model, so
+        // they must count what the ranking counts. While ROUTING_CLIENT_ABANDON_NEUTRAL is on a
+        // client leaving within seconds is not evidence; with it off (default) every row counts.
+        ...(fairSelectionSettings().clientAbandonNeutral ? { excludeClientAbandons: true } : {}),
       })) as Record<string, { totalRequests?: number }>;
     },
     getPricing: async (provider, model) => {
