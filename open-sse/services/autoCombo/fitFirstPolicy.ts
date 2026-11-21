@@ -94,6 +94,13 @@ export interface FitFirstFactors {
   latencyFit: number;
   score: number;
   /**
+   * Which health rule produced `health`. Always "observed_rate": health is the observed success
+   * rate (see `observedHealthFactor`). Recorded in every decision so the rule is visible in
+   * routing_decisions.factors_json and in the compiled build, where scripts/verify_busola_504_fixes.sh
+   * checks for it.
+   */
+  healthRule: "observed_rate";
+  /**
    * Present only for `light` asks while ROUTING_LIGHT_BY_ASK is on. Raw inputs behind the
    * evidence-weighted light profile, so every decision shows why it ranked as it did.
    */
@@ -862,6 +869,28 @@ function weightProfile(level: ReturnType<typeof classifyTask>["level"]) {
   };
 }
 
+/**
+ * Health factor for the fit-first ranking. This is the successor of the Busola-504 "Fix 1"
+ * (a model observed to fail more than half the time must NOT get health 1.0; origin branch
+ * ates/busola-504-stability-20261111). The earlier fix gated on a confidence threshold
+ * (CONFIDENT_FAILURE_MIN_CONFIDENCE, >= 20 samples) and left a step at 0.5; this rule is
+ * stronger and has no volume gate: with a CLOSED breaker and a fresh observed window, health is
+ * the observed success rate itself (1.0 at 100%, 0.5 at a coin flip, below 0.5 for a mostly
+ * failing model, 0 at all-failing); otherwise it is the neutral 0.5. It never returns 1.0 for a
+ * model whose observed success rate is below 1.0, and it never depends on how many samples
+ * produced the rate. scripts/verify_busola_504_fixes.sh checks this function by name and shape;
+ * change it only together with that guard and the tests in
+ * tests/unit/busola-504-guard-20261121.test.ts.
+ */
+export function observedHealthFactor(
+  circuitBreakerState: string | undefined,
+  operational: { reason: string; score: number }
+): number {
+  return circuitBreakerState === "CLOSED" && operational.reason === "observed"
+    ? operational.score
+    : 0.5;
+}
+
 export function rankFitFirstFreeCandidates(args: {
   candidates: FitFirstCandidate[];
   body: Record<string, unknown>;
@@ -1003,10 +1032,7 @@ export function rankFitFirstFreeCandidates(args: {
       // window and the rate only below 0.5 (a 0.5 cliff: 50% failing outranked an unobserved
       // model, 51% did not) and gated on 10 and 20 samples (volume decided health). The
       // hard-veto floor (healthEvidenceSupportsHardVeto, >= 10 samples) is separate and unchanged.
-      const health =
-        candidate.circuitBreakerState === "CLOSED" && operational.reason === "observed"
-          ? operational.score
-          : 0.5;
+      const health = observedHealthFactor(candidate.circuitBreakerState, operational);
       const quota = quotaRankingFactor(candidate);
       const reliability = operational.score;
       const lightLatency = lightEvidence
@@ -1044,6 +1070,7 @@ export function rankFitFirstFreeCandidates(args: {
           taskFitnessSource: fitness.source,
           complexityFit,
           health,
+          healthRule: "observed_rate",
           quota,
           reliability,
           reliabilityConfidence: operational.confidence,
