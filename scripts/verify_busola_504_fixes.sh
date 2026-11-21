@@ -47,22 +47,41 @@ check_source() {
   # Fix 1: a failing model must not get health 1.0. Accept the original form (a) or the
   # successor form (b); fail if neither is complete.
   fix1_old=0
-  if grep -q "CONFIDENT_FAILURE_MIN_CONFIDENCE" "$ff" \
-    && grep -Eq "confidence[[:space:]]*>=[[:space:]]*CONFIDENT_FAILURE_MIN_CONFIDENCE" "$ff"; then
+  fix1_new=0
+  # Code with comments removed and template-literal contents blanked (so a correct body parked in a
+  # comment, a block comment or a template string cannot satisfy the check), whitespace collapsed.
+  code=$(awk '
+    BEGIN { st = 0; sq = sprintf("%c", 39); dq = "\""; bt = "`"; bs = "\\" }
+    { line = $0; gsub(/\r/, "", line); out = ""; n = length(line)
+      for (i = 1; i <= n; i++) { c = substr(line, i, 1); d = substr(line, i, 2)
+        if (st == 4) { if (d == "*/") { st = 0; i++ } ; continue }
+        if (st == 0) { if (d == "//") break; if (d == "/*") { st = 4; i++; continue }
+          if (c == dq) st = 1; else if (c == sq) st = 2; else if (c == bt) st = 3
+          out = out c; continue }
+        if (st == 1 || st == 2) { out = out c
+          if (c == bs) { i++; out = out substr(line, i, 1) }
+          else if ((st == 1 && c == dq) || (st == 2 && c == sq)) st = 0
+          continue }
+        if (st == 3) { if (c == bs) { i++; continue } ; if (c == bt) { st = 0; out = out c } ; continue } }
+      if (st == 1 || st == 2) st = 0
+      print out }' "$ff" | tr '\n' ' ' | tr -s '[:space:]' ' ')
+  # original form (a), judged on CODE only: a comment mentioning the constant must not satisfy it.
+  if printf '%s' "$code" | grep -q "CONFIDENT_FAILURE_MIN_CONFIDENCE" \
+    && printf '%s' "$code" | grep -Eq "confidence[[:space:]]*>=[[:space:]]*CONFIDENT_FAILURE_MIN_CONFIDENCE" \
+    && printf '%s' "$code" | grep -Eq "const[[:space:]]+CONFIDENT_FAILURE_MIN_CONFIDENCE[[:space:]]*="; then
     fix1_old=1
   fi
-  fix1_new=0
-  # Body of the exported helper, whitespace collapsed to single spaces, comments excluded (the
-  # doc comment sits above the function; a one-line // comment inside the body is dropped).
-  body=$(awk '/^export function observedHealthFactor[[:space:]]*\(/ {f=1} f {print} f && /^}/ {exit}' "$ff" \
-    | sed 's#//.*$##' | tr '\n' ' ' | tr -s '[:space:]' ' ')
-  expect='return circuitBreakerState === "CLOSED" && operational.reason === "observed" ? operational.score : 0.5; }'
-  case "$body" in
-    *"$expect"*)
-      calls=$(grep -c 'observedHealthFactor(' "$ff" || true)
-      if [ "${calls:-0}" -ge 2 ] \
-        && grep -Eq 'const health = observedHealthFactor\(' "$ff" \
-        && grep -Eq 'healthRule:[[:space:]]*"observed_rate"[[:space:]]*,' "$ff"; then
+  # (1) the WHOLE helper, signature to closing brace, exactly: a first-statement `return`, nothing before it.
+  helper='export function observedHealthFactor( circuitBreakerState: string | undefined, operational: { reason: string; score: number } ): number { return circuitBreakerState === "CLOSED" && operational.reason === "observed" ? operational.score : 0.5; }'
+  # (2) the only place health is computed, (3) reported as-is next to the marker, (4) used by the score.
+  callsite='const health = observedHealthFactor(candidate.circuitBreakerState, operational);'
+  reported='health, healthRule: "observed_rate",'
+  case "$code" in
+    *"$helper"*"$callsite"*"$reported"*)
+      # health is assigned exactly once (no later `health = 1`, no `let health`) and feeds the score.
+      assigns=$(printf '%s' "$code" | grep -Eo '(^|[^.A-Za-z0-9_$])health[[:space:]]*=[^=>]' | wc -l | tr -d ' ')
+      if [ "${assigns:-0}" -eq 1 ] \
+        && printf '%s' "$code" | grep -Eq 'health \* weights\.health'; then
         fix1_new=1
       fi
       ;;
@@ -95,27 +114,43 @@ check_dist() {
   # live code and must not trip the guard.
   is_backup() { case "$1" in *.bak-health-*|*.bak-ctx1m-*|*.bak) return 0;; *) return 1;; esac; }
 
-  # Fix 1: compiled health factor must carry the reliability condition.
-  # Minified form: confidence>=.5 (or >=0.5) guarding the health factor.
-  fix1_found=0
-  for f in $(grep -rlE 'confidence>=(\.5|0\.5)' "$build" 2>/dev/null || true); do
+  # Fix 1: compiled health factor. The ranking module is compiled into EVERY route bundle that
+  # imports it (6 chunks in the 2026-11-20 build), so every live JS file that carries the factors
+  # object (reliabilitySampleCount:) must itself contain a complete Fix 1 form, not just one of them.
+  id='[A-Za-z_$][A-Za-z0-9_$]*'
+  file_has_fix1() {
+    f="$1"
+    # original form: reliability condition gating the health factor
+    grep -Eq 'confidence>=(\.5|0\.5)' "$f" 2>/dev/null && return 0
+    # successor form: marker right after the health property ...
+    grep -Eq "[,{]health(:$id)?,healthRule:\"observed_rate\"" "$f" 2>/dev/null || return 1
+    # ... and the rule applied to the candidate's breaker state: inlined, or a function that is CALLED with it.
+    expr="(\"CLOSED\"===[^&?:]{1,80}|[^&?:]{1,80}===\"CLOSED\")&&(\"observed\"===$id\.reason|$id\.reason===\"observed\")\?$id\.score:(\.5|0\.5)"
+    grep -Eq "\"CLOSED\"===$id\.circuitBreakerState&&(\"observed\"===$id\.reason|$id\.reason===\"observed\")\?$id\.score:(\.5|0\.5)|$id\.circuitBreakerState===\"CLOSED\"&&(\"observed\"===$id\.reason|$id\.reason===\"observed\")\?$id\.score:(\.5|0\.5)" "$f" 2>/dev/null && return 0
+    fn=$(grep -Eo "function $id\($id,$id\)\{return ?$expr" "$f" 2>/dev/null | head -1 | sed -E 's/^function ([A-Za-z_$][A-Za-z0-9_$]*)\(.*/\1/')
+    if [ -z "$fn" ]; then
+      fn=$(grep -Eo "(const|let|var) $id=\($id,$id\)=>$expr" "$f" 2>/dev/null | head -1 | sed -E 's/^(const|let|var) ([A-Za-z_$][A-Za-z0-9_$]*)=.*/\2/')
+    fi
+    [ -n "$fn" ] || return 1
+    fnre=$(printf '%s' "$fn" | sed 's/[$]/\\$/g')
+    grep -Eq "[^A-Za-z0-9_$.]$fnre\($id\.circuitBreakerState,$id\)" "$f" 2>/dev/null
+  }
+  fix1_found=0; fix1_bad=""
+  for f in $(grep -rl --include='*.js' --include='*.mjs' --include='*.cjs' 'reliabilitySampleCount:' "$build" 2>/dev/null || true); do
     is_backup "$f" && continue
-    fix1_found=1; break
+    if file_has_fix1 "$f"; then fix1_found=1; else fix1_bad="$fix1_bad $f"; fi
   done
-  # Successor form (b): the minified observed-rate expression AND the runtime marker, in the
-  # SAME live file. Operand order may be flipped by the minifier ("CLOSED"===x or x==="CLOSED").
-  if [ "$fix1_found" = 0 ]; then
-    id='[A-Za-z_$][A-Za-z0-9_$]*'
-    for f in $(grep -rl 'healthRule:"observed_rate"' "$build" 2>/dev/null || true); do
+  if [ "$fix1_found" = 0 ] && [ -z "$fix1_bad" ]; then
+    # no live file carries the factors object at all: fall back to "any live file has a complete form"
+    for f in $(grep -rl --include='*.js' --include='*.mjs' --include='*.cjs' -e 'healthRule:"observed_rate"' -e 'confidence>=' "$build" 2>/dev/null || true); do
       is_backup "$f" && continue
-      if grep -Eq "(\"CLOSED\"===[^&?:]{1,80}|[^&?:]{1,80}===\"CLOSED\")&&(\"observed\"===$id\.reason|$id\.reason===\"observed\")\?$id\.score:(\.5|0\.5)" "$f" 2>/dev/null; then
-        fix1_found=1; break
-      fi
+      if file_has_fix1 "$f"; then fix1_found=1; break; fi
     done
   fi
+  [ -z "$fix1_bad" ] || fail "Fix 1 missing in compiled output: these live files carry the factors object but no complete Fix 1 form:$fix1_bad"
   [ "$fix1_found" = 1 ] \
-    || fail "Fix 1 missing in compiled output: neither the reliability condition (confidence>=.5) nor the observed-rate health expression with healthRule:\"observed_rate\" found in live files under $build"
-  ok "Fix 1 present in compiled output (reliability condition or observed-rate health)"
+    || fail "Fix 1 missing in compiled output: neither the reliability condition (confidence>=.5) nor the observed-rate health rule with healthRule:\"observed_rate\" found in live files under $build"
+  ok "Fix 1 present in every compiled copy of the ranking module (reliability condition or observed-rate health)"
 
   # Fix 2: context-1m must NOT be pushed on the raw model flag (pre-fix form r&&push).
   # Safe forms: !1&& (hand patch) or a composed condition including the client beta

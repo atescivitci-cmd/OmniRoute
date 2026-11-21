@@ -136,7 +136,7 @@ test("source: neither form present is refused", () => {
 
 const NEW_DIST =
   'function h(e,t){return"CLOSED"===e&&"observed"===t.reason?t.score:.5}' +
-  'const f={taskFitness:1,health:h(a,b),healthRule:"observed_rate",quota:1};';
+  'let I=h(c.circuitBreakerState,v);const f={taskFitness:1,health:I,healthRule:"observed_rate",quota:1,reliabilitySampleCount:3};';
 
 test("dist: observed-rate expression plus marker in one live file passes", () => {
   const dist = makeDistTree({ "ff.js": NEW_DIST });
@@ -146,9 +146,9 @@ test("dist: observed-rate expression plus marker in one live file passes", () =>
 
 test("dist: inlined expression and flipped operand order pass", () => {
   const inlined =
-    'let health="CLOSED"===t.circuitBreakerState&&"observed"===v.reason?v.score:.5,x={healthRule:"observed_rate"};';
+    'let health="CLOSED"===t.circuitBreakerState&&"observed"===v.reason?v.score:.5,x={health,healthRule:"observed_rate",reliabilitySampleCount:3};';
   const flipped =
-    'let health=t.circuitBreakerState==="CLOSED"&&v.reason==="observed"?v.score:0.5,x={healthRule:"observed_rate"};';
+    'let health=t.circuitBreakerState==="CLOSED"&&v.reason==="observed"?v.score:0.5,x={health,healthRule:"observed_rate",reliabilitySampleCount:3};';
   for (const code of [inlined, flipped]) {
     const r = runGuard("--dist", makeDistTree({ "ff.js": code }));
     assert.equal(r.code, 0, r.out);
@@ -255,4 +255,122 @@ test("behaviour: every ranked decision records healthRule observed_rate", () => 
   });
   assert.ok(decision.ranked.length > 0, "expected ranked candidates");
   for (const r of decision.ranked) assert.equal(r.factors.healthRule, "observed_rate");
+});
+
+// --- regressions a text-only guard could be fooled by (found by the independent review) ---------
+
+const HELPER_RE = /export function observedHealthFactor[\s\S]*?\n}\n/;
+const CALL_LINE =
+  "const health = observedHealthFactor(candidate.circuitBreakerState, operational);";
+
+function mustRefuseSource(name: string, mutate: (ff: string) => string) {
+  test(`source mutant refused: ${name}`, () => {
+    const tree = makeSourceTree(mutate);
+    const r = runGuard("--source", tree);
+    assert.notEqual(r.code, 0, `guard accepted: ${name}\n${r.out}`);
+  });
+}
+
+mustRefuseSource("correct helper parked in a block comment above a helper that returns 1", (ff) => {
+  const original = ff.match(HELPER_RE)![0];
+  const bad = ff.replace(/\? operational\.score\n\s*: 0\.5;/, "? 1 : 0.5;");
+  return `/*\n${original}*/\n${bad}`;
+});
+mustRefuseSource("correct helper parked in a template literal above a bad helper", (ff) => {
+  const original = ff.match(HELPER_RE)![0].replace(/`/g, "");
+  const bad = ff.replace(/\? operational\.score\n\s*: 0\.5;/, "? 1 : 0.5;");
+  return `const __decoy = \`\n${original}\`;\n${bad}`;
+});
+mustRefuseSource("early return 1 before the correct return", (ff) =>
+  ff.replace(
+    'return circuitBreakerState === "CLOSED"',
+    'if (operational.score < 0.5) return 1;\n  return circuitBreakerState === "CLOSED"'
+  )
+);
+mustRefuseSource("the call kept only in a comment while health is hard-coded", (ff) =>
+  ff.replace(CALL_LINE, `// ${CALL_LINE}\n      const health = 1;`)
+);
+mustRefuseSource("the helper called but its result discarded", (ff) =>
+  ff.replace(
+    CALL_LINE,
+    `observedHealthFactor(candidate.circuitBreakerState, operational);\n      const health = 1;`
+  )
+);
+mustRefuseSource("the call fed a doctored operand", (ff) =>
+  ff.replace(
+    CALL_LINE,
+    'const health = observedHealthFactor(candidate.circuitBreakerState, { reason: "observed", score: 1 });'
+  )
+);
+mustRefuseSource("health reassigned after the call", (ff) =>
+  ff.replace(
+    CALL_LINE,
+    `let health = observedHealthFactor(candidate.circuitBreakerState, operational);\n      health = 1;`
+  )
+);
+mustRefuseSource("factors report health: 1 instead of the computed health", (ff) =>
+  ff.replace(
+    /health,\n(\s*)healthRule: "observed_rate",/,
+    'health: 1,\n$1healthRule: "observed_rate",'
+  )
+);
+mustRefuseSource("the score formula no longer uses the health factor", (ff) =>
+  ff.replace("health * weights.health", "1 * weights.health")
+);
+mustRefuseSource("the runtime marker only in a comment", (ff) =>
+  ff.replace(/healthRule: "observed_rate",\n/, '// healthRule: "observed_rate",\n')
+);
+mustRefuseSource(
+  "the original form only mentioned in a comment, successor removed",
+  (ff) =>
+    ff
+      .replace("export function observedHealthFactor", "function renamedAway")
+      .replace(/healthRule: "observed_rate",\n/, "") +
+    "\n// const CONFIDENT_FAILURE_MIN_CONFIDENCE = 0.5; confidence >= CONFIDENT_FAILURE_MIN_CONFIDENCE\n"
+);
+
+const FIXED_CHUNK =
+  'function h(e,t){return"CLOSED"===e&&"observed"===t.reason?t.score:.5}let I=h(c.circuitBreakerState,v);' +
+  'const f={taskFitness:1,health:I,healthRule:"observed_rate",quota:1,reliabilitySampleCount:3};';
+
+test("dist: a fixed chunk next to a stale chunk with health 1 is refused (every copy must be fixed)", () => {
+  const dist = makeDistTree({
+    "a.js": FIXED_CHUNK,
+    "b.js": "const f={taskFitness:1,health:1,quota:1,reliabilitySampleCount:3};",
+  });
+  const r = runGuard("--dist", dist);
+  assert.notEqual(r.code, 0, `guard accepted a stale chunk\n${r.out}`);
+  assert.match(r.out, /b\.js/);
+});
+
+test("dist: every fixed chunk passes together", () => {
+  const dist = makeDistTree({ "a.js": FIXED_CHUNK, "b.js": FIXED_CHUNK, "c.mjs": FIXED_CHUNK });
+  const r = runGuard("--dist", dist);
+  assert.equal(r.code, 0, r.out);
+});
+
+test("dist: a text file carrying the marker and the expression does not count", () => {
+  const dist = makeDistTree({ "NOTES.txt": FIXED_CHUNK });
+  const r = runGuard("--dist", dist);
+  assert.notEqual(r.code, 0, "guard counted a non-JS file");
+});
+
+test("dist: the rule present but never applied to the breaker state is refused", () => {
+  const dist = makeDistTree({
+    "a.js":
+      'function h(e,t){return"CLOSED"===e&&"observed"===t.reason?t.score:.5}let I=1;' +
+      'const f={health:I,healthRule:"observed_rate",reliabilitySampleCount:3};',
+  });
+  const r = runGuard("--dist", dist);
+  assert.notEqual(r.code, 0, "guard accepted a decoy function that is never called");
+});
+
+test("dist: the marker not adjacent to the health property is refused", () => {
+  const dist = makeDistTree({
+    "a.js":
+      'function h(e,t){return"CLOSED"===e&&"observed"===t.reason?t.score:.5}let I=h(c.circuitBreakerState,v);' +
+      'const f={healthRule:"observed_rate",quota:1,health:1,reliabilitySampleCount:3};',
+  });
+  const r = runGuard("--dist", dist);
+  assert.notEqual(r.code, 0, "guard accepted a marker detached from the health property");
 });
