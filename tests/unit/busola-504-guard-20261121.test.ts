@@ -374,3 +374,39 @@ test("dist: the marker not adjacent to the health property is refused", () => {
   const r = runGuard("--dist", dist);
   assert.notEqual(r.code, 0, "guard accepted a marker detached from the health property");
 });
+
+// --- the real compiled form (found by the first installer dry-run of the merged tip) ----------------
+// Next/SWC inlines observedHealthFactor as a comma expression with a temp for the parameter. This is
+// the text the real build printed (chunk _1uosndd, 2026-11-21), quoted verbatim around the marker.
+const SWC_INLINE =
+  'v=P.get(t),w=(o=t.circuitBreakerState,"CLOSED"===o&&"observed"===v.reason?v.score:.5),C=(0,h.quotaRankingFactor)(t),k=v.score;' +
+  'return{candidate:t,factors:{taskFitness:f.score,taskFitnessSource:f.source,complexityFit:b,health:w,healthRule:"observed_rate",quota:C,reliability:k,reliabilityConfidence:v.confidence,reliabilitySampleCount:v.sampleCount}};';
+
+test("dist: the real SWC output (temp variable assigned from the breaker state) passes", () => {
+  const r = runGuard("--dist", makeDistTree({ "chunk.js": SWC_INLINE }));
+  assert.equal(r.code, 0, r.out);
+});
+
+test("dist: the SWC inline form with a result of 1 is refused", () => {
+  const code = SWC_INLINE.replace("?v.score:.5)", "?1:.5)");
+  const r = runGuard("--dist", makeDistTree({ "chunk.js": code }));
+  assert.notEqual(r.code, 0, "guard accepted a health rule that returns 1 in the SWC inline form");
+});
+
+test("dist: the SWC inline form fed from another property than the breaker state is refused", () => {
+  const code = SWC_INLINE.replace("o=t.circuitBreakerState", "o=t.provider");
+  const r = runGuard("--dist", makeDistTree({ "chunk.js": code }));
+  assert.notEqual(r.code, 0, "guard accepted a rule that is not applied to the breaker state");
+});
+
+test("dist: the SWC inline form without the observed condition is refused", () => {
+  const code = SWC_INLINE.replace('&&"observed"===v.reason', "");
+  const r = runGuard("--dist", makeDistTree({ "chunk.js": code }));
+  assert.notEqual(r.code, 0, "guard accepted a rule without the observed condition");
+});
+
+test("dist: two chunks, one real SWC form and one stale chunk, are refused", () => {
+  const stale = "const f={health:1,quota:1,reliabilitySampleCount:3};";
+  const r = runGuard("--dist", makeDistTree({ "a.js": SWC_INLINE, "b.js": stale }));
+  assert.notEqual(r.code, 0, "guard accepted a stale chunk next to a good one");
+});
