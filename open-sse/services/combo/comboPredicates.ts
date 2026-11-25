@@ -1,3 +1,4 @@
+import { isClientVersionModelRejectionText } from "./clientVersionCompatibility.ts";
 /**
  * Pure combo predicates + tuning constants extracted from combo.ts.
  *
@@ -466,7 +467,11 @@ export function isParamValidation400(errorText: string | null | undefined): bool
 export function isModelScoped400(errorText: string | null | undefined): boolean {
   const text = String(errorText || "");
   if (!text) return false;
-  if (MODEL_ACCESS_DENIED_PATTERNS.some((p) => p.test(text))) return true;
+  if (
+    MODEL_ACCESS_DENIED_PATTERNS.some((p) => p.test(text)) ||
+    isClientVersionModelRejectionText(text)
+  )
+    return true;
   return (
     /\bmodel\b[\s\S]{0,80}?\b(?:not\s+supported|unsupported|unknown|unavailable)\b/i.test(text) ||
     /\b(?:not\s+supported|unsupported|unknown)\b[\s\S]{0,80}?\bmodel\b/i.test(text) ||

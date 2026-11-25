@@ -106,6 +106,15 @@ test("tool request: credit-balance 400 advances with the identical body", async 
 // ── (c) 402 ───────────────────────────────────────────────────────────────────────────────
 test("402 credit text and chatCore's canonical payment_required envelope advance (plain and tools)", async () => {
   const shapes: Array<[string, Make]> = [
+    [
+      "402 additional usage limit",
+      () =>
+        errResponse(
+          402,
+          "You've reached your additional usage limit for your plan. Go to https://github.com/settings/copilot/features for more details.",
+          { code: "provider_error" }
+        ),
+    ],
     ["402 credit text", () => errResponse(402, "Insufficient credits. Add more to continue.")],
     ["402 anthropic text", () => errResponse(402, ANTHROPIC_CREDIT)],
     ["envelope: Unknown error (empty upstream body)", () => envelope402("Unknown error")],
