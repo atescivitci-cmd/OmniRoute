@@ -5616,6 +5616,7 @@ async function handleChatCoreRequest({
       streamUsage,
       serviceTier: effectiveServiceTier,
       cashClass: resolveCashClass(credentials?.providerSpecificData),
+      costProvider: credentials?.provider,
       calculateCost,
       recordCost,
     });

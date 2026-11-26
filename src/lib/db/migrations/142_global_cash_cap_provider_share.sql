@@ -1,0 +1,13 @@
+-- Migration 142: provider per cost entry and per-provider share limit on the global budget
+-- domain_cost_history.provider: provider id that served the request (NULL = unknown or recorded
+--   before this column existed; such rows count in the global total but in no provider share).
+-- domain_budgets.provider_share_limit: fraction (0, 1) of the limit one metered provider may use.
+--   Read only on the global budget (api_key_id '__global__'). NULL = no share limit.
+-- Nullable and idempotent. See src/lib/usage/cashCost.ts and src/domain/costRules.ts.
+--
+-- NOTE: the runner applies this migration in code (applyGlobalCashCapMigration in
+-- migrationRunner.ts) so a column that already exists is not an error. This file is the readable
+-- record of the change and is not executed as-is.
+--   ALTER TABLE domain_cost_history ADD COLUMN provider TEXT DEFAULT NULL;
+--   ALTER TABLE domain_budgets ADD COLUMN provider_share_limit REAL DEFAULT NULL;
+SELECT 1;

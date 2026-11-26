@@ -423,6 +423,11 @@ function isSchemaAlreadyApplied(
         hasColumn(db, "domain_cost_history", "cash_cost") &&
         hasColumn(db, "domain_budgets", "cost_basis")
       );
+    case "142":
+      return (
+        hasColumn(db, "domain_cost_history", "provider") &&
+        hasColumn(db, "domain_budgets", "provider_share_limit")
+      );
     case "062":
       return hasColumn(db, "usage_history", "combo_strategy");
     case "070":
@@ -536,6 +541,23 @@ function applyBudgetCashCostMigration(db: SqliteAdapter): void {
     "domain_budgets",
     "cost_basis",
     "ALTER TABLE domain_budgets ADD COLUMN cost_basis TEXT DEFAULT 'list'"
+  );
+}
+
+// Migration 142: provider per cost entry and per-provider share limit on the global budget
+// (see 142_global_cash_cap_provider_share.sql).
+function applyGlobalCashCapMigration(db: SqliteAdapter): void {
+  ensureColumn(
+    db,
+    "domain_cost_history",
+    "provider",
+    "ALTER TABLE domain_cost_history ADD COLUMN provider TEXT DEFAULT NULL"
+  );
+  ensureColumn(
+    db,
+    "domain_budgets",
+    "provider_share_limit",
+    "ALTER TABLE domain_budgets ADD COLUMN provider_share_limit REAL DEFAULT NULL"
   );
 }
 
@@ -1036,6 +1058,11 @@ export function runMigrations(db: SqliteAdapter, options?: { isNewDb?: boolean }
         applyRequestClassMigration(db);
       } else if (migration.version === "141" && migration.name === "budget_cash_cost_basis") {
         applyBudgetCashCostMigration(db);
+      } else if (
+        migration.version === "142" &&
+        migration.name === "global_cash_cap_provider_share"
+      ) {
+        applyGlobalCashCapMigration(db);
       } else if (migration.version === "041" && migration.name === "compression_receipts") {
         applyCompressionReceiptsMigration(db);
       } else if (migration.version === "042") {

@@ -37,6 +37,8 @@ import {
   isModelLocked,
 } from "@omniroute/open-sse/services/accountFallback.ts";
 import * as log from "../utils/logger";
+import { resolveCashClass } from "@/lib/usage/cashCost";
+import { isProviderCashCapped } from "@/domain/costRules";
 
 /** Minimal structural view of a provider connection this module reads. */
 export interface AffinityPinConnection {
@@ -210,6 +212,14 @@ function isConnectionEligibleForAffinityPin(
   if (
     requestedModel &&
     isModelExcludedByConnection(requestedModel, connection.providerSpecificData)
+  ) {
+    return false;
+  }
+  // Same gateway-wide cash cap rule as getProviderCredentials: a held metered account must not
+  // replace an eligible account through a session pin.
+  if (
+    resolveCashClass(connection.providerSpecificData) === "metered" &&
+    isProviderCashCapped((connection as { provider?: string }).provider || provider)
   ) {
     return false;
   }

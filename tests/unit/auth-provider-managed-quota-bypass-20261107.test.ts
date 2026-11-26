@@ -45,6 +45,7 @@ const script = ts.transpileModule(
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }
 ).outputText;
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- pre-existing fixture typing (also on d0d40c4); loosely typed sandbox for production function bodies
 type Row = Record<string, any> & { id: string };
 type FixtureOptions = {
   rows?: Row[];
@@ -74,6 +75,7 @@ function fixture(options: FixtureOptions = {}) {
     assert.equal(options.forbidQuotaReads, undefined, "bypass must not read included quota");
   };
   const unavailable = (until: unknown) => !!until && Date.parse(String(until)) > Date.now();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pre-existing fixture typing (also on d0d40c4); loosely typed sandbox for production function bodies
   const context: any = {
     Date,
     Map,
@@ -97,7 +99,16 @@ function fixture(options: FixtureOptions = {}) {
     toProviderConnection: (item: Row) => ({ ...item }),
     getSessionAccountAffinity: () => (options.pinned ? { connectionId: options.pinned } : null),
     selectSessionAffinityConnection: async () => null,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pre-existing fixture typing (also on d0d40c4); loosely typed sandbox for production function bodies
     isModelExcludedByConnection: (_model: string, data: any) => data?.excluded === true,
+    // Gateway-wide cash cap (global-cash-cap-20261126): real class resolution, cap never reached
+    // in these fixtures, so selection is unchanged.
+    resolveCashClass: (data: { cashClass?: unknown } | undefined) =>
+      typeof data?.cashClass === "string" &&
+      ["subscription", "free", "local", "metered"].includes(data.cashClass)
+        ? data.cashClass
+        : "metered",
+    isProviderCashCapped: () => false,
     isAccountUnavailable: unavailable,
     isCodexScopeUnavailable: (item: Row) => item.providerSpecificData?.scopeLimited === true,
     isModelLocked: (_provider: string, id: string) =>

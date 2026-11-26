@@ -11,7 +11,13 @@
  */
 
 import { getDbInstance } from "./core";
-import { normalizeCostBasis, type CostBasis } from "@/lib/usage/cashCost";
+import {
+  GLOBAL_BUDGET_ID,
+  normalizeCostBasis,
+  normalizeCostProvider,
+  normalizeShareLimit,
+  type CostBasis,
+} from "@/lib/usage/cashCost";
 
 type JsonRecord = Record<string, unknown>;
 type BudgetResetInterval = "daily" | "weekly" | "monthly";
@@ -29,6 +35,8 @@ interface BudgetConfigRecord {
   warningPeriodStart: number | null;
   /** "list" (default) counts list-price estimates; "cash" counts only real money spent. */
   costBasis?: CostBasis;
+  /** Global budget only: max fraction of the limit one metered provider may use (null = off). */
+  providerShareLimit?: number | null;
 }
 
 interface BudgetResetLogRecord {
@@ -216,9 +224,10 @@ export function saveBudget(apiKeyId: string, config: Partial<BudgetConfigRecord>
        last_budget_reset_at,
        warning_emitted_at,
        warning_period_start,
-       cost_basis
+       cost_basis,
+       provider_share_limit
      )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     apiKeyId,
     toNumber(config.dailyLimitUsd),
@@ -231,7 +240,8 @@ export function saveBudget(apiKeyId: string, config: Partial<BudgetConfigRecord>
     config.lastBudgetResetAt ?? null,
     config.warningEmittedAt ?? null,
     config.warningPeriodStart ?? null,
-    normalizeCostBasis(config.costBasis)
+    normalizeCostBasis(config.costBasis),
+    normalizeShareLimit(config.providerShareLimit)
   );
 }
 
@@ -261,6 +271,7 @@ export function loadBudget(apiKeyId: string): BudgetConfigRecord | null {
     warningEmittedAt: toNumber(record.warning_emitted_at, 0) || null,
     warningPeriodStart: toNumber(record.warning_period_start, 0) || null,
     costBasis: normalizeCostBasis(record.cost_basis),
+    providerShareLimit: normalizeShareLimit(record.provider_share_limit),
   };
 }
 
@@ -294,6 +305,7 @@ export function loadAllBudgets() {
       warningEmittedAt: toNumber(record.warning_emitted_at, 0) || null,
       warningPeriodStart: toNumber(record.warning_period_start, 0) || null,
       costBasis: normalizeCostBasis(record.cost_basis),
+      providerShareLimit: normalizeShareLimit(record.provider_share_limit),
     };
   }
 
@@ -387,20 +399,40 @@ function costAmountSql(basis: CostBasis): string {
   return basis === "cash" ? "COALESCE(cash_cost, cost)" : "cost";
 }
 
+/** Key filter: the global budget id covers every key, any other id covers only itself. */
+function keyScope(apiKeyId: string): { sql: string; params: string[] } {
+  return apiKeyId === GLOBAL_BUDGET_ID
+    ? { sql: "1 = 1", params: [] }
+    : { sql: "api_key_id = ?", params: [apiKeyId] };
+}
+
 export function saveCostEntry(
   apiKeyId: string,
   cost: number,
   timestamp = Date.now(),
-  cashCost?: number | null
+  cashCost?: number | null,
+  provider?: string | null
 ) {
   ensureBudgetSchema();
   const db = getDbInstance();
   db.prepare(
-    "INSERT INTO domain_cost_history (api_key_id, cost, timestamp, cash_cost) VALUES (?, ?, ?, ?)"
-  ).run(apiKeyId, cost, timestamp, toCashCostParam(cashCost));
+    "INSERT INTO domain_cost_history (api_key_id, cost, timestamp, cash_cost, provider) VALUES (?, ?, ?, ?, ?)"
+  ).run(
+    apiKeyId,
+    cost,
+    timestamp,
+    toCashCostParam(cashCost),
+    normalizeCostProvider(provider) ?? null
+  );
 }
 
-type CostEntryInput = { apiKeyId: string; cost: number; timestamp: number; cashCost?: number };
+type CostEntryInput = {
+  apiKeyId: string;
+  cost: number;
+  timestamp: number;
+  cashCost?: number;
+  provider?: string;
+};
 
 export function batchSaveCostEntries(entries: Array<CostEntryInput>) {
   ensureBudgetSchema();
@@ -408,11 +440,17 @@ export function batchSaveCostEntries(entries: Array<CostEntryInput>) {
 
   const db = getDbInstance();
   const stmt = db.prepare(
-    "INSERT INTO domain_cost_history (api_key_id, cost, timestamp, cash_cost) VALUES (?, ?, ?, ?)"
+    "INSERT INTO domain_cost_history (api_key_id, cost, timestamp, cash_cost, provider) VALUES (?, ?, ?, ?, ?)"
   );
   const tx = db.transaction((rows: Array<CostEntryInput>) => {
     for (const entry of rows) {
-      stmt.run(entry.apiKeyId, entry.cost, entry.timestamp, toCashCostParam(entry.cashCost));
+      stmt.run(
+        entry.apiKeyId,
+        entry.cost,
+        entry.timestamp,
+        toCashCostParam(entry.cashCost),
+        normalizeCostProvider(entry.provider) ?? null
+      );
     }
   });
 
@@ -422,13 +460,34 @@ export function batchSaveCostEntries(entries: Array<CostEntryInput>) {
 export function loadCostTotal(apiKeyId: string, sinceTimestamp: number, basis: CostBasis = "list") {
   ensureBudgetSchema();
   const db = getDbInstance();
+  const scope = keyScope(apiKeyId);
   const row = db
     .prepare(
       `SELECT COALESCE(SUM(${costAmountSql(normalizeCostBasis(basis))}), 0) AS total
-       FROM domain_cost_history WHERE api_key_id = ? AND timestamp >= ?`
+       FROM domain_cost_history WHERE ${scope.sql} AND timestamp >= ?`
     )
-    .get(apiKeyId, sinceTimestamp) as { total?: number } | undefined;
+    .get(...scope.params, sinceTimestamp) as { total?: number } | undefined;
   return Number(row?.total || 0);
+}
+
+/**
+ * Spend per provider since a timestamp, across every key. Rows without a provider (recorded
+ * before providers were stored, or with no serving connection) are left out of the map; they
+ * still count in the global total.
+ */
+export function loadCostByProvider(
+  sinceTimestamp: number,
+  basis: CostBasis = "list"
+): Map<string, number> {
+  ensureBudgetSchema();
+  const rows = getDbInstance()
+    .prepare(
+      `SELECT provider, COALESCE(SUM(${costAmountSql(normalizeCostBasis(basis))}), 0) AS total
+       FROM domain_cost_history WHERE provider IS NOT NULL AND timestamp >= ?
+       GROUP BY provider`
+    )
+    .all(sinceTimestamp) as Array<{ provider: string; total: number }>;
+  return new Map(rows.map((r) => [r.provider, Number(r.total || 0)]));
 }
 
 /**
@@ -440,11 +499,12 @@ export function loadCostTotal(apiKeyId: string, sinceTimestamp: number, basis: C
 export function loadCostEntries(apiKeyId: string, sinceTimestamp: number) {
   ensureBudgetSchema();
   const db = getDbInstance();
+  const scope = keyScope(apiKeyId);
   return db
     .prepare(
-      "SELECT cost, cash_cost AS cashCost, timestamp FROM domain_cost_history WHERE api_key_id = ? AND timestamp >= ? ORDER BY timestamp"
+      `SELECT cost, cash_cost AS cashCost, timestamp FROM domain_cost_history WHERE ${scope.sql} AND timestamp >= ? ORDER BY timestamp`
     )
-    .all(apiKeyId, sinceTimestamp);
+    .all(...scope.params, sinceTimestamp);
 }
 
 /**
@@ -461,14 +521,15 @@ export function loadCostEntriesInRange(
 ) {
   ensureBudgetSchema();
   const db = getDbInstance();
+  const scope = keyScope(apiKeyId);
   return db
     .prepare(
       `SELECT cost, cash_cost AS cashCost, timestamp
        FROM domain_cost_history
-       WHERE api_key_id = ? AND timestamp >= ? AND timestamp < ?
+       WHERE ${scope.sql} AND timestamp >= ? AND timestamp < ?
        ORDER BY timestamp`
     )
-    .all(apiKeyId, sinceTimestamp, untilTimestamp);
+    .all(...scope.params, sinceTimestamp, untilTimestamp);
 }
 
 /**

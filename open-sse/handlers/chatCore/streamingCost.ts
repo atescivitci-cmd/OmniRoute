@@ -27,8 +27,10 @@ export function recordStreamingCost(args: {
   serviceTier?: string;
   /** Connection cash class; omitted means metered (cash cost = estimate). */
   cashClass?: CashClass;
+  /** Provider of the serving connection, recorded for share limits (falls back to provider). */
+  costProvider?: string | null;
   calculateCost: CostResolver;
-  recordCost: (apiKeyId: string, cost: number, cashCost?: number) => void;
+  recordCost: (apiKeyId: string, cost: number, cashCost?: number, provider?: string) => void;
 }): void {
   if (!args.apiKeyId || !args.streamUsage) return;
 
@@ -40,7 +42,8 @@ export function recordStreamingCost(args: {
         args.recordCost(
           apiKeyId,
           estimatedCost,
-          cashCostFor(estimatedCost, args.cashClass ?? "metered")
+          cashCostFor(estimatedCost, args.cashClass ?? "metered"),
+          args.costProvider || args.provider || undefined
         );
     })
     .catch(() => {});
@@ -51,14 +54,15 @@ export function recordStreamingCost(args: {
  * served the request (its operator-set providerSpecificData.cashClass; absent = metered).
  */
 export function recordConnectionCost(
-  recordCost: (apiKeyId: string, cost: number, cashCost?: number) => void,
+  recordCost: (apiKeyId: string, cost: number, cashCost?: number, provider?: string) => void,
   apiKeyId: string,
   cost: number,
-  credentials: { providerSpecificData?: unknown } | null | undefined
+  credentials: { providerSpecificData?: unknown; provider?: unknown } | null | undefined
 ): void {
   recordCost(
     apiKeyId,
     cost,
-    cashCostFor(cost, resolveCashClass(credentials?.providerSpecificData))
+    cashCostFor(cost, resolveCashClass(credentials?.providerSpecificData)),
+    typeof credentials?.provider === "string" ? credentials.provider : undefined
   );
 }

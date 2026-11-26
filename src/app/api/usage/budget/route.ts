@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { getCostSummary, setBudget, checkBudget } from "@/domain/costRules";
+import { getCostSummary, setBudget, checkBudget, getCashCapStatus } from "@/domain/costRules";
+import { GLOBAL_BUDGET_ID } from "@/lib/usage/cashCost";
 import { setBudgetSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
@@ -37,6 +38,7 @@ export async function GET(request) {
       cashCostToday: summary.cashCostToday,
       cashCostMonth: summary.cashCostMonth,
       cashCostPeriod: summary.cashCostPeriod,
+      ...(apiKeyId === GLOBAL_BUDGET_ID ? { cashCap: getCashCapStatus() } : {}),
     });
   } catch (error) {
     console.error("Error fetching budget summary:", error);
@@ -77,6 +79,7 @@ export async function POST(request) {
       resetInterval,
       resetTime,
       costBasis,
+      providerShareLimit,
     } = validation.data;
 
     const budget = setBudget(apiKeyId, {
@@ -87,6 +90,7 @@ export async function POST(request) {
       resetInterval,
       resetTime,
       costBasis,
+      providerShareLimit,
     });
     return NextResponse.json({ success: true, apiKeyId, budget });
   } catch (error) {
