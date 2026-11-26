@@ -10,6 +10,10 @@ import { isClientVersionModelRejectionText } from "./clientVersionCompatibility.
 import { errorResponse } from "../../utils/error.ts";
 import { parseModel } from "../model.ts";
 import { isSelfInflictedUpstreamTimeout } from "../../handlers/chatCore/cooldownClassification.ts";
+import {
+  UPSTREAM_STALLED_CODE,
+  resolveRoutingStallDeadlineMs,
+} from "../../handlers/chatCore/upstreamStall.ts";
 import { isLocalStreamLifecycleError } from "@/shared/utils/circuitBreaker";
 import { CONTEXT_OVERFLOW_PATTERNS, MODEL_ACCESS_DENIED_PATTERNS } from "../accountFallback.ts";
 import { isResourceNotFoundResponse } from "../errorClassifier.ts";
@@ -350,7 +354,15 @@ export function isStreamReadinessFailureErrorBody(errorBody: unknown): boolean {
   const error = (errorBody as Record<string, unknown>).error;
   if (!error || typeof error !== "object") return false;
   const code = (error as Record<string, unknown>).code;
-  return code === "STREAM_READINESS_TIMEOUT" || code === "STREAM_EARLY_EOF";
+  // upstream_stalled (ROUTING_STALL_DEADLINE_MS) is the same kind of failure: the model sent no
+  // first event in time. Retrying the same model would only repeat the wait, and one stalled
+  // model is no reason to trip the whole provider's breaker. Only honoured while the flag is on,
+  // so with it off nothing changes even for an upstream body that happens to carry this code.
+  return (
+    code === "STREAM_READINESS_TIMEOUT" ||
+    code === "STREAM_EARLY_EOF" ||
+    (code === UPSTREAM_STALLED_CODE && resolveRoutingStallDeadlineMs() > 0)
+  );
 }
 
 /**
