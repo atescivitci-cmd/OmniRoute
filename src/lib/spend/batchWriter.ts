@@ -1,5 +1,10 @@
 import { batchSaveCostEntries } from "@/lib/db/domainState";
-import { entryAmount, type CostBasis } from "@/lib/usage/cashCost";
+import {
+  entryAmount,
+  GLOBAL_BUDGET_ID,
+  normalizeCostProvider,
+  type CostBasis,
+} from "@/lib/usage/cashCost";
 
 export interface BufferedCostEntry {
   apiKeyId: string;
@@ -7,6 +12,8 @@ export interface BufferedCostEntry {
   timestamp: number;
   /** Real money spent; absent means unknown and counts at list price under the cash basis. */
   cashCost?: number;
+  /** Provider that served the request (for per-provider share limits); absent = unknown. */
+  provider?: string;
 }
 
 interface SpendBatchWriterOptions {
@@ -51,6 +58,8 @@ function normalizeEntry(entry: BufferedCostEntry): BufferedCostEntry | null {
   ) {
     normalized.cashCost = Math.min(entry.cashCost, entry.cost);
   }
+  const provider = normalizeCostProvider(entry.provider);
+  if (provider) normalized.provider = provider;
   return normalized;
 }
 
@@ -82,8 +91,14 @@ export class SpendBatchWriter {
     this.timer.unref?.();
   }
 
-  increment(apiKeyId: string, cost: number, timestamp = Date.now(), cashCost?: number) {
-    const entry = normalizeEntry({ apiKeyId, cost, timestamp, cashCost });
+  increment(
+    apiKeyId: string,
+    cost: number,
+    timestamp = Date.now(),
+    cashCost?: number,
+    provider?: string
+  ) {
+    const entry = normalizeEntry({ apiKeyId, cost, timestamp, cashCost, provider });
     if (!entry) return;
 
     this.start();
@@ -100,8 +115,9 @@ export class SpendBatchWriter {
     sinceTimestamp = 0,
     untilTimestamp = Number.POSITIVE_INFINITY
   ) {
+    // The global budget id reads every key's pending entries.
     const matchesWindow = (entry: BufferedCostEntry) =>
-      entry.apiKeyId === apiKeyId &&
+      (apiKeyId === GLOBAL_BUDGET_ID || entry.apiKeyId === apiKeyId) &&
       entry.timestamp >= sinceTimestamp &&
       entry.timestamp < untilTimestamp;
 

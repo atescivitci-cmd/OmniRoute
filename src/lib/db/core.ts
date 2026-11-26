@@ -443,7 +443,8 @@ const SCHEMA_SQL = `
     last_budget_reset_at INTEGER,
     warning_emitted_at INTEGER,
     warning_period_start INTEGER,
-    cost_basis TEXT DEFAULT 'list'
+    cost_basis TEXT DEFAULT 'list',
+    provider_share_limit REAL DEFAULT NULL
   );
 
   CREATE TABLE IF NOT EXISTS domain_budget_reset_logs (
@@ -463,7 +464,8 @@ const SCHEMA_SQL = `
     api_key_id TEXT NOT NULL,
     cost REAL NOT NULL,
     timestamp INTEGER NOT NULL,
-    cash_cost REAL DEFAULT NULL
+    cash_cost REAL DEFAULT NULL,
+    provider TEXT DEFAULT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_dch_key ON domain_cost_history(api_key_id);
   CREATE INDEX IF NOT EXISTS idx_dch_ts ON domain_cost_history(timestamp);

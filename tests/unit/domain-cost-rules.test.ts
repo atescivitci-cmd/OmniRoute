@@ -58,6 +58,7 @@ test("setBudget normalizes defaults and getBudget returns the stored config", ()
     warningEmittedAt: null,
     warningPeriodStart: null,
     costBasis: "list",
+    providerShareLimit: null,
   });
   assert.equal(costRules.getBudget("missing-key"), null);
 });
@@ -146,6 +147,7 @@ test("getDailyTotal and getCostSummary split daily and monthly totals correctly"
         warningEmittedAt: null,
         warningPeriodStart: null,
         costBasis: "list",
+        providerShareLimit: null,
       },
       totalCostToday: 2.5,
       totalCostMonth: 4,
@@ -194,6 +196,7 @@ test("costRules covers DB-loaded budgets, malformed entries and storage failure 
     warningEmittedAt: null,
     warningPeriodStart: null,
     costBasis: "list",
+    providerShareLimit: null,
   });
 
   assert.deepEqual(costRules.checkBudget("missing-budget"), {

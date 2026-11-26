@@ -17,6 +17,7 @@ import {
   loadBudget,
   loadCostEntries,
   loadCostEntriesInRange,
+  loadCostByProvider,
   loadCostTotal,
   saveBudget,
   saveBudgetResetLog,
@@ -26,7 +27,14 @@ import {
   resetSpendBatchWriterForTests,
   spendBatchWriter,
 } from "@/lib/spend/batchWriter";
-import { entryAmount, normalizeCostBasis, type CostBasis } from "@/lib/usage/cashCost";
+import {
+  entryAmount,
+  GLOBAL_BUDGET_ID,
+  normalizeCostBasis,
+  normalizeCostProvider,
+  normalizeShareLimit,
+  type CostBasis,
+} from "@/lib/usage/cashCost";
 
 export type BudgetResetInterval = "daily" | "weekly" | "monthly";
 
@@ -43,6 +51,8 @@ interface BudgetConfig {
   warningPeriodStart?: number | null;
   /** "list" (default) counts list-price estimates; "cash" counts only real money spent. */
   costBasis?: CostBasis;
+  /** Global budget only: fraction (0, 1) of the limit one metered provider may use. */
+  providerShareLimit?: number | null;
 }
 
 interface NormalizedBudgetConfig {
@@ -57,6 +67,7 @@ interface NormalizedBudgetConfig {
   warningEmittedAt: number | null;
   warningPeriodStart: number | null;
   costBasis: CostBasis;
+  providerShareLimit: number | null;
 }
 
 interface CostEntry {
@@ -176,6 +187,7 @@ function normalizeBudgetConfig(config: BudgetConfig): NormalizedBudgetConfig {
     warningEmittedAt: normalizeTimestamp(config.warningEmittedAt),
     warningPeriodStart: normalizeTimestamp(config.warningPeriodStart),
     costBasis: normalizeCostBasis(config.costBasis),
+    providerShareLimit: normalizeShareLimit(config.providerShareLimit),
   };
 }
 
@@ -348,7 +360,8 @@ function syncBudgetSchedule(
     normalized.warningThreshold !== updated.warningThreshold ||
     normalized.resetInterval !== updated.resetInterval ||
     normalized.resetTime !== updated.resetTime ||
-    normalized.costBasis !== updated.costBasis;
+    normalized.costBasis !== updated.costBasis ||
+    normalized.providerShareLimit !== updated.providerShareLimit;
 
   if (changed && options.persist !== false) {
     try {
@@ -368,25 +381,39 @@ function syncBudgetSchedule(
  * @param {string} apiKeyId
  * @param {BudgetConfig} config
  */
-/** Stored cost basis of a budget, read without the schedule sync (no reset log, no save). */
-function currentCostBasis(apiKeyId: string): CostBasis {
+/** Stored basis and share limit of a budget, read without the schedule sync (no log, no save). */
+function currentStoredSettings(apiKeyId: string): {
+  costBasis: CostBasis;
+  providerShareLimit: number | null;
+} {
   const cached = budgets.get(apiKeyId);
-  if (cached) return cached.costBasis;
+  if (cached) return { costBasis: cached.costBasis, providerShareLimit: cached.providerShareLimit };
   try {
-    return normalizeCostBasis(loadBudget(apiKeyId)?.costBasis);
+    const stored = loadBudget(apiKeyId);
+    return {
+      costBasis: normalizeCostBasis(stored?.costBasis),
+      providerShareLimit: normalizeShareLimit(stored?.providerShareLimit),
+    };
   } catch {
-    return "list";
+    return { costBasis: "list", providerShareLimit: null };
   }
 }
 
 export function setBudget(apiKeyId: string, config: BudgetConfig) {
-  // A save that does not mention the cost basis (for example the dashboard form) keeps the
-  // current one, so a cash budget is never silently switched back to list prices.
+  // A save that does not mention the cost basis or the share limit (for example the dashboard
+  // form) keeps the stored ones, so a cash budget is never silently switched back to list prices.
+  const stored =
+    config.costBasis === undefined || config.providerShareLimit === undefined
+      ? currentStoredSettings(apiKeyId)
+      : null;
   const costBasis =
-    config.costBasis !== undefined
-      ? normalizeCostBasis(config.costBasis)
-      : currentCostBasis(apiKeyId);
-  return syncBudgetSchedule(apiKeyId, { ...config, costBasis }, Date.now(), {
+    config.costBasis !== undefined ? normalizeCostBasis(config.costBasis) : stored!.costBasis;
+  const providerShareLimit =
+    config.providerShareLimit !== undefined
+      ? normalizeShareLimit(config.providerShareLimit)
+      : stored!.providerShareLimit;
+  invalidateCashCapCache();
+  return syncBudgetSchedule(apiKeyId, { ...config, costBasis, providerShareLimit }, Date.now(), {
     logReset: false,
     persist: true,
   });
@@ -438,9 +465,14 @@ export function deleteBudget(apiKeyId: string) {
  * @param {string} apiKeyId
  * @param {number} cost - Cost in USD
  */
-export function recordCost(apiKeyId: string, cost: number, cashCost?: number): void {
+export function recordCost(
+  apiKeyId: string,
+  cost: number,
+  cashCost?: number,
+  provider?: string
+): void {
   try {
-    spendBatchWriter.increment(apiKeyId, cost, Date.now(), cashCost);
+    spendBatchWriter.increment(apiKeyId, cost, Date.now(), cashCost, provider);
   } catch {
     // Non-critical.
   }
@@ -673,10 +705,114 @@ export function getCostSummary(apiKeyId: string): BudgetSummary {
  */
 export function resetCostData() {
   budgets.clear();
+  invalidateCashCapCache();
   resetSpendBatchWriterForTests();
   try {
     deleteAllCostData();
   } catch {
     // Non-critical.
   }
+}
+
+// ──────────────── Gateway-wide cash cap ────────────────
+
+export interface CashCapStatus {
+  /** A global budget with a positive limit exists. */
+  active: boolean;
+  limitUsd: number;
+  usedUsd: number;
+  /** Month total has reached the limit: every metered provider is unavailable. */
+  capReached: boolean;
+  /** Per-provider limit in USD (limit x share), or null when no share limit is set. */
+  shareLimitUsd: number | null;
+  /** Spend per provider this period (only providers recorded on cost entries). */
+  providerUsedUsd: Record<string, number>;
+  /** The status could not be read; metered providers are treated as unavailable (fail closed). */
+  readError: boolean;
+}
+
+const CASH_CAP_CACHE_MS = 5_000;
+let cashCapCache: { at: number; status: CashCapStatus } | null = null;
+
+const INACTIVE_CAP: CashCapStatus = {
+  active: false,
+  limitUsd: 0,
+  usedUsd: 0,
+  capReached: false,
+  shareLimitUsd: null,
+  providerUsedUsd: {},
+  readError: false,
+};
+
+export function invalidateCashCapCache(): void {
+  cashCapCache = null;
+}
+
+/**
+ * Status of the gateway-wide budget (apiKeyId "__global__"): this period's spend across every
+ * key against its limit, plus spend per provider against the optional share limit. Cached for a
+ * few seconds because it is read during account selection.
+ */
+export function getCashCapStatus(now = Date.now()): CashCapStatus {
+  if (cashCapCache && now - cashCapCache.at < CASH_CAP_CACHE_MS) return cashCapCache.status;
+  let status: CashCapStatus;
+  try {
+    const budget = getBudget(GLOBAL_BUDGET_ID);
+    const limitUsd = budget ? getActiveBudgetLimit(budget) : 0;
+    if (!budget || limitUsd <= 0) {
+      status = INACTIVE_CAP;
+    } else {
+      const window = getBudgetWindow(budget.resetInterval, budget.resetTime, now);
+      const pending = spendBatchWriter.getBufferedEntries(GLOBAL_BUDGET_ID, window.periodStartAt);
+      const usedUsd =
+        loadCostTotal(GLOBAL_BUDGET_ID, window.periodStartAt, budget.costBasis) +
+        pending.reduce((sum, e) => sum + entryAmount(e, budget.costBasis), 0);
+      const providerUsedUsd: Record<string, number> = {};
+      for (const [provider, total] of loadCostByProvider(window.periodStartAt, budget.costBasis)) {
+        providerUsedUsd[provider] = total;
+      }
+      for (const entry of pending) {
+        const provider = normalizeCostProvider(entry.provider);
+        if (!provider) continue;
+        providerUsedUsd[provider] =
+          (providerUsedUsd[provider] || 0) + entryAmount(entry, budget.costBasis);
+      }
+      status = {
+        active: true,
+        limitUsd,
+        usedUsd,
+        capReached: usedUsd >= limitUsd,
+        shareLimitUsd: budget.providerShareLimit ? limitUsd * budget.providerShareLimit : null,
+        providerUsedUsd,
+        readError: false,
+      };
+    }
+  } catch (error) {
+    console.warn(
+      `[CashCap] could not read the gateway-wide budget; metered providers are held until it can be read: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    status = { ...INACTIVE_CAP, active: true, capReached: true, readError: true };
+  }
+  cashCapCache = { at: now, status };
+  return status;
+}
+
+/**
+ * True when a METERED connection of this provider must not be used: the gateway-wide cap is
+ * reached, or this provider alone has used its share. Callers check this only for connections
+ * whose cash class is metered; subscription, free and local connections cost no cash and are
+ * never held by the cap.
+ */
+export function isProviderCashCapped(provider: string, now = Date.now()): boolean {
+  const status = getCashCapStatus(now);
+  if (!status.active) return false;
+  if (status.capReached) return true;
+  const id = normalizeCostProvider(provider);
+  return (
+    status.shareLimitUsd !== null &&
+    !!id &&
+    (status.providerUsedUsd[id] || 0) >= status.shareLimitUsd
+  );
 }

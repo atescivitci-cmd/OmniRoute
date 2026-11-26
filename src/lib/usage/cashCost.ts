@@ -52,3 +52,23 @@ export function entryAmount(
   }
   return entry.cost;
 }
+
+/**
+ * Budget id of the gateway-wide budget: one total across every API key. Set it with the normal
+ * budget API (apiKeyId "__global__"). Under the cash basis it is the monthly cash cap; its
+ * optional providerShareLimit caps any single metered provider at that fraction of the limit.
+ */
+export const GLOBAL_BUDGET_ID = "__global__";
+
+/** Provider id as stored on a cost entry: lower-case, trimmed, bounded; anything else is unknown. */
+export function normalizeCostProvider(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const id = value.trim().toLowerCase();
+  return id && id.length <= 100 ? id : undefined;
+}
+
+/** A share limit is a fraction in (0, 1). 0, 1, missing or invalid means no per-provider limit. */
+export function normalizeShareLimit(value: unknown): number | null {
+  const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(n) && n > 0 && n < 1 ? n : null;
+}

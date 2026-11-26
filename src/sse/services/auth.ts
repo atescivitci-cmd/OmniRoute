@@ -91,7 +91,8 @@ import { getNoAuthHydrationProviderIds } from "./noAuthProviderSiblings";
 import { getResource404Bypass } from "./requestResourceHealth";
 import * as log from "../utils/logger";
 import { fisherYatesShuffle, getNextFromDeckSync } from "@/shared/utils/shuffleDeck";
-import { isCashClass } from "@/lib/usage/cashCost";
+import { isCashClass, resolveCashClass } from "@/lib/usage/cashCost";
+import { isProviderCashCapped } from "@/domain/costRules";
 
 type JsonRecord = Record<string, unknown>;
 interface RecoverableConnectionState {
@@ -1259,6 +1260,17 @@ export async function getProviderCredentials(
       }
       if (requestedModel && isModelExcludedByConnection(requestedModel, c.providerSpecificData)) {
         connectionFilterStatus.set(c.id, "modelExcluded");
+        return false;
+      }
+      // Gateway-wide cash cap (global budget): a METERED account is held once the month's cash
+      // total reaches the cap or its provider used its share. Accounts that cost no cash
+      // (subscription, free, local) are never held. Applies even when suppressed accounts are
+      // allowed: it is a spending limit, not a health state.
+      if (
+        resolveCashClass(c.providerSpecificData) === "metered" &&
+        isProviderCashCapped(c.provider || provider)
+      ) {
+        connectionFilterStatus.set(c.id, "cashCapReached");
         return false;
       }
       if (!allowSuppressedConnections) {

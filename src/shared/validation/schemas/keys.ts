@@ -52,6 +52,9 @@ export const setBudgetSchema = z.object({
   // "list" counts list-price estimates (default); "cash" counts only money actually spent, using
   // each provider connection's providerSpecificData.cashClass. Omitted keeps the current basis.
   costBasis: z.enum(["list", "cash"]).optional(),
+  // Global budget (apiKeyId "__global__") only: the most one metered provider may use, as a
+  // fraction of the limit (0.3 = 30%). Omitted keeps the stored value; null, 0 or 1 = no limit.
+  providerShareLimit: z.union([z.coerce.number().min(0).max(1), z.null()]).optional(),
 });
 
 export const setTokenLimitSchema = z
