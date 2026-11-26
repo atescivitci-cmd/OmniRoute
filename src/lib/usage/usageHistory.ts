@@ -44,6 +44,7 @@ import {
   getPromptCacheReadTokens,
   getReasoningTokens,
 } from "./tokenAccounting";
+import { EXCLUDE_ROUTING_CANARY_SQL } from "@/shared/constants/usageSource";
 
 export type PendingRequestMetadata = {
   clientEndpoint?: string | null;
@@ -881,6 +882,11 @@ export async function getModelLatencyStats(
      * the canary's evidence counts keep reading every row; the ranking evidence asks for it.
      */
     excludeClientAbandons?: boolean;
+    /**
+     * Skip routing-canary probe rows (ROUTING_CANARY_NOT_EVIDENCE). Off by default: the canary
+     * itself and the dashboard keep reading every row; only the ranking evidence asks for it.
+     */
+    excludeRoutingCanary?: boolean;
   } = {}
 ): Promise<Record<string, ModelLatencyStatsEntry>> {
   const windowHours = resolvePositiveOption(options.windowHours, 24);
@@ -909,6 +915,9 @@ export async function getModelLatencyStats(
   if (options.model) {
     conditions.push("model = @model");
     queryParams.model = options.model;
+  }
+  if (options.excludeRoutingCanary === true) {
+    conditions.push(EXCLUDE_ROUTING_CANARY_SQL);
   }
 
   const rows = db

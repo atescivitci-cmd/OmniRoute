@@ -575,6 +575,18 @@ export async function registerNodejs(): Promise<void> {
           console.warn("[STARTUP] Arena ELO sync failed to start (non-fatal):", msg);
         }),
 
+      // Quality-score sync (LMArena via Hugging Face): per-task model quality for
+      // ROUTING_QUALITY_FIRST. Same feature flag as the Arena sync; non-blocking, never fatal.
+      import("@/lib/qualityScoreSync")
+        .then(async (m) => {
+          const started = await m.initQualityScoreSync();
+          if (started) console.log("[STARTUP] Quality score sync initialized");
+        })
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error("[STARTUP] Quality score sync failed to start (non-fatal):", msg);
+        }),
+
       // Pricing sync: opt-in external pricing data (self-gated by PRICING_SYNC_ENABLED inside
       // initPricingSync). Non-blocking, never fatal.
       import("@/lib/pricingSync")

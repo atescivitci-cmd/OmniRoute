@@ -919,6 +919,11 @@ test("F: with no setting every part is off and the ranking equals the old rankin
     tieBand: 0,
     learnedContextCap: "off",
     durableEvidence: false,
+    lightTierSplit: false,
+    qualityFirst: false,
+    canaryNotEvidence: false,
+    qualityBand: 0,
+    toolsFromCatalog: false,
   });
   await rows("df-a", "m", 10, { cls: "c1s" });
   await rows("df-b", "m", 10, { cls: "c1s" });

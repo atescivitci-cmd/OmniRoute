@@ -237,6 +237,12 @@ import {
   totalExcluded,
 } from "./autoCombo/durableEvidence.ts";
 import type { DurableEvidenceNote } from "./combo/types.ts";
+import {
+  BROKEN_NOW_WINDOW_MS,
+  brokenNowFor,
+  countRecentRealFailures,
+} from "./autoCombo/qualityFirst.ts";
+import { USAGE_SOURCE_ROUTING_CANARY } from "../../src/shared/constants/usageSource.ts";
 import { getKnownContextOverflow } from "./combo/knownContextOverflow.ts";
 import {
   QUOTA_SOFT_DEPRIORITIZE_FACTOR,
@@ -371,8 +377,14 @@ export async function buildAutoCandidates(
   // input of 8k tokens or more) use the durable evidence. A light request (c0*: no tools, small)
   // takes exactly today's 24 h path below, so light chat keeps today's picks. Keyed on the request
   // class only, never on a route, combo or client.
+  // Owner decision later on 2026-11-26 ("dont delete the light chat split just switch for now to
+  // same logic"): the split now runs only while ROUTING_LIGHT_TIER_SPLIT is on. Off (default),
+  // every request class takes the same durable path.
+  const canaryNotEvidence = fairSelectionSettings().canaryNotEvidence;
+  const notCanary = (row: { source?: string | null }) => row.source !== USAGE_SOURCE_ROUTING_CANARY;
   if (
     durableRequestClass &&
+    fairSelectionSettings().lightTierSplit &&
     requestClassFamily(durableRequestClass) &&
     requestClassTier(durableRequestClass) !== "heavy"
   ) {
@@ -380,8 +392,13 @@ export async function buildAutoCandidates(
   } else if (durableRequestClass && requestClassFamily(durableRequestClass)) {
     try {
       const { getModelEvidenceRows } = await import("../../src/lib/usageDb");
+      const durableRows = await getModelEvidenceRows({
+        windowHours: DURABLE_EVIDENCE_WINDOW_HOURS,
+        maxRows: 20000,
+      });
       const durable = aggregateDurableEvidence(
-        await getModelEvidenceRows({ windowHours: DURABLE_EVIDENCE_WINDOW_HOURS, maxRows: 20000 }),
+        // ROUTING_CANARY_NOT_EVIDENCE: probe rows are not ranking evidence.
+        canaryNotEvidence ? durableRows.filter(notCanary) : durableRows,
         {
           now: Date.now(),
           requestClass: durableRequestClass,
@@ -418,6 +435,8 @@ export async function buildAutoCandidates(
         // ROUTING_CLIENT_ABANDON_NEUTRAL (default off): a client closing a stream within seconds is
         // not a failure of the model. Absent unless the setting is on, so the default call is unchanged.
         ...(fairSelectionSettings().clientAbandonNeutral ? { excludeClientAbandons: true } : {}),
+        // ROUTING_CANARY_NOT_EVIDENCE (default off): absent unless on, so the default call is unchanged.
+        ...(canaryNotEvidence ? { excludeRoutingCanary: true } : {}),
       });
     } catch {
       // keep empty stats — auto-combo will use runtime + bootstrap signals
@@ -432,8 +451,9 @@ export async function buildAutoCandidates(
   if (fairSettings.classEvidence) {
     try {
       const { getModelOutcomeRows } = await import("../../src/lib/usageDb");
+      const outcomeRows = await getModelOutcomeRows({ windowHours: 24, maxRows: 20000 });
       classEvidencePool = aggregateOutcomeRows(
-        await getModelOutcomeRows({ windowHours: 24, maxRows: 20000 }),
+        canaryNotEvidence ? outcomeRows.filter(notCanary) : outcomeRows,
         { outcomeQuality: fairSettings.outcomeQuality }
       );
     } catch (err) {
@@ -443,6 +463,28 @@ export async function buildAutoCandidates(
       classEvidenceStatus = `unavailable:${err instanceof Error ? err.message.slice(0, 80) : "error"}`;
       console.warn(
         `[routing] class evidence unavailable, using the old evidence: ${classEvidenceStatus}`
+      );
+    }
+  }
+
+  // ROUTING_QUALITY_FIRST: history may only EXCLUDE a model that is broken right now
+  // (autoCombo/qualityFirst.ts). Read only while the flag is on, so the default path is unchanged.
+  let recentRealFailures: Map<string, number> | null = null;
+  if (fairSettings.qualityFirst) {
+    try {
+      const { getModelEvidenceRows } = await import("../../src/lib/usageDb");
+      recentRealFailures = countRecentRealFailures(
+        await getModelEvidenceRows({
+          windowHours: BROKEN_NOW_WINDOW_MS / 3_600_000,
+          maxRows: 5000,
+        }),
+        { excludeRoutingCanary: canaryNotEvidence }
+      );
+    } catch (err) {
+      // Fail open (nothing excluded for recent failures), but loudly: breaker and lockout still apply.
+      recentRealFailures = new Map();
+      console.error(
+        `[routing] quality-first recent-failure read failed; no model is excluded for recent failures: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`
       );
     }
   }
@@ -698,6 +740,15 @@ export async function buildAutoCandidates(
         ...(classEvidencePool && { classEvidencePool }),
         ...(classEvidenceStatus && { classEvidenceStatus }),
         ...(durableEvidence && { durableEvidence }),
+        ...(recentRealFailures && {
+          brokenNow: brokenNowFor({
+            recentRealFailures: recentRealFailures.get(historicalKey) ?? 0,
+            modelLocked: isModelLocked(provider, target.connectionId ?? "", model),
+            providerCooldown:
+              resilienceSettings?.providerCooldown?.enabled === true &&
+              isProviderInCooldown(provider, target.connectionId ?? undefined, resilienceSettings),
+          }),
+        }),
       };
     })
   );

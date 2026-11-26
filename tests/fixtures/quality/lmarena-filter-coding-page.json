@@ -1,0 +1,166 @@
+{
+ "_note": "Real response of GET https://datasets-server.huggingface.co/filter?dataset=lmarena-ai/leaderboard-dataset&config=text&split=latest&where=\"category\"='coding'&orderby=\"rank\"&offset=0&length=4, fetched 2026-11-26. Unmodified except this note.",
+ "features": [
+  {
+   "feature_idx": 0,
+   "name": "model_name",
+   "type": {
+    "dtype": "string",
+    "_type": "Value"
+   }
+  },
+  {
+   "feature_idx": 1,
+   "name": "organization",
+   "type": {
+    "dtype": "string",
+    "_type": "Value"
+   }
+  },
+  {
+   "feature_idx": 2,
+   "name": "license",
+   "type": {
+    "dtype": "string",
+    "_type": "Value"
+   }
+  },
+  {
+   "feature_idx": 3,
+   "name": "rating",
+   "type": {
+    "dtype": "float64",
+    "_type": "Value"
+   }
+  },
+  {
+   "feature_idx": 4,
+   "name": "rating_lower",
+   "type": {
+    "dtype": "float64",
+    "_type": "Value"
+   }
+  },
+  {
+   "feature_idx": 5,
+   "name": "rating_upper",
+   "type": {
+    "dtype": "float64",
+    "_type": "Value"
+   }
+  },
+  {
+   "feature_idx": 6,
+   "name": "variance",
+   "type": {
+    "dtype": "float64",
+    "_type": "Value"
+   }
+  },
+  {
+   "feature_idx": 7,
+   "name": "vote_count",
+   "type": {
+    "dtype": "float64",
+    "_type": "Value"
+   }
+  },
+  {
+   "feature_idx": 8,
+   "name": "rank",
+   "type": {
+    "dtype": "float64",
+    "_type": "Value"
+   }
+  },
+  {
+   "feature_idx": 9,
+   "name": "category",
+   "type": {
+    "dtype": "string",
+    "_type": "Value"
+   }
+  },
+  {
+   "feature_idx": 10,
+   "name": "leaderboard_publish_date",
+   "type": {
+    "dtype": "string",
+    "_type": "Value"
+   }
+  }
+ ],
+ "rows": [
+  {
+   "row_idx": 826,
+   "row": {
+    "model_name": "Gemini 4 Carbon (High)",
+    "organization": "google",
+    "license": "Proprietary",
+    "rating": 1563.4201346923523,
+    "rating_lower": 1544.6887349400472,
+    "rating_upper": 1582.1515344446577,
+    "variance": 91.33648258586905,
+    "vote_count": 1059.0,
+    "rank": 1.0,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   "truncated_cells": []
+  },
+  {
+   "row_idx": 827,
+   "row": {
+    "model_name": "Gemini 4 Neon (High)",
+    "organization": "google",
+    "license": "Proprietary",
+    "rating": 1554.985756286796,
+    "rating_lower": 1538.0368364645967,
+    "rating_upper": 1571.9346761089953,
+    "variance": 74.78041456329586,
+    "vote_count": 1320.0,
+    "rank": 2.0,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   "truncated_cells": []
+  },
+  {
+   "row_idx": 828,
+   "row": {
+    "model_name": "Claude Opus 5.5 (High)",
+    "organization": "anthropic",
+    "license": "Proprietary",
+    "rating": 1542.788033888039,
+    "rating_lower": 1532.6115538345498,
+    "rating_upper": 1552.9645139415281,
+    "variance": 26.958702699395463,
+    "vote_count": 4152.0,
+    "rank": 3.0,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   "truncated_cells": []
+  },
+  {
+   "row_idx": 829,
+   "row": {
+    "model_name": "Gemini 4 Argon (High)",
+    "organization": "google",
+    "license": "Proprietary",
+    "rating": 1540.2173869278588,
+    "rating_lower": 1531.8942230303624,
+    "rating_upper": 1548.540550825355,
+    "variance": 18.033528536450504,
+    "vote_count": 6727.0,
+    "rank": 4.0,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   "truncated_cells": []
+  }
+ ],
+ "num_rows_total": 422,
+ "num_rows_per_page": 100,
+ "partial": false
+}

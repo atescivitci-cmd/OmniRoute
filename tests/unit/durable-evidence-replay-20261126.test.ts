@@ -352,13 +352,18 @@ const LIGHT_BODIES = {
   c0n: { stream: false, messages: [{ role: "user", content: "Say hi to Ates." }] },
 };
 
+// Owner decision later on 2026-11-26 ("dont delete the light chat split just switch for now to same
+// logic"): the split now runs only with ROUTING_LIGHT_TIER_SPLIT=1, so these tests set it. Without it
+// light requests take the durable path like every other class (quality-first-ranking-20261126.test.ts).
 for (const [cls, body] of Object.entries(LIGHT_BODIES)) {
-  test(`light ${cls}, flag ON: ranks exactly as flag OFF and keeps the NVIDIA pick`, async () => {
+  test(`light ${cls}, flag ON with ROUTING_LIGHT_TIER_SPLIT=1: ranks exactly as flag OFF and keeps the NVIDIA pick`, async () => {
     assert.equal(deriveRequestClass(body), cls);
+    process.env.ROUTING_LIGHT_TIER_SPLIT = "1";
     load(C2N, C2N.laterDecisionAt!, 0);
     const off = await assembleAndRank(false, body);
     load(C2N, C2N.laterDecisionAt!, 0);
     const on = await assembleAndRank(true, body);
+    delete process.env.ROUTING_LIGHT_TIER_SPLIT;
     console.log(`light ${cls} OFF`, JSON.stringify(brief(off)));
     console.log(`light ${cls} ON `, JSON.stringify(brief(on)));
     assert.equal(off.ranked[0].candidate.provider, "nvidia", "base picks the NVIDIA model");

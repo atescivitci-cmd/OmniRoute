@@ -43,7 +43,10 @@ import {
   type LightEvidenceCoverage,
   type LightWeights,
 } from "./lightEvidenceProfile.ts";
-import { getTaskFitnessWithSource } from "./taskFitness.ts";
+import { getTaskFitnessWithSource, getTaskQualityWithSource } from "./taskFitness.ts";
+import type { BrokenNow } from "./qualityFirst.ts";
+import { getCatalogToolCallVerdict } from "../../../src/lib/db/catalogToolEvidence.ts";
+import { ageHours as qualityAgeHours, QUALITY_STALE_AFTER_HOURS } from "./qualityAge.ts";
 import type { ProviderCandidate } from "./scoring.ts";
 import { quotaRankingFactor } from "./scoring.ts";
 
@@ -79,6 +82,8 @@ export interface FitFirstCandidate extends ProviderCandidate {
   /** Set by assembly while ROUTING_DURABLE_EVIDENCE is on and the request has a class. */
   durableEvidence?: DurableEvidenceNote;
   successfulLatencySampleCount?: number;
+  /** ROUTING_QUALITY_FIRST only, set by assembly: broken right now (excluded), or null. */
+  brokenNow?: BrokenNow | null;
 }
 
 export type QualityEvidenceKind =
@@ -161,6 +166,33 @@ export interface FitFirstFactors {
   evidenceMinSizeBucket?: number;
   evidenceRowsUsed?: number;
   evidenceRowsExcluded?: number;
+  /**
+   * Present only while ROUTING_QUALITY_FIRST is on: `score` IS the task quality score and no
+   * usage-history factor (health, reliability, latency, quota, answer quality, the canary or
+   * durable evidence) changed it. The other factors above are recorded for diagnosis only.
+   */
+  rankingPolicy?: "quality_first";
+  qualityScore?: number;
+  /** "lmarena", "user_override" or "neutral_no_quality_data". */
+  qualitySource?: string;
+  /** Stored task category that ranked the request ("default" for the general task). */
+  qualityCategory?: string;
+  qualityKey?: string | null;
+  /** Unproven candidates only: the pool's lowest measured quality, or the scale midpoint. */
+  qualityNeutralBasis?: "pool_min" | "scale_midpoint";
+  qualityKeySource?: "benchmark_mapping" | "name_normalisation";
+  qualityElo?: number | null;
+  /** Hours since the quality row was synced (null for neutral / override). */
+  qualityAgeHours?: number | null;
+  /** True when the quality row is older than QUALITY_STALE_AFTER_HOURS. */
+  qualityStale?: boolean;
+  /** Which tie-break ordered exact quality ties: the provider-spread conversation hash. */
+  tieBreak?: "spread_conversation_hash";
+  /** ROUTING_QUALITY_BAND > 0 only: the band, how many candidates were in it, and who won it. */
+  qualityBand?: number;
+  qualityBandSize?: number;
+  qualityBandMember?: boolean;
+  qualityBandWinner?: string;
 }
 
 export interface RankedFitFirstCandidate {
@@ -982,7 +1014,18 @@ export function rankFitFirstFreeCandidates(args: {
   const allowedProviders = new Set(
     args.zeroAdditionalCostProviders.map((provider) => provider.toLowerCase())
   );
+  const fair = args.settings ?? fairSelectionSettings();
+  // ROUTING_QUALITY_FIRST: rank on task quality only; history may only exclude (qualityFirst.ts).
+  const qualityFirst = fair.qualityFirst === true;
   const excluded: FitFirstExclusion[] = [];
+  // ROUTING_TOOLS_FROM_CATALOG: an UNKNOWN own-provider tool verdict (null) may be settled by the
+  // models.dev catalog rows of the same model id; an explicit false anywhere still excludes.
+  const toolsVerified = (candidate: FitFirstCandidate): boolean => {
+    const own = getResolvedModelCapabilities(candidateModelString(candidate)).supportsTools;
+    if (own === true) return true;
+    if (own === false || fair.toolsFromCatalog !== true) return false;
+    return getCatalogToolCallVerdict(candidate.model) === true;
+  };
   const eligible = args.candidates.filter((candidate) => {
     let reason = "";
     if (allowedProviders.size === 0 || !allowedProviders.has(candidate.provider.toLowerCase())) {
@@ -1004,7 +1047,7 @@ export function rankFitFirstFreeCandidates(args: {
       reason = "capability_mismatch_vision";
     } else if (
       requiredCapabilities.includes("tools") &&
-      getResolvedModelCapabilities(candidateModelString(candidate)).supportsTools !== true &&
+      !toolsVerified(candidate) &&
       !providerSupportsEmulatedToolCalling(candidate.provider)
     ) {
       reason = "capability_unverified_tools";
@@ -1023,6 +1066,10 @@ export function rankFitFirstFreeCandidates(args: {
       reason = "connection_unavailable";
     } else if (candidate.circuitBreakerState === "OPEN") {
       reason = "circuit_open";
+    } else if (qualityFirst) {
+      // Broken right now: lockout, provider cooldown or recent real failures. The 24 h
+      // observed-failure veto below is history and does not apply under quality-first.
+      if (candidate.brokenNow) reason = candidate.brokenNow.reason;
     } else if (
       Math.max(candidate.failureRate ?? 0, candidate.errorRate ?? 0) >= 1 &&
       healthEvidenceSupportsHardVeto(candidate.provenance)
@@ -1038,8 +1085,7 @@ export function rankFitFirstFreeCandidates(args: {
     });
     return false;
   });
-  const fair = args.settings ?? fairSelectionSettings();
-  const requestClass = fair.classEvidence ? deriveRequestClass(args.body) : null;
+  const requestClass = fair.classEvidence && !qualityFirst ? deriveRequestClass(args.body) : null;
   const classPool = requestClass
     ? eligible.find((candidate) => candidate.classEvidencePool)?.classEvidencePool
     : undefined;
@@ -1102,7 +1148,7 @@ export function rankFitFirstFreeCandidates(args: {
   const legacyWeights = weightProfile(task.level);
   // Light asks, flag on only: weight moves from the size-closeness term to the measured
   // latency and reliability terms, and only for terms with measured evidence in this pool.
-  const lightEvidence = task.level === "light" && isLightByAskEnabled();
+  const lightEvidence = task.level === "light" && isLightByAskEnabled() && !qualityFirst;
   const lightCoverage: LightEvidenceCoverage = {
     latencyMeasured: lightEvidence ? eligible.filter(validLatency).length : 0,
     reliabilityMeasured: lightEvidence
@@ -1116,6 +1162,44 @@ export function rankFitFirstFreeCandidates(args: {
   const fingerprint = requestFingerprint(args.body, args.conversationKey);
   const verifiedRank = (entry: RankedFitFirstCandidate) =>
     entry.factors.classEvidence?.verified ? 1 : 0;
+  // ROUTING_QUALITY_FIRST: task quality per candidate. A model with no quality data is UNPROVEN
+  // (owner, 2026-11-26: select on quality, variety only when proven): it gets the quality of the
+  // weakest MEASURED candidate in this pool, is ordered after every measured candidate at that
+  // score, and never joins the quality band, so it can never tie or beat a proven model. With no
+  // measured candidate at all it gets NEUTRAL_QUALITY_SCORE (the scale midpoint).
+  const qualityByCandidate = new Map<
+    FitFirstCandidate,
+    ReturnType<typeof getTaskQualityWithSource>
+  >();
+  let neutralBasis: "pool_min" | "scale_midpoint" | undefined;
+  if (qualityFirst) {
+    for (const candidate of eligible) {
+      qualityByCandidate.set(
+        candidate,
+        getTaskQualityWithSource(candidate.provider, candidate.model, taskDecision.taskType, now)
+      );
+    }
+    const measured = [...qualityByCandidate.values()]
+      .filter((quality) => !quality.source.startsWith("neutral"))
+      .map((quality) => quality.score)
+      .sort((a, b) => a - b);
+    if (measured.length > 0) {
+      const poolMin = measured[0];
+      neutralBasis = "pool_min";
+      for (const [candidate, quality] of qualityByCandidate) {
+        if (quality.source.startsWith("neutral")) {
+          qualityByCandidate.set(candidate, {
+            ...quality,
+            score: poolMin,
+          });
+        }
+      }
+    } else {
+      neutralBasis = "scale_midpoint";
+    }
+  }
+  const unproven = (entry: RankedFitFirstCandidate) =>
+    neutralBasis === "pool_min" && entry.factors.qualitySource?.startsWith("neutral") ? 1 : 0;
   const ranked = eligible
     .map((candidate): RankedFitFirstCandidate => {
       const modelStr = candidateModelString(candidate);
@@ -1162,21 +1246,24 @@ export function rankFitFirstFreeCandidates(args: {
         : validLatency(candidate)
           ? clamp01(1 - candidate.p95LatencyMs / maxLatency)
           : 0.5;
-      const quality = validatedQualityAdjustment(
+      const answerQuality = validatedQualityAdjustment(
         args.answerQualityEvidence?.get(
           qualityCandidateKey(candidate.provider, candidate.connectionId ?? "", candidate.model)
         ),
         args.now
       );
-      const score = clamp01(
+      const quality = qualityFirst ? qualityByCandidate.get(candidate)! : null;
+      const qualityAge = quality ? qualityAgeHours(quality.syncedAt, now) : null;
+      const blendedScore = clamp01(
         fitness.score * weights.task +
           complexityFit * weights.complexity +
           health * weights.health +
           quota * weights.quota +
           reliability * weights.reliability +
           latencyFit * weights.latency -
-          quality.penalty
+          answerQuality.penalty
       );
+      const score = quality ? quality.score : blendedScore;
       return {
         candidate,
         factors: {
@@ -1189,10 +1276,10 @@ export function rankFitFirstFreeCandidates(args: {
           reliabilityConfidence: operational.confidence,
           reliabilitySampleCount: operational.sampleCount,
           reliabilitySource: operational.source,
-          answerQuality: quality.score,
-          answerQualitySource: quality.samples ? "client_validated_contract" : "unavailable",
-          answerQualityPenalty: quality.penalty,
-          answerQualitySamples: quality.samples,
+          answerQuality: answerQuality.score,
+          answerQualitySource: answerQuality.samples ? "client_validated_contract" : "unavailable",
+          answerQualityPenalty: answerQuality.penalty,
+          answerQualitySamples: answerQuality.samples,
           latencyEvidence: validLatency(candidate) ? "observed" : "neutral_prior",
           latencyFit,
           score,
@@ -1212,22 +1299,69 @@ export function rankFitFirstFreeCandidates(args: {
             reliabilityMeasured: operational.reason === "observed",
             qualityEvidence: qualityEvidenceKind(fitness.source),
           }),
+          ...(quality && {
+            rankingPolicy: "quality_first" as const,
+            qualityScore: quality.score,
+            qualitySource: quality.source,
+            qualityCategory: quality.category,
+            qualityKey: quality.key,
+            ...(quality.source.startsWith("neutral") && { qualityNeutralBasis: neutralBasis }),
+            ...(quality.keySource && { qualityKeySource: quality.keySource }),
+            ...(quality.eloRaw !== undefined && { qualityElo: quality.eloRaw }),
+            qualityAgeHours: qualityAge === null ? null : Math.round(qualityAge * 10) / 10,
+            qualityStale: qualityAge !== null && qualityAge > QUALITY_STALE_AFTER_HOURS,
+            tieBreak: "spread_conversation_hash" as const,
+          }),
         },
-        tieBreaker: neutralTieBreaker(fingerprint, candidate, fair.spreadTieBreak),
+        tieBreaker: neutralTieBreaker(fingerprint, candidate, fair.spreadTieBreak || qualityFirst),
       };
     })
-    .sort(
-      (a, b) =>
-        localFallbackTier(a.candidate.provider, args.localFallbackPolicy) -
-          localFallbackTier(b.candidate.provider, args.localFallbackPolicy) ||
-        b.factors.score - a.factors.score ||
-        b.factors.taskFitness - a.factors.taskFitness ||
-        b.factors.complexityFit - a.factors.complexityFit ||
-        // ROUTING_SPREAD_TIEBREAK: among exact ties a candidate verified for this request class
-        // goes before one that is not, so a tie is never won by the thinner evidence.
-        (fair.spreadTieBreak ? verifiedRank(b) - verifiedRank(a) : 0) ||
-        a.tieBreaker.localeCompare(b.tieBreaker)
+    .sort((a, b) =>
+      qualityFirst
+        ? // Quality-first: local-last tier (a cost policy), then quality, then the provider-spread
+          // conversation hash. Nothing measured from usage breaks a quality tie.
+          localFallbackTier(a.candidate.provider, args.localFallbackPolicy) -
+            localFallbackTier(b.candidate.provider, args.localFallbackPolicy) ||
+          b.factors.score - a.factors.score ||
+          unproven(a) - unproven(b) ||
+          a.tieBreaker.localeCompare(b.tieBreaker)
+        : localFallbackTier(a.candidate.provider, args.localFallbackPolicy) -
+            localFallbackTier(b.candidate.provider, args.localFallbackPolicy) ||
+          b.factors.score - a.factors.score ||
+          b.factors.taskFitness - a.factors.taskFitness ||
+          b.factors.complexityFit - a.factors.complexityFit ||
+          // ROUTING_SPREAD_TIEBREAK: among exact ties a candidate verified for this request class
+          // goes before one that is not, so a tie is never won by the thinner evidence.
+          (fair.spreadTieBreak ? verifiedRank(b) - verifiedRank(a) : 0) ||
+          a.tieBreaker.localeCompare(b.tieBreaker)
     );
+
+  // ROUTING_QUALITY_BAND (quality-first only): every candidate of the top local-fallback tier whose
+  // quality is within `band` of the best counts as equal quality; the provider-spread conversation
+  // hash orders them (a hash of the conversation key, so one conversation keeps its pick turn to
+  // turn while the pool and the scores are unchanged). Nothing else moves.
+  const qualityBand = qualityFirst ? (fair.qualityBand ?? 0) : 0;
+  if (qualityBand > 0 && ranked.length > 0) {
+    const topTier = localFallbackTier(ranked[0].candidate.provider, args.localFallbackPolicy);
+    const floor = ranked[0].factors.score - qualityBand - 1e-9;
+    const members = ranked.filter(
+      (entry) =>
+        localFallbackTier(entry.candidate.provider, args.localFallbackPolicy) === topTier &&
+        entry.factors.score >= floor &&
+        !unproven(entry)
+    );
+    const memberSet = new Set(members);
+    members.sort((a, b) => a.tieBreaker.localeCompare(b.tieBreaker));
+    const reordered = [...members, ...ranked.filter((entry) => !memberSet.has(entry))];
+    const winner = `${reordered[0].candidate.provider}/${reordered[0].candidate.model}`;
+    for (const entry of reordered) {
+      entry.factors.qualityBand = qualityBand;
+      entry.factors.qualityBandSize = members.length;
+      entry.factors.qualityBandMember = memberSet.has(entry);
+      entry.factors.qualityBandWinner = winner;
+    }
+    ranked.splice(0, ranked.length, ...reordered);
+  }
 
   // Band selection only reorders the head of the list, only with its own setting above zero, and
   // only when no local-last tier split the list.

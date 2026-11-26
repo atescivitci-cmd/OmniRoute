@@ -439,6 +439,10 @@ export async function resolveAutoStrategyOrder(
     fairSelectionSettings().durableEvidence ? { requestClass: deriveRequestClass(body) } : undefined
   );
   const expandedCandidates = candidates;
+  // Candidates refused by the account cost admission below. They never reach the ranker, so they
+  // are added to the decision's exclusions explicitly; before 2026-11-26 they vanished silently
+  // (a refused provider was in neither the alternatives nor the excluded list).
+  let costRefused: AutoProviderCandidate[] = [];
   // Account expansion happens inside buildAutoCandidates; model-free catalog
   // targets have connectionId=null before that stage. Admit the concrete pair.
   if (strictCentralPolicy.enabled && strictCentralPolicy.localFallbackPolicy === "last") {
@@ -460,6 +464,7 @@ export async function resolveAutoStrategyOrder(
         });
       })
     );
+    costRefused = candidates.filter((_, index) => !costAdmissions[index]);
     candidates = candidates.filter((_, index) => costAdmissions[index]);
     if (!candidates.length)
       return {
@@ -594,7 +599,10 @@ export async function resolveAutoStrategyOrder(
         localFallbackPolicy: strictCentralPolicy.localFallbackPolicy,
         conversationKey: getConversationTieKey(body, { sessionId: relayOptions?.sessionId }),
       });
-      if (isPressedTextRequest(combo.name, body)) {
+      // ROUTING_QUALITY_FIRST: the Pressed responsiveness and deadline-aware reorderings rank on
+      // 7-day call history, so neither runs; the order stays the quality order.
+      const qualityFirstRanking = fairSelectionSettings().qualityFirst;
+      if (!qualityFirstRanking && isPressedTextRequest(combo.name, body)) {
         await applyPressedResponsiveness(
           fitFirstDecision.ranked,
           combo.name,
@@ -603,7 +611,9 @@ export async function resolveAutoStrategyOrder(
         );
         deps.signal?.throwIfAborted();
       }
-      const deadlinePolicy = resolveDeadlineRoutingPolicy(combo.config, body);
+      const deadlinePolicy = qualityFirstRanking
+        ? null
+        : resolveDeadlineRoutingPolicy(combo.config, body);
       if (deadlinePolicy) {
         const before = new Map(fitFirstDecision.ranked.map((entry, index) => [entry, index + 1]));
         await applyDeadlineAwareRouting(
@@ -655,6 +665,15 @@ export async function resolveAutoStrategyOrder(
               })),
           ],
         };
+      }
+      for (const candidate of costRefused) {
+        fitFirstDecision.excluded.push({
+          provider: candidate.provider,
+          model: candidate.model,
+          reason: captureConfiguredAccountPolicy().enabled
+            ? "configured_account_admission_unavailable"
+            : "zero_cost_admission_unavailable",
+        });
       }
       routableCandidates.forEach((candidate, index) => {
         if (!availability[index].available) {
@@ -952,6 +971,7 @@ export async function resolveAutoStrategyOrder(
         score: winner.factors.score,
         factors: {
           policy: "fit-first-free",
+          ...(winner.factors.rankingPolicy && { rankingPolicy: winner.factors.rankingPolicy }),
           costAdmissionMode: captureConfiguredAccountPolicy().enabled
             ? "configured-accounts"
             : "zero-cost",

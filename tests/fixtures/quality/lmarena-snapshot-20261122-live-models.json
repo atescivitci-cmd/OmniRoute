@@ -1,0 +1,2773 @@
+{
+ "_note": "Rows of the LMArena leaderboard (lmarena-ai/leaderboard-dataset, config text, split latest, published 2026-11-22, fetched 2026-11-26) for the six categories the quality feed reads, trimmed to the rows whose keys match a live gateway model plus each category's lowest- and highest-rated row (min-max normalisation needs only those, so every score equals the full-data score). Fields as published.",
+ "liveModels": {
+  "claude": [
+   "claude-fable-5",
+   "claude-opus-5",
+   "claude-opus-4-8",
+   "claude-opus-4-7",
+   "claude-opus-4-6",
+   "claude-sonnet-5",
+   "claude-sonnet-4-6",
+   "claude-opus-4-5-20251101",
+   "claude-sonnet-4-5-20250929",
+   "claude-haiku-4-5-20251001",
+   "claude-opus-5-5",
+   "claude-sonnet-5-5",
+   "claude-haiku-5-5"
+  ],
+  "codex": [
+   "gpt-5.6-sol",
+   "gpt-5.6-terra",
+   "gpt-5.6-luna",
+   "gpt-5.6-sol-ultra",
+   "gpt-5.6-sol-max",
+   "gpt-5.6-sol-xhigh",
+   "gpt-5.6-sol-high",
+   "gpt-5.6-sol-medium",
+   "gpt-5.6-sol-low",
+   "gpt-5.6-terra-ultra",
+   "gpt-5.6-terra-max",
+   "gpt-5.6-terra-xhigh",
+   "gpt-5.6-terra-high",
+   "gpt-5.6-terra-medium",
+   "gpt-5.6-terra-low",
+   "gpt-5.6-luna-max",
+   "gpt-5.6-luna-xhigh",
+   "gpt-5.6-luna-high",
+   "gpt-5.6-luna-medium",
+   "gpt-5.6-luna-low",
+   "gpt-5.5",
+   "gpt-5.5-xhigh",
+   "gpt-5.5-high",
+   "gpt-5.5-medium",
+   "gpt-5.5-low",
+   "gpt-5.3-codex-spark"
+  ],
+  "gemini": [
+   "gemini-2.5-flash",
+   "gemini-2.5-flash-lite",
+   "gemini-3-flash-preview",
+   "gemini-3.1-flash-lite",
+   "gemini-3.5-flash"
+  ],
+  "github": [
+   "claude-fable-5",
+   "claude-opus-4.8-fast",
+   "claude-opus-5",
+   "claude-sonnet-5",
+   "gpt-5.3-codex",
+   "gpt-5.6-luna",
+   "gpt-5.6-sol",
+   "gpt-4o-2024-11-20",
+   "claude-haiku-4.5",
+   "gpt-4-0125-preview",
+   "gpt-4o-mini"
+  ],
+  "groq": [
+   "openai/gpt-oss-120b",
+   "openai/gpt-oss-20b",
+   "allam-2-7b",
+   "qwen3.8-27b"
+  ],
+  "nvidia": [
+   "bigcode/starcoder2-15b",
+   "fastino/gliner2-pii",
+   "google/gemma-3-12b-it",
+   "google/gemma-3-4b-it",
+   "minimaxai/minimax-m3.1-flash",
+   "mistralai/mistral-large-4-1t-a52b",
+   "moonshotai/kimi-k3.1-pro",
+   "nvidia/ai-synthetic-video-detector",
+   "nvidia/cosmos-reason2-8b",
+   "nvidia/embed-qa-4",
+   "nvidia/ising-calibration-1.5-31b",
+   "nvidia/llama-3.1-nemoguard-8b-topic-control",
+   "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
+   "nvidia/llama-3.2-nemoretriever-1b-vlm-embed-v1",
+   "nvidia/llama-3.2-nv-embedqa-1b-v1",
+   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+   "nvidia/nemotron-3-ultra-550b-a55b",
+   "nvidia/nemotron-3.5-bolt-e4b",
+   "nvidia/nemotron-3.5-content-safety",
+   "nvidia/nemotron-3.5-embed-1b",
+   "nvidia/nemotron-3.5-embed-8b",
+   "nvidia/nemotron-3.5-lightning-30b-a3b",
+   "nvidia/nemotron-3.5-super-vl-120b-a12b",
+   "nvidia/nv-embedqa-mistral-7b-v2",
+   "nvidia/nvclip",
+   "nvidia/riva-translate-4b-instruct-v2",
+   "poolside/laguna-xs-2.1",
+   "snowflake/arctic-embed-l",
+   "stepfun-ai/step-5-preview",
+   "z-ai/glm-5.3-flash"
+  ],
+  "ollama-local": [
+   "qwen3.6:27b-q8_0",
+   "qwen3.6:27b",
+   "qwen3.6:35b-a3b",
+   "qwen2.5vl:7b",
+   "nomic-embed-text:latest"
+  ]
+ },
+ "categories": {
+  "overall": [
+   {
+    "model_name": "Gemini 4 Carbon (High)",
+    "organization": "google",
+    "rating": 1538.8733656178997,
+    "vote_count": 4255,
+    "rank": 1,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5.5 (High)",
+    "organization": "anthropic",
+    "rating": 1514.1182801107798,
+    "vote_count": 18959,
+    "rank": 4,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5 (Max)",
+    "organization": "anthropic",
+    "rating": 1506.1795360065344,
+    "vote_count": 35495,
+    "rank": 6,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5 (High)",
+    "organization": "anthropic",
+    "rating": 1502.1947940909968,
+    "vote_count": 73350,
+    "rank": 8,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.6 (High)",
+    "organization": "anthropic",
+    "rating": 1501.5275016749329,
+    "vote_count": 84109,
+    "rank": 10,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.6",
+    "organization": "anthropic",
+    "rating": 1496.7892465167702,
+    "vote_count": 88895,
+    "rank": 12,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Fable 5 (High)",
+    "organization": "anthropic",
+    "rating": 1491.7552175389037,
+    "vote_count": 45277,
+    "rank": 15,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.7 (High)",
+    "organization": "anthropic",
+    "rating": 1489.8288192461714,
+    "vote_count": 64030,
+    "rank": 16,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.7",
+    "organization": "anthropic",
+    "rating": 1483.3737608184583,
+    "vote_count": 65114,
+    "rank": 20,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.5 Flash (High)",
+    "organization": "google",
+    "rating": 1482.809520861872,
+    "vote_count": 47406,
+    "rank": 21,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.5 Flash (Medium)",
+    "organization": "google",
+    "rating": 1477.722342835811,
+    "vote_count": 46115,
+    "rank": 26,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GLM-5.3-Flash",
+    "organization": "zai",
+    "rating": 1471.739804277805,
+    "vote_count": 57426,
+    "rank": 32,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.5 (High)",
+    "organization": "openai",
+    "rating": 1470.9784998199061,
+    "vote_count": 68052,
+    "rank": 34,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 5.5 (xHigh)",
+    "organization": "anthropic",
+    "rating": 1469.3610736670175,
+    "vote_count": 17616,
+    "rank": 36,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.5",
+    "organization": "openai",
+    "rating": 1466.2337221100247,
+    "vote_count": 69649,
+    "rank": 39,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3 Flash",
+    "organization": "google",
+    "rating": 1465.9368559389345,
+    "vote_count": 31096,
+    "rank": 40,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.8 (High)",
+    "organization": "anthropic",
+    "rating": 1461.5212096915589,
+    "vote_count": 62886,
+    "rank": 44,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Kimi K3.1 Pro (Max)",
+    "organization": "moonshot",
+    "rating": 1458.934117265021,
+    "vote_count": 7378,
+    "rank": 45,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.6",
+    "organization": "anthropic",
+    "rating": 1457.7215755989687,
+    "vote_count": 69770,
+    "rank": 47,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Sol (xHigh)",
+    "organization": "openai",
+    "rating": 1457.4045691903607,
+    "vote_count": 43730,
+    "rank": 48,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.8",
+    "organization": "anthropic",
+    "rating": 1453.552603788391,
+    "vote_count": 63891,
+    "rank": 51,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.5 (20251101)",
+    "organization": "anthropic",
+    "rating": 1450.7860585038393,
+    "vote_count": 72158,
+    "rank": 56,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Terra (xHigh)",
+    "organization": "openai",
+    "rating": 1448.9217174606842,
+    "vote_count": 48549,
+    "rank": 58,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.5 (High, 32K, 20251101)",
+    "organization": "anthropic",
+    "rating": 1448.210242860559,
+    "vote_count": 37227,
+    "rank": 61,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3-Ultra-550B-A55B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1445.5764533467532,
+    "vote_count": 11354,
+    "rank": 66,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Step 5 Preview",
+    "organization": "stepfun",
+    "rating": 1443.8043207305,
+    "vote_count": 12270,
+    "rank": 73,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3 Flash (Minimal)",
+    "organization": "google",
+    "rating": 1442.3468506988615,
+    "vote_count": 89823,
+    "rank": 77,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 5 (High)",
+    "organization": "anthropic",
+    "rating": 1441.6715641367923,
+    "vote_count": 52744,
+    "rank": 78,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.5 (20250929)",
+    "organization": "anthropic",
+    "rating": 1438.477652002522,
+    "vote_count": 81948,
+    "rank": 83,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Qwen3.8-27B",
+    "organization": "alibaba",
+    "rating": 1437.7051143246026,
+    "vote_count": 37444,
+    "rank": 85,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.5 (High, 32K, 20250929)",
+    "organization": "anthropic",
+    "rating": 1434.214589700226,
+    "vote_count": 83194,
+    "rank": 93,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Luna (xHigh)",
+    "organization": "openai",
+    "rating": 1430.8641689073697,
+    "vote_count": 40411,
+    "rank": 96,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash",
+    "organization": "google",
+    "rating": 1416.8613260405973,
+    "vote_count": 124811,
+    "rank": 132,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.1 Flash-Lite Preview",
+    "organization": "google",
+    "rating": 1416.1197319801345,
+    "vote_count": 63402,
+    "rank": 135,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3.5-Super-VL-120B-A12B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1407.4620830030485,
+    "vote_count": 4036,
+    "rank": 151,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash Preview (09-2025)",
+    "organization": "google",
+    "rating": 1406.5192652059213,
+    "vote_count": 32835,
+    "rank": 153,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Haiku 5.5 (High)",
+    "organization": "anthropic",
+    "rating": 1397.829955735574,
+    "vote_count": 18415,
+    "rank": 166,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Haiku 4.5 (20251001)",
+    "organization": "anthropic",
+    "rating": 1396.5372707307115,
+    "vote_count": 153535,
+    "rank": 169,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash-Lite Preview (Non-Thinking, 09-2025)",
+    "organization": "google",
+    "rating": 1379.450940409487,
+    "vote_count": 47169,
+    "rank": 184,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash-Lite Preview (Thinking, 06-17)",
+    "organization": "google",
+    "rating": 1369.3696422606477,
+    "vote_count": 32319,
+    "rank": 196,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "gpt-oss-120b",
+    "organization": "openai",
+    "rating": 1365.4182057796147,
+    "vote_count": 30104,
+    "rank": 202,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemma 3 12B IT",
+    "organization": "google",
+    "rating": 1334.172807526168,
+    "vote_count": 3829,
+    "rank": 232,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1329.6191676776025,
+    "vote_count": 25011,
+    "rank": 238,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o (2024-05-13)",
+    "organization": "openai",
+    "rating": 1300.4298397016355,
+    "vote_count": 112881,
+    "rank": 258,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemma 3 4B IT",
+    "organization": "google",
+    "rating": 1290.7564512453887,
+    "vote_count": 4171,
+    "rank": 267,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "gpt-oss-20b",
+    "organization": "openai",
+    "rating": 1287.569569347549,
+    "vote_count": 10393,
+    "rank": 270,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o mini (2024-07-18)",
+    "organization": "openai",
+    "rating": 1286.3684101081622,
+    "vote_count": 68705,
+    "rank": 274,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o (2024-08-06)",
+    "organization": "openai",
+    "rating": 1282.5358215560373,
+    "vote_count": 45499,
+    "rank": 278,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "LLaMA 13B",
+    "organization": "meta",
+    "rating": 833.4990875986367,
+    "vote_count": 2391,
+    "rank": 427,
+    "category": "overall",
+    "leaderboard_publish_date": "2026-11-22"
+   }
+  ],
+  "coding": [
+   {
+    "model_name": "Gemini 4 Carbon (High)",
+    "organization": "google",
+    "rating": 1563.4201346923523,
+    "vote_count": 1059,
+    "rank": 1,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5.5 (High)",
+    "organization": "anthropic",
+    "rating": 1542.788033888039,
+    "vote_count": 4152,
+    "rank": 3,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.6",
+    "organization": "anthropic",
+    "rating": 1533.9568466076219,
+    "vote_count": 24458,
+    "rank": 6,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5 (Max)",
+    "organization": "anthropic",
+    "rating": 1531.9875258699794,
+    "vote_count": 8804,
+    "rank": 7,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.6 (High)",
+    "organization": "anthropic",
+    "rating": 1531.000912829986,
+    "vote_count": 21651,
+    "rank": 8,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5 (High)",
+    "organization": "anthropic",
+    "rating": 1530.739399066897,
+    "vote_count": 18683,
+    "rank": 9,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.7 (High)",
+    "organization": "anthropic",
+    "rating": 1519.031996900124,
+    "vote_count": 18273,
+    "rank": 12,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Fable 5 (High)",
+    "organization": "anthropic",
+    "rating": 1518.6496431747732,
+    "vote_count": 11602,
+    "rank": 13,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.7",
+    "organization": "anthropic",
+    "rating": 1515.1197518321474,
+    "vote_count": 18499,
+    "rank": 14,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GLM-5.3-Flash",
+    "organization": "zai",
+    "rating": 1509.354202913346,
+    "vote_count": 14221,
+    "rank": 18,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.6",
+    "organization": "anthropic",
+    "rating": 1503.6195007009173,
+    "vote_count": 19370,
+    "rank": 21,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.5 (High, 32K, 20251101)",
+    "organization": "anthropic",
+    "rating": 1503.2187020341294,
+    "vote_count": 7750,
+    "rank": 22,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 5.5 (xHigh)",
+    "organization": "anthropic",
+    "rating": 1499.6072607156095,
+    "vote_count": 3993,
+    "rank": 28,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.5 (20251101)",
+    "organization": "anthropic",
+    "rating": 1498.6297186882396,
+    "vote_count": 17794,
+    "rank": 29,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Sol (xHigh)",
+    "organization": "openai",
+    "rating": 1494.9693292051195,
+    "vote_count": 11542,
+    "rank": 34,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.5 (High)",
+    "organization": "openai",
+    "rating": 1493.5165547976062,
+    "vote_count": 18742,
+    "rank": 36,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.5 Flash (High)",
+    "organization": "google",
+    "rating": 1493.0390115010584,
+    "vote_count": 13513,
+    "rank": 37,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.8 (High)",
+    "organization": "anthropic",
+    "rating": 1490.860116741734,
+    "vote_count": 17109,
+    "rank": 39,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.5 (High, 32K, 20250929)",
+    "organization": "anthropic",
+    "rating": 1488.0100446659592,
+    "vote_count": 19761,
+    "rank": 42,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.5 Flash (Medium)",
+    "organization": "google",
+    "rating": 1487.8685543240638,
+    "vote_count": 13264,
+    "rank": 44,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Kimi K3.1 Pro (Max)",
+    "organization": "moonshot",
+    "rating": 1487.4497417643142,
+    "vote_count": 1645,
+    "rank": 46,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.8",
+    "organization": "anthropic",
+    "rating": 1486.3133850761717,
+    "vote_count": 17728,
+    "rank": 48,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Terra (xHigh)",
+    "organization": "openai",
+    "rating": 1485.4885065642638,
+    "vote_count": 12731,
+    "rank": 50,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.5 (20250929)",
+    "organization": "anthropic",
+    "rating": 1484.8699041158288,
+    "vote_count": 19579,
+    "rank": 52,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 5 (High)",
+    "organization": "anthropic",
+    "rating": 1482.88813208906,
+    "vote_count": 14001,
+    "rank": 55,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.5",
+    "organization": "openai",
+    "rating": 1482.4759428088787,
+    "vote_count": 19644,
+    "rank": 57,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Step 5 Preview",
+    "organization": "stepfun",
+    "rating": 1481.2739667355659,
+    "vote_count": 2938,
+    "rank": 60,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Qwen3.8-27B",
+    "organization": "alibaba",
+    "rating": 1480.733967731544,
+    "vote_count": 9898,
+    "rank": 62,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3-Ultra-550B-A55B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1467.8567650157577,
+    "vote_count": 3138,
+    "rank": 77,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Luna (xHigh)",
+    "organization": "openai",
+    "rating": 1467.240268801779,
+    "vote_count": 10926,
+    "rank": 80,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3 Flash",
+    "organization": "google",
+    "rating": 1459.9355393339179,
+    "vote_count": 6548,
+    "rank": 90,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Haiku 4.5 (20251001)",
+    "organization": "anthropic",
+    "rating": 1453.5493628091467,
+    "vote_count": 39452,
+    "rank": 102,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Haiku 5.5 (High)",
+    "organization": "anthropic",
+    "rating": 1452.1580159163889,
+    "vote_count": 4369,
+    "rank": 106,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3 Flash (Minimal)",
+    "organization": "google",
+    "rating": 1435.9512641990455,
+    "vote_count": 23669,
+    "rank": 134,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3.5-Super-VL-120B-A12B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1432.846473427795,
+    "vote_count": 967,
+    "rank": 143,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash",
+    "organization": "google",
+    "rating": 1423.3828261023023,
+    "vote_count": 26237,
+    "rank": 156,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash Preview (09-2025)",
+    "organization": "google",
+    "rating": 1400.5995719699554,
+    "vote_count": 6885,
+    "rank": 183,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.1 Flash-Lite Preview",
+    "organization": "google",
+    "rating": 1400.2887456946257,
+    "vote_count": 17612,
+    "rank": 184,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1381.4623235309234,
+    "vote_count": 6188,
+    "rank": 202,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "gpt-oss-120b",
+    "organization": "openai",
+    "rating": 1379.389183951066,
+    "vote_count": 6387,
+    "rank": 205,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash-Lite Preview (Thinking, 06-17)",
+    "organization": "google",
+    "rating": 1372.874836309382,
+    "vote_count": 5969,
+    "rank": 212,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash-Lite Preview (Non-Thinking, 09-2025)",
+    "organization": "google",
+    "rating": 1371.7375212038373,
+    "vote_count": 9804,
+    "rank": 213,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "gpt-oss-20b",
+    "organization": "openai",
+    "rating": 1306.424002922943,
+    "vote_count": 2111,
+    "rank": 266,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o (2024-05-13)",
+    "organization": "openai",
+    "rating": 1297.094809305865,
+    "vote_count": 19526,
+    "rank": 270,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o mini (2024-07-18)",
+    "organization": "openai",
+    "rating": 1289.6021117390474,
+    "vote_count": 10928,
+    "rank": 277,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o (2024-08-06)",
+    "organization": "openai",
+    "rating": 1283.4715326399312,
+    "vote_count": 7318,
+    "rank": 283,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemma 3 12B IT",
+    "organization": "google",
+    "rating": 1281.0554544842337,
+    "vote_count": 543,
+    "rank": 285,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemma 3 4B IT",
+    "organization": "google",
+    "rating": 1230.127263573019,
+    "vote_count": 605,
+    "rank": 312,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "LLaMA 13B",
+    "organization": "meta",
+    "rating": 682.8812752280667,
+    "vote_count": 304,
+    "rank": 422,
+    "category": "coding",
+    "leaderboard_publish_date": "2026-11-22"
+   }
+  ],
+  "hard_prompts": [
+   {
+    "model_name": "Gemini 4 Carbon (High)",
+    "organization": "google",
+    "rating": 1550.591608819831,
+    "vote_count": 2658,
+    "rank": 1,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5.5 (High)",
+    "organization": "anthropic",
+    "rating": 1531.2396675316334,
+    "vote_count": 11906,
+    "rank": 4,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5 (Max)",
+    "organization": "anthropic",
+    "rating": 1525.0175742465701,
+    "vote_count": 22795,
+    "rank": 6,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.6 (High)",
+    "organization": "anthropic",
+    "rating": 1524.4229642227137,
+    "vote_count": 53449,
+    "rank": 7,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.6",
+    "organization": "anthropic",
+    "rating": 1522.261285642812,
+    "vote_count": 57600,
+    "rank": 8,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5 (High)",
+    "organization": "anthropic",
+    "rating": 1522.0555866406673,
+    "vote_count": 47639,
+    "rank": 9,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Fable 5 (High)",
+    "organization": "anthropic",
+    "rating": 1507.7219373785667,
+    "vote_count": 29391,
+    "rank": 14,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.7 (High)",
+    "organization": "anthropic",
+    "rating": 1505.8250064396498,
+    "vote_count": 42887,
+    "rank": 15,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.7",
+    "organization": "anthropic",
+    "rating": 1499.8928436082897,
+    "vote_count": 43623,
+    "rank": 17,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GLM-5.3-Flash",
+    "organization": "zai",
+    "rating": 1490.5055103226118,
+    "vote_count": 36417,
+    "rank": 23,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.5 Flash (High)",
+    "organization": "google",
+    "rating": 1489.169871694573,
+    "vote_count": 31604,
+    "rank": 24,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.5 (High)",
+    "organization": "openai",
+    "rating": 1488.4708193697156,
+    "vote_count": 44586,
+    "rank": 25,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.5",
+    "organization": "openai",
+    "rating": 1485.6103314269378,
+    "vote_count": 46320,
+    "rank": 27,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 5.5 (xHigh)",
+    "organization": "anthropic",
+    "rating": 1485.4038335738517,
+    "vote_count": 11014,
+    "rank": 29,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.5 Flash (Medium)",
+    "organization": "google",
+    "rating": 1485.3372515199585,
+    "vote_count": 30701,
+    "rank": 31,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.6",
+    "organization": "anthropic",
+    "rating": 1484.463471541497,
+    "vote_count": 45420,
+    "rank": 33,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Sol (xHigh)",
+    "organization": "openai",
+    "rating": 1482.907171941781,
+    "vote_count": 28290,
+    "rank": 37,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.8 (High)",
+    "organization": "anthropic",
+    "rating": 1482.257320277958,
+    "vote_count": 41695,
+    "rank": 38,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.5 (20251101)",
+    "organization": "anthropic",
+    "rating": 1476.2010449521215,
+    "vote_count": 42769,
+    "rank": 44,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.8",
+    "organization": "anthropic",
+    "rating": 1473.5750395298198,
+    "vote_count": 42454,
+    "rank": 46,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.5 (High, 32K, 20251101)",
+    "organization": "anthropic",
+    "rating": 1473.3550526639997,
+    "vote_count": 20158,
+    "rank": 47,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Terra (xHigh)",
+    "organization": "openai",
+    "rating": 1469.8451384668765,
+    "vote_count": 31608,
+    "rank": 50,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Kimi K3.1 Pro (Max)",
+    "organization": "moonshot",
+    "rating": 1468.5819286483415,
+    "vote_count": 4545,
+    "rank": 51,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3 Flash",
+    "organization": "google",
+    "rating": 1464.8746727954667,
+    "vote_count": 17027,
+    "rank": 55,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Step 5 Preview",
+    "organization": "stepfun",
+    "rating": 1463.8409097104218,
+    "vote_count": 7726,
+    "rank": 56,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.5 (20250929)",
+    "organization": "anthropic",
+    "rating": 1461.9197359952877,
+    "vote_count": 47847,
+    "rank": 58,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.5 (High, 32K, 20250929)",
+    "organization": "anthropic",
+    "rating": 1461.3257693390851,
+    "vote_count": 48014,
+    "rank": 61,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 5 (High)",
+    "organization": "anthropic",
+    "rating": 1461.2032124408452,
+    "vote_count": 34633,
+    "rank": 62,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Qwen3.8-27B",
+    "organization": "alibaba",
+    "rating": 1457.7616181801504,
+    "vote_count": 24120,
+    "rank": 65,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3-Ultra-550B-A55B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1452.3078884662937,
+    "vote_count": 7456,
+    "rank": 74,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Luna (xHigh)",
+    "organization": "openai",
+    "rating": 1451.4661997842586,
+    "vote_count": 26516,
+    "rank": 78,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3 Flash (Minimal)",
+    "organization": "google",
+    "rating": 1437.903164926029,
+    "vote_count": 56783,
+    "rank": 104,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash",
+    "organization": "google",
+    "rating": 1422.0024998048698,
+    "vote_count": 64719,
+    "rank": 134,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Haiku 4.5 (20251001)",
+    "organization": "anthropic",
+    "rating": 1419.9817470777475,
+    "vote_count": 94741,
+    "rank": 142,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Haiku 5.5 (High)",
+    "organization": "anthropic",
+    "rating": 1415.9086262286635,
+    "vote_count": 11759,
+    "rank": 147,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3.5-Super-VL-120B-A12B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1414.9096239619857,
+    "vote_count": 2514,
+    "rank": 151,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash Preview (09-2025)",
+    "organization": "google",
+    "rating": 1409.1249037277687,
+    "vote_count": 17649,
+    "rank": 159,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.1 Flash-Lite Preview",
+    "organization": "google",
+    "rating": 1407.6478050380765,
+    "vote_count": 41051,
+    "rank": 163,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash-Lite Preview (Non-Thinking, 09-2025)",
+    "organization": "google",
+    "rating": 1376.9544783749163,
+    "vote_count": 25385,
+    "rank": 188,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash-Lite Preview (Thinking, 06-17)",
+    "organization": "google",
+    "rating": 1373.6284079814336,
+    "vote_count": 14468,
+    "rank": 193,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "gpt-oss-120b",
+    "organization": "openai",
+    "rating": 1363.1640712184758,
+    "vote_count": 14633,
+    "rank": 207,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1340.4985644825501,
+    "vote_count": 15928,
+    "rank": 227,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemma 3 12B IT",
+    "organization": "google",
+    "rating": 1309.2468376314166,
+    "vote_count": 977,
+    "rank": 251,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o (2024-05-13)",
+    "organization": "openai",
+    "rating": 1280.7045597039066,
+    "vote_count": 32416,
+    "rank": 269,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "gpt-oss-20b",
+    "organization": "openai",
+    "rating": 1273.9329577383737,
+    "vote_count": 4705,
+    "rank": 273,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o mini (2024-07-18)",
+    "organization": "openai",
+    "rating": 1266.881393965538,
+    "vote_count": 18259,
+    "rank": 281,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o (2024-08-06)",
+    "organization": "openai",
+    "rating": 1263.8835979748112,
+    "vote_count": 12655,
+    "rank": 286,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemma 3 4B IT",
+    "organization": "google",
+    "rating": 1252.5051539072915,
+    "vote_count": 1092,
+    "rank": 295,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "LLaMA 13B",
+    "organization": "meta",
+    "rating": 727.9345438700598,
+    "vote_count": 430,
+    "rank": 427,
+    "category": "hard_prompts",
+    "leaderboard_publish_date": "2026-11-22"
+   }
+  ],
+  "math": [
+   {
+    "model_name": "Gemini 4 Argon (High)",
+    "organization": "google",
+    "rating": 1544.5478778780655,
+    "vote_count": 1486,
+    "rank": 1,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5 (High)",
+    "organization": "anthropic",
+    "rating": 1531.7258582162704,
+    "vote_count": 3486,
+    "rank": 4,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5 (Max)",
+    "organization": "anthropic",
+    "rating": 1530.8875259728243,
+    "vote_count": 1687,
+    "rank": 5,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5.5 (High)",
+    "organization": "anthropic",
+    "rating": 1524.2648181808645,
+    "vote_count": 936,
+    "rank": 7,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.6 (High)",
+    "organization": "anthropic",
+    "rating": 1517.6481088362937,
+    "vote_count": 4304,
+    "rank": 9,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Fable 5 (High)",
+    "organization": "anthropic",
+    "rating": 1516.4095376212913,
+    "vote_count": 2233,
+    "rank": 10,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.6",
+    "organization": "anthropic",
+    "rating": 1509.5224042394361,
+    "vote_count": 4786,
+    "rank": 11,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GLM-5.3-Flash",
+    "organization": "zai",
+    "rating": 1506.1000347030983,
+    "vote_count": 2837,
+    "rank": 13,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.5 Flash (High)",
+    "organization": "google",
+    "rating": 1505.4198706307711,
+    "vote_count": 2311,
+    "rank": 15,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.7 (High)",
+    "organization": "anthropic",
+    "rating": 1498.6604661834483,
+    "vote_count": 3234,
+    "rank": 18,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 5.5 (xHigh)",
+    "organization": "anthropic",
+    "rating": 1494.8402612590642,
+    "vote_count": 810,
+    "rank": 21,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.7",
+    "organization": "anthropic",
+    "rating": 1488.9543761136663,
+    "vote_count": 3331,
+    "rank": 25,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.5 Flash (Medium)",
+    "organization": "google",
+    "rating": 1486.8590807037037,
+    "vote_count": 2154,
+    "rank": 27,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.5",
+    "organization": "openai",
+    "rating": 1485.8217992041427,
+    "vote_count": 3430,
+    "rank": 28,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.8 (High)",
+    "organization": "anthropic",
+    "rating": 1485.1893887379608,
+    "vote_count": 2920,
+    "rank": 29,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.5 (High)",
+    "organization": "openai",
+    "rating": 1476.1301730322064,
+    "vote_count": 3411,
+    "rank": 38,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3 Flash",
+    "organization": "google",
+    "rating": 1472.9129714319274,
+    "vote_count": 2061,
+    "rank": 45,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Sol (xHigh)",
+    "organization": "openai",
+    "rating": 1471.4989457821239,
+    "vote_count": 2094,
+    "rank": 47,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.8",
+    "organization": "anthropic",
+    "rating": 1469.1578298657832,
+    "vote_count": 3018,
+    "rank": 49,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Step 5 Preview",
+    "organization": "stepfun",
+    "rating": 1466.8356401962521,
+    "vote_count": 603,
+    "rank": 51,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 5 (High)",
+    "organization": "anthropic",
+    "rating": 1466.365654907945,
+    "vote_count": 2421,
+    "rank": 53,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Kimi K3.1 Pro (Max)",
+    "organization": "moonshot",
+    "rating": 1466.23154282431,
+    "vote_count": 330,
+    "rank": 54,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.5 (High, 32K, 20251101)",
+    "organization": "anthropic",
+    "rating": 1463.4247159255199,
+    "vote_count": 2317,
+    "rank": 57,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Terra (xHigh)",
+    "organization": "openai",
+    "rating": 1461.7331449345381,
+    "vote_count": 2186,
+    "rank": 59,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.6",
+    "organization": "anthropic",
+    "rating": 1461.2238102384808,
+    "vote_count": 3728,
+    "rank": 60,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.5 (20251101)",
+    "organization": "anthropic",
+    "rating": 1458.293873245135,
+    "vote_count": 4501,
+    "rank": 64,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Qwen3.8-27B",
+    "organization": "alibaba",
+    "rating": 1457.767692053485,
+    "vote_count": 1833,
+    "rank": 65,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Luna (xHigh)",
+    "organization": "openai",
+    "rating": 1457.4625529319403,
+    "vote_count": 1894,
+    "rank": 67,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3-Ultra-550B-A55B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1456.022370738092,
+    "vote_count": 574,
+    "rank": 71,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.5 (High, 32K, 20250929)",
+    "organization": "anthropic",
+    "rating": 1449.0492032922252,
+    "vote_count": 5021,
+    "rank": 76,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3 Flash (Minimal)",
+    "organization": "google",
+    "rating": 1447.3851158300818,
+    "vote_count": 4938,
+    "rank": 77,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Haiku 5.5 (High)",
+    "organization": "anthropic",
+    "rating": 1435.2139623730159,
+    "vote_count": 920,
+    "rank": 97,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.1 Flash-Lite Preview",
+    "organization": "google",
+    "rating": 1427.896435333941,
+    "vote_count": 3590,
+    "rank": 113,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.5 (20250929)",
+    "organization": "anthropic",
+    "rating": 1421.0762163887441,
+    "vote_count": 5078,
+    "rank": 130,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash Preview (09-2025)",
+    "organization": "google",
+    "rating": 1415.9701084632675,
+    "vote_count": 1957,
+    "rank": 140,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3.5-Super-VL-120B-A12B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1412.7432099761677,
+    "vote_count": 217,
+    "rank": 145,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash",
+    "organization": "google",
+    "rating": 1410.70212888541,
+    "vote_count": 7953,
+    "rank": 152,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Haiku 4.5 (20251001)",
+    "organization": "anthropic",
+    "rating": 1397.8055669570565,
+    "vote_count": 8535,
+    "rank": 171,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "gpt-oss-120b",
+    "organization": "openai",
+    "rating": 1388.7318205637675,
+    "vote_count": 1776,
+    "rank": 186,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash-Lite Preview (Non-Thinking, 09-2025)",
+    "organization": "google",
+    "rating": 1373.1725586794166,
+    "vote_count": 2928,
+    "rank": 197,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1365.272961896843,
+    "vote_count": 1126,
+    "rank": 207,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash-Lite Preview (Thinking, 06-17)",
+    "organization": "google",
+    "rating": 1362.4670605872955,
+    "vote_count": 2071,
+    "rank": 211,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "gpt-oss-20b",
+    "organization": "openai",
+    "rating": 1317.1060272554923,
+    "vote_count": 677,
+    "rank": 234,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemma 3 12B IT",
+    "organization": "google",
+    "rating": 1307.3479040616214,
+    "vote_count": 389,
+    "rank": 242,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o (2024-08-06)",
+    "organization": "openai",
+    "rating": 1285.3549855883382,
+    "vote_count": 6826,
+    "rank": 256,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o (2024-05-13)",
+    "organization": "openai",
+    "rating": 1284.3774082137272,
+    "vote_count": 15103,
+    "rank": 257,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o mini (2024-07-18)",
+    "organization": "openai",
+    "rating": 1267.3796898731678,
+    "vote_count": 9322,
+    "rank": 278,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemma 3 4B IT",
+    "organization": "google",
+    "rating": 1239.1079012729633,
+    "vote_count": 423,
+    "rank": 295,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "LLaMA 13B",
+    "organization": "meta",
+    "rating": 837.7982869833404,
+    "vote_count": 252,
+    "rank": 410,
+    "category": "math",
+    "leaderboard_publish_date": "2026-11-22"
+   }
+  ],
+  "creative_writing": [
+   {
+    "model_name": "Gemini 4 Carbon (High)",
+    "organization": "google",
+    "rating": 1535.0529770619328,
+    "vote_count": 1006,
+    "rank": 1,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5.5 (High)",
+    "organization": "anthropic",
+    "rating": 1532.4553207234544,
+    "vote_count": 4561,
+    "rank": 2,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.6 (High)",
+    "organization": "anthropic",
+    "rating": 1503.8407500518206,
+    "vote_count": 15560,
+    "rank": 8,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Fable 5 (High)",
+    "organization": "anthropic",
+    "rating": 1494.1712496061036,
+    "vote_count": 9786,
+    "rank": 10,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5 (Max)",
+    "organization": "anthropic",
+    "rating": 1493.789461384899,
+    "vote_count": 8113,
+    "rank": 11,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5 (High)",
+    "organization": "anthropic",
+    "rating": 1486.8034097215018,
+    "vote_count": 16509,
+    "rank": 13,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.7 (High)",
+    "organization": "anthropic",
+    "rating": 1486.5964802027288,
+    "vote_count": 11536,
+    "rank": 14,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.6",
+    "organization": "anthropic",
+    "rating": 1483.5913471206259,
+    "vote_count": 15805,
+    "rank": 16,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.7",
+    "organization": "anthropic",
+    "rating": 1479.4504043309835,
+    "vote_count": 11777,
+    "rank": 20,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.5 Flash (Medium)",
+    "organization": "google",
+    "rating": 1470.6488665967313,
+    "vote_count": 9236,
+    "rank": 22,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.5 Flash (High)",
+    "organization": "google",
+    "rating": 1468.2080014007838,
+    "vote_count": 9245,
+    "rank": 24,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 5.5 (xHigh)",
+    "organization": "anthropic",
+    "rating": 1464.5568956031725,
+    "vote_count": 4128,
+    "rank": 27,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3 Flash",
+    "organization": "google",
+    "rating": 1456.0968625283572,
+    "vote_count": 4769,
+    "rank": 31,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.8 (High)",
+    "organization": "anthropic",
+    "rating": 1455.0965824669502,
+    "vote_count": 12498,
+    "rank": 32,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.5 (High)",
+    "organization": "openai",
+    "rating": 1453.494756637504,
+    "vote_count": 12850,
+    "rank": 35,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.5",
+    "organization": "openai",
+    "rating": 1451.8505180060702,
+    "vote_count": 13121,
+    "rank": 37,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Sol (xHigh)",
+    "organization": "openai",
+    "rating": 1450.68277097185,
+    "vote_count": 9257,
+    "rank": 38,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.8",
+    "organization": "anthropic",
+    "rating": 1447.1138316957736,
+    "vote_count": 12525,
+    "rank": 40,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.5 (High, 32K, 20251101)",
+    "organization": "anthropic",
+    "rating": 1444.5547387664815,
+    "vote_count": 5620,
+    "rank": 42,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GLM-5.3-Flash",
+    "organization": "zai",
+    "rating": 1443.3664096634816,
+    "vote_count": 12384,
+    "rank": 44,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.5 (20251101)",
+    "organization": "anthropic",
+    "rating": 1442.2827202989483,
+    "vote_count": 11240,
+    "rank": 45,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.5 (20250929)",
+    "organization": "anthropic",
+    "rating": 1442.2515540393556,
+    "vote_count": 12258,
+    "rank": 46,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Kimi K3.1 Pro (Max)",
+    "organization": "moonshot",
+    "rating": 1436.7709391500334,
+    "vote_count": 1613,
+    "rank": 57,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3 Flash (Minimal)",
+    "organization": "google",
+    "rating": 1435.3624874209604,
+    "vote_count": 14910,
+    "rank": 60,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.6",
+    "organization": "anthropic",
+    "rating": 1434.5996939383745,
+    "vote_count": 12116,
+    "rank": 61,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.5 (High, 32K, 20250929)",
+    "organization": "anthropic",
+    "rating": 1423.9641152508589,
+    "vote_count": 12534,
+    "rank": 69,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Step 5 Preview",
+    "organization": "stepfun",
+    "rating": 1417.0586858393654,
+    "vote_count": 2633,
+    "rank": 78,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Terra (xHigh)",
+    "organization": "openai",
+    "rating": 1414.119310687679,
+    "vote_count": 10457,
+    "rank": 82,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 5 (High)",
+    "organization": "anthropic",
+    "rating": 1413.9754758451404,
+    "vote_count": 10996,
+    "rank": 83,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.1 Flash-Lite Preview",
+    "organization": "google",
+    "rating": 1401.2907110328406,
+    "vote_count": 10419,
+    "rank": 105,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3-Ultra-550B-A55B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1400.5461078574858,
+    "vote_count": 2138,
+    "rank": 106,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash",
+    "organization": "google",
+    "rating": 1399.972707857361,
+    "vote_count": 17516,
+    "rank": 107,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Luna (xHigh)",
+    "organization": "openai",
+    "rating": 1396.3723991657057,
+    "vote_count": 8444,
+    "rank": 111,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash Preview (09-2025)",
+    "organization": "google",
+    "rating": 1386.1214278458087,
+    "vote_count": 4512,
+    "rank": 133,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Qwen3.8-27B",
+    "organization": "alibaba",
+    "rating": 1378.987768915245,
+    "vote_count": 7741,
+    "rank": 139,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3.5-Super-VL-120B-A12B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1377.3925188630637,
+    "vote_count": 923,
+    "rank": 140,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Haiku 4.5 (20251001)",
+    "organization": "anthropic",
+    "rating": 1370.2351678417986,
+    "vote_count": 26387,
+    "rank": 150,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash-Lite Preview (Thinking, 06-17)",
+    "organization": "google",
+    "rating": 1367.1643566517514,
+    "vote_count": 4133,
+    "rank": 154,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash-Lite Preview (Non-Thinking, 09-2025)",
+    "organization": "google",
+    "rating": 1358.9022489052359,
+    "vote_count": 6558,
+    "rank": 163,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Haiku 5.5 (High)",
+    "organization": "anthropic",
+    "rating": 1334.6142681375295,
+    "vote_count": 4250,
+    "rank": 194,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemma 3 12B IT",
+    "organization": "google",
+    "rating": 1331.1216492600688,
+    "vote_count": 600,
+    "rank": 200,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o (2024-05-13)",
+    "organization": "openai",
+    "rating": 1291.1756959762356,
+    "vote_count": 16599,
+    "rank": 237,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "gpt-oss-120b",
+    "organization": "openai",
+    "rating": 1274.6125480864598,
+    "vote_count": 3885,
+    "rank": 251,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o (2024-08-06)",
+    "organization": "openai",
+    "rating": 1274.2965747884398,
+    "vote_count": 6756,
+    "rank": 252,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemma 3 4B IT",
+    "organization": "google",
+    "rating": 1270.2342188857338,
+    "vote_count": 666,
+    "rank": 256,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o mini (2024-07-18)",
+    "organization": "openai",
+    "rating": 1267.5220596805434,
+    "vote_count": 10486,
+    "rank": 263,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1259.9035257540836,
+    "vote_count": 5460,
+    "rank": 270,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "gpt-oss-20b",
+    "organization": "openai",
+    "rating": 1201.645627888835,
+    "vote_count": 1229,
+    "rank": 316,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "LLaMA 13B",
+    "organization": "meta",
+    "rating": 793.7030945309248,
+    "vote_count": 431,
+    "rank": 425,
+    "category": "creative_writing",
+    "leaderboard_publish_date": "2026-11-22"
+   }
+  ],
+  "instruction_following": [
+   {
+    "model_name": "Gemini 4 Carbon (High)",
+    "organization": "google",
+    "rating": 1539.2775293361788,
+    "vote_count": 1415,
+    "rank": 1,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5.5 (High)",
+    "organization": "anthropic",
+    "rating": 1533.3727400839475,
+    "vote_count": 6613,
+    "rank": 4,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.6 (High)",
+    "organization": "anthropic",
+    "rating": 1521.2133160779458,
+    "vote_count": 27111,
+    "rank": 6,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5 (Max)",
+    "organization": "anthropic",
+    "rating": 1517.4222022987542,
+    "vote_count": 12310,
+    "rank": 7,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 5 (High)",
+    "organization": "anthropic",
+    "rating": 1515.0200241196067,
+    "vote_count": 25861,
+    "rank": 8,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.6",
+    "organization": "anthropic",
+    "rating": 1510.3556075308074,
+    "vote_count": 29711,
+    "rank": 10,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Fable 5 (High)",
+    "organization": "anthropic",
+    "rating": 1502.8560276157064,
+    "vote_count": 15958,
+    "rank": 11,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.7 (High)",
+    "organization": "anthropic",
+    "rating": 1498.2682621693762,
+    "vote_count": 22306,
+    "rank": 12,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.7",
+    "organization": "anthropic",
+    "rating": 1489.1593684431277,
+    "vote_count": 22874,
+    "rank": 16,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 5.5 (xHigh)",
+    "organization": "anthropic",
+    "rating": 1482.6171718454789,
+    "vote_count": 6018,
+    "rank": 21,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Sol (xHigh)",
+    "organization": "openai",
+    "rating": 1482.1776291076908,
+    "vote_count": 15220,
+    "rank": 22,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GLM-5.3-Flash",
+    "organization": "zai",
+    "rating": 1480.0162528456885,
+    "vote_count": 19675,
+    "rank": 25,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.5 (High)",
+    "organization": "openai",
+    "rating": 1478.123586079681,
+    "vote_count": 23489,
+    "rank": 26,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.5 (High, 32K, 20251101)",
+    "organization": "anthropic",
+    "rating": 1477.9602132945906,
+    "vote_count": 9785,
+    "rank": 27,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.8 (High)",
+    "organization": "anthropic",
+    "rating": 1477.1928939694603,
+    "vote_count": 22160,
+    "rank": 28,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.6",
+    "organization": "anthropic",
+    "rating": 1475.6267808640305,
+    "vote_count": 23242,
+    "rank": 29,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.5",
+    "organization": "openai",
+    "rating": 1474.9524053477367,
+    "vote_count": 24311,
+    "rank": 31,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.5 (20251101)",
+    "organization": "anthropic",
+    "rating": 1472.4510761560537,
+    "vote_count": 21558,
+    "rank": 32,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Kimi K3.1 Pro (Max)",
+    "organization": "moonshot",
+    "rating": 1470.8916538214926,
+    "vote_count": 2413,
+    "rank": 34,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.5 Flash (High)",
+    "organization": "google",
+    "rating": 1467.483729072941,
+    "vote_count": 16922,
+    "rank": 38,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.5 Flash (Medium)",
+    "organization": "google",
+    "rating": 1464.8025342942055,
+    "vote_count": 16601,
+    "rank": 43,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Opus 4.8",
+    "organization": "anthropic",
+    "rating": 1463.0508588626826,
+    "vote_count": 22771,
+    "rank": 44,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.5 (20250929)",
+    "organization": "anthropic",
+    "rating": 1459.032285744036,
+    "vote_count": 24090,
+    "rank": 47,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 4.5 (High, 32K, 20250929)",
+    "organization": "anthropic",
+    "rating": 1457.7856297440744,
+    "vote_count": 24400,
+    "rank": 49,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Terra (xHigh)",
+    "organization": "openai",
+    "rating": 1455.1546427760204,
+    "vote_count": 17319,
+    "rank": 51,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Sonnet 5 (High)",
+    "organization": "anthropic",
+    "rating": 1452.8726568567804,
+    "vote_count": 18577,
+    "rank": 54,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Step 5 Preview",
+    "organization": "stepfun",
+    "rating": 1445.9893578733918,
+    "vote_count": 4242,
+    "rank": 58,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-5.6 Luna (xHigh)",
+    "organization": "openai",
+    "rating": 1436.6204165831223,
+    "vote_count": 14335,
+    "rank": 68,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3 Flash",
+    "organization": "google",
+    "rating": 1436.373100057724,
+    "vote_count": 8437,
+    "rank": 70,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Qwen3.8-27B",
+    "organization": "alibaba",
+    "rating": 1433.9914331967316,
+    "vote_count": 13153,
+    "rank": 74,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3-Ultra-550B-A55B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1418.019287081801,
+    "vote_count": 3820,
+    "rank": 99,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3 Flash (Minimal)",
+    "organization": "google",
+    "rating": 1414.8781237103758,
+    "vote_count": 29324,
+    "rank": 104,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Haiku 4.5 (20251001)",
+    "organization": "anthropic",
+    "rating": 1413.9267720078788,
+    "vote_count": 49152,
+    "rank": 106,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Claude Haiku 5.5 (High)",
+    "organization": "anthropic",
+    "rating": 1408.4254329079426,
+    "vote_count": 6589,
+    "rank": 116,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash",
+    "organization": "google",
+    "rating": 1404.7728106113022,
+    "vote_count": 34609,
+    "rank": 124,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3.5-Super-VL-120B-A12B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1400.3373806701466,
+    "vote_count": 1363,
+    "rank": 138,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash Preview (09-2025)",
+    "organization": "google",
+    "rating": 1393.8250706896388,
+    "vote_count": 9295,
+    "rank": 148,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 3.1 Flash-Lite Preview",
+    "organization": "google",
+    "rating": 1377.9757554926823,
+    "vote_count": 21184,
+    "rank": 168,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash-Lite Preview (Thinking, 06-17)",
+    "organization": "google",
+    "rating": 1366.4253839845144,
+    "vote_count": 8088,
+    "rank": 182,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemini 2.5 Flash-Lite Preview (Non-Thinking, 09-2025)",
+    "organization": "google",
+    "rating": 1355.0774911325766,
+    "vote_count": 13173,
+    "rank": 193,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B (NVFP4)",
+    "organization": "nvidia",
+    "rating": 1318.5489113570698,
+    "vote_count": 8437,
+    "rank": 225,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "gpt-oss-120b",
+    "organization": "openai",
+    "rating": 1317.8267403547875,
+    "vote_count": 7835,
+    "rank": 226,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemma 3 12B IT",
+    "organization": "google",
+    "rating": 1299.0627053614398,
+    "vote_count": 1145,
+    "rank": 247,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o (2024-05-13)",
+    "organization": "openai",
+    "rating": 1277.5485076317932,
+    "vote_count": 43766,
+    "rank": 259,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o (2024-08-06)",
+    "organization": "openai",
+    "rating": 1266.56062605477,
+    "vote_count": 18305,
+    "rank": 270,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "GPT-4o mini (2024-07-18)",
+    "organization": "openai",
+    "rating": 1258.2634452322122,
+    "vote_count": 26707,
+    "rank": 277,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "Gemma 3 4B IT",
+    "organization": "google",
+    "rating": 1238.8261545903615,
+    "vote_count": 1233,
+    "rank": 298,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "gpt-oss-20b",
+    "organization": "openai",
+    "rating": 1236.1218042960252,
+    "vote_count": 2533,
+    "rank": 300,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   },
+   {
+    "model_name": "LLaMA 13B",
+    "organization": "meta",
+    "rating": 780.7400844052617,
+    "vote_count": 584,
+    "rank": 427,
+    "category": "instruction_following",
+    "leaderboard_publish_date": "2026-11-22"
+   }
+  ]
+ }
+}

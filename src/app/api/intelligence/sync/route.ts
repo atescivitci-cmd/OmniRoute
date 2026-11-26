@@ -1,8 +1,10 @@
 /**
  * API Route: /api/intelligence/sync
  *
- * POST — Trigger a manual Arena ELO intelligence sync.
- * GET — Get current intelligence sync status.
+ * POST — Trigger a manual Arena ELO intelligence sync and a manual LMArena quality-score sync
+ *        (src/lib/qualityScoreSync.ts; the one-shot fill after install). 200 when either succeeds.
+ * GET — Get current intelligence sync status; `qualityFeed` is the quality-score feed status
+ *       (state fresh / stale / failing / never_synced, data age, last error).
  * DELETE — Clear all synced arena_elo intelligence data.
  */
 
@@ -39,9 +41,14 @@ export async function POST(request: NextRequest) {
     const { dryRun = false } = validation.data;
 
     const { syncArenaElo } = await import("@/lib/arenaEloSync");
+    const { syncQualityScores } = await import("@/lib/qualityScoreSync");
     const result = await syncArenaElo(dryRun);
+    const qualityFeed = await syncQualityScores({ dryRun });
 
-    return NextResponse.json(result, { status: result.success ? 200 : 502 });
+    return NextResponse.json(
+      { ...result, qualityFeed },
+      { status: result.success || qualityFeed.success ? 200 : 502 }
+    );
   } catch (err) {
     return NextResponse.json(
       { error: sanitizeErrorMessage(err) },
@@ -56,7 +63,11 @@ export async function GET(request: NextRequest) {
 
   try {
     const { getArenaEloSyncStatus } = await import("@/lib/arenaEloSync");
-    return NextResponse.json(getArenaEloSyncStatus());
+    const { getQualityScoreSyncStatus } = await import("@/lib/qualityScoreSync");
+    return NextResponse.json({
+      ...getArenaEloSyncStatus(),
+      qualityFeed: getQualityScoreSyncStatus(),
+    });
   } catch (err) {
     return NextResponse.json(
       { error: sanitizeErrorMessage(err) },

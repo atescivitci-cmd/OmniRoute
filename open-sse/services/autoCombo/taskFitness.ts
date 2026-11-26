@@ -28,10 +28,13 @@
  */
 
 import {
+  getBenchmarkModelId,
   getModelIntelligenceBySource,
+  getQualityScoreByKeys,
   setUserFitnessOverrideEntry,
   deleteUserFitnessOverrideEntry,
 } from "../../../src/lib/db/modelIntelligence.ts";
+import { candidateQualityKeys, qualityCategoryForTask } from "./qualityModelKey.ts";
 import { getResolvedModelCapabilities } from "../modelCapabilities.ts";
 import { capabilityStrength, hasCapabilityEvidence } from "../capabilityStrength.ts";
 
@@ -267,4 +270,118 @@ export function getTaskTypes(): string[] {
 
 export function invalidateFitnessCache(): void {
   _intelligenceCache.clear();
+  _qualityCache.clear();
+}
+
+// ─── Task quality (ROUTING_QUALITY_FIRST) ───────────────────────────────
+
+/** Source label of the LMArena quality rows (src/lib/qualityScoreSync.ts QUALITY_SOURCE). */
+export const QUALITY_SCORE_SOURCE = "lmarena";
+/**
+ * Quality score of a model with no quality data when nothing else is known: the midpoint of the
+ * normalised leaderboard scale (0.4 weakest .. 0.98 strongest listed model). The ranker replaces it
+ * with the lowest measured quality of the candidate pool (ordered after every measured candidate)
+ * when the pool has measured candidates (fitFirstPolicy, qualityNeutralBasis "pool_min").
+ */
+export const NEUTRAL_QUALITY_SCORE = 0.69;
+const QUALITY_CACHE_TTL_MS = 60_000;
+const _qualityCache = new Map<string, { at: number; value: TaskQuality }>();
+
+export interface TaskQuality {
+  score: number;
+  /** "user_override", "lmarena" or "neutral_no_quality_data". */
+  source: string;
+  /** Stored task category that was read ("default" for the general task). */
+  category: string;
+  /** Normalised key that matched (null for neutral / override). */
+  key: string | null;
+  /** How the key was found: an operator mapping, or name normalisation. */
+  keySource?: "benchmark_mapping" | "name_normalisation";
+  /** synced_at of the matched row (SQLite UTC), when one matched. */
+  syncedAt?: string | null;
+  eloRaw?: number | null;
+}
+
+/**
+ * Quality score of `provider/model` for `taskType`, from verified evidence only:
+ *  1. the owner's user_override row for the task (outright),
+ *  2. the LMArena row for the task category, looked up by an operator benchmark mapping first
+ *     (model_benchmark_mappings, source "lmarena") and then by name normalisation
+ *     (qualityModelKey.ts: full id, last path segment, canonical key),
+ *  3. NEUTRAL_QUALITY_SCORE.
+ * The routing provider is never part of the key, so one model reached through two providers gets
+ * the same score. No usage history is read.
+ */
+export function getTaskQualityWithSource(
+  provider: string,
+  model: string,
+  taskType: string,
+  now = Date.now()
+): TaskQuality {
+  const category = qualityCategoryForTask(taskType);
+  const cacheKey = `${provider}\0${model}\0${category}`;
+  const cached = _qualityCache.get(cacheKey);
+  if (cached && now - cached.at < QUALITY_CACHE_TTL_MS) return cached.value;
+  const value = resolveTaskQuality(provider, model, category, taskType);
+  _qualityCache.set(cacheKey, { at: now, value });
+  return value;
+}
+
+function resolveTaskQuality(
+  provider: string,
+  model: string,
+  category: string,
+  taskType: string
+): TaskQuality {
+  const neutral: TaskQuality = {
+    score: NEUTRAL_QUALITY_SCORE,
+    source: "neutral_no_quality_data",
+    category,
+    key: null,
+  };
+  const ids = measuredLookupIds(`${provider}/${model}`.toLowerCase());
+  for (const task of new Set([category, String(taskType ?? "").toLowerCase()])) {
+    const override = firstMeasured(ids, task, "user_override");
+    if (override)
+      return { score: override.score, source: "user_override", category: task, key: null };
+  }
+  try {
+    const mapped = getBenchmarkModelId(provider, model, QUALITY_SCORE_SOURCE);
+    if (mapped) {
+      const row = getQualityScoreByKeys(
+        [mapped, ...candidateQualityKeys(mapped)],
+        category,
+        QUALITY_SCORE_SOURCE
+      );
+      if (row) {
+        return {
+          score: row.score,
+          source: QUALITY_SCORE_SOURCE,
+          category,
+          key: row.key,
+          keySource: "benchmark_mapping",
+          syncedAt: row.syncedAt,
+          eloRaw: row.eloRaw,
+        };
+      }
+    }
+    const row = getQualityScoreByKeys(candidateQualityKeys(model), category, QUALITY_SCORE_SOURCE);
+    if (row) {
+      return {
+        score: row.score,
+        source: QUALITY_SCORE_SOURCE,
+        category,
+        key: row.key,
+        keySource: "name_normalisation",
+        syncedAt: row.syncedAt,
+        eloRaw: row.eloRaw,
+      };
+    }
+  } catch (error) {
+    console.error(
+      `[QUALITY_FIRST] quality lookup failed for ${provider}/${model}: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return { ...neutral, source: "neutral_lookup_failed" };
+  }
+  return neutral;
 }
