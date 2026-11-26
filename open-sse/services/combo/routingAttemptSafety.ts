@@ -18,6 +18,7 @@ import {
   isStallFailoverEnabled,
   stallFailoverRefusal,
 } from "./stallFailover.ts";
+import { isOverloadFailoverEnabled, overloadFailoverRefusal } from "./overloadFailover.ts";
 
 // These capabilities are process-local. Wire headers/body fields cannot grant
 // replay permission or claim that an attempted provider operation did not run.
@@ -54,6 +55,16 @@ export function markStallReplayCandidate<T extends Response>(response: T): T {
 export function isStallReplayCandidate(response: Response): boolean {
   return stallReplayCandidates.has(response);
 }
+// Set ONLY by chatCore on the error response of an upstream that refused the request with a
+// classified overload BEFORE any output (combo/overloadFailover.ts). A candidate, not a grant.
+const overloadRefusals = new WeakSet<Response>();
+export function markOverloadRefusal<T extends Response>(response: T): T {
+  overloadRefusals.add(response);
+  return response;
+}
+export function isOverloadRefusal(response: Response): boolean {
+  return overloadRefusals.has(response);
+}
 export function markKnownNonDispatch<T extends Response>(response: T): T {
   nonDispatch.add(response);
   return response;
@@ -78,6 +89,7 @@ function copyRoutingResponseState<T extends Response>(source: Response, target: 
   if (terminal.has(source)) terminal.add(target);
   if (keyLimitRefusal.has(source)) keyLimitRefusal.add(target);
   if (stallReplayCandidates.has(source)) stallReplayCandidates.add(target);
+  if (overloadRefusals.has(source)) overloadRefusals.add(target);
   const reason = stopReasons.get(source);
   if (reason) stopReasons.set(target, reason);
   return target;
@@ -360,6 +372,8 @@ type AttemptBudget = {
   attempts: number;
   /** Stall failovers spent by this request (combo/stallFailover.ts), shared with every fork. */
   stallFailovers?: number;
+  /** Overload failovers spent by this request (combo/overloadFailover.ts), shared likewise. */
+  overloadFailovers?: number;
   limit: number;
   deadlineMs?: number;
   signal?: AbortSignal | null;
@@ -417,7 +431,46 @@ export function createRoutingAttemptGuard(options: {
   // Stall failover (combo/stallFailover.ts): replays spent on this request. Fixed at creation so a
   // mid-request env change cannot widen the exception.
   const stallFailoverEnabled = isStallFailoverEnabled();
-  const providerExecutedTools = stallFailoverEnabled && hasProviderExecutedTools(options.body);
+  // Overload failover (combo/overloadFailover.ts), fixed at creation like the stall flag.
+  const overloadFailoverEnabled = isOverloadFailoverEnabled();
+  const providerExecutedTools =
+    (stallFailoverEnabled || overloadFailoverEnabled) && hasProviderExecutedTools(options.body);
+  const overloadFailoverAllowed = (
+    result: Response,
+    transport: RoutingTransportAttempt,
+    model: string,
+    provider: string | undefined,
+    targetSignal: AbortSignal | null | undefined
+  ): boolean => {
+    if (!overloadFailoverEnabled || !overloadRefusals.has(result)) return false;
+    const outcome = getRoutingTransportOutcome(transport);
+    const refusal = overloadFailoverRefusal({
+      enabled: overloadFailoverEnabled,
+      overloadMarked: true,
+      transportStopped: outcome.uncertain || outcome.cancelled || outcome.blocked,
+      responseCommitted: stopped !== null,
+      providerExecutedTools,
+      hardBound: input.hardBound,
+      providerBound: input.providerBound,
+      sanitizedSwitch,
+      // Same rule the guard applies to an NVIDIA 429 below: a wire code from NVIDIA is not
+      // positive evidence of non-generation unless the native handler marked it.
+      nvidiaUnqualified:
+        (provider === "nvidia" || (!provider && model.startsWith("nvidia/"))) &&
+        !nonDispatch.has(result) &&
+        !definiteRejection.has(result),
+      failoversUsed: budget.overloadFailovers ?? 0,
+      callerAborted:
+        options.signal?.aborted === true ||
+        budget.signal?.aborted === true ||
+        targetSignal?.aborted === true,
+    });
+    if (refusal) {
+      emit({ event: "overload_failover_refused", reason: refusal, status: result.status });
+      return false;
+    }
+    return true;
+  };
 
   /**
    * The narrow exception: may this failed attempt advance to the next target? `transportStopped`
@@ -781,6 +834,34 @@ export function createRoutingAttemptGuard(options: {
             budget.stallFailovers = (budget.stallFailovers ?? 0) + 1;
             rejectedModels.add(model);
             emit({ event: "stall_failover", model: safeId(model), status: result.status });
+            priorFailure = result;
+            return result;
+          }
+          // OVERLOAD_FAILOVER: a classified overload refusal before any output is admission
+          // control, like a 429 (combo/overloadFailover.ts). Placed before the provider-bound and
+          // tool stops it is the exception to; the NVIDIA rule is applied inside, as for a 429.
+          if (
+            overloadFailoverAllowed(
+              result,
+              transport,
+              model,
+              typed?.provider,
+              target?.modelAbortSignal
+            )
+          ) {
+            budget.overloadFailovers = (budget.overloadFailovers ?? 0) + 1;
+            // The overloaded model is not re-picked on any connection for this request.
+            rejectedModels.add(model);
+            const hint = result.headers.get("retry-after");
+            if (hint) {
+              const seconds = Number(hint);
+              const at =
+                Number.isFinite(seconds) && seconds >= 0
+                  ? Date.now() + seconds * 1000
+                  : Date.parse(hint);
+              if (Number.isFinite(at) && at > Date.now()) retryNotBefore.set(key, at);
+            }
+            emit({ event: "overload_failover", model: safeId(model), status: result.status });
             priorFailure = result;
             return result;
           }
