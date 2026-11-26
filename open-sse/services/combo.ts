@@ -2,6 +2,7 @@ import {
   createRoutingAttemptGuard,
   isKeyLimitRefusal,
   isStallReplayCandidate,
+  isOverloadRefusal,
   routingGuardFor,
   isRoutingTerminal,
   routingFailure,
@@ -1694,7 +1695,10 @@ async function handleComboChatRemote({
 
           if (!result.ok && isKeyLimitRefusal(result)) keyLimitRefused = true;
           if (!result.ok && isRoutingTerminal(result)) return { ok: false, response: result };
-          if (!result.ok && isStallReplayCandidate(result)) stallFailedOver = true;
+          // OVERLOAD_FAILOVER (combo/overloadFailover.ts) sanitizes a provider-bound history the
+          // same way: the guard allows it only when this sanitization is on.
+          if (!result.ok && (isStallReplayCandidate(result) || isOverloadRefusal(result)))
+            stallFailedOver = true;
           signal?.throwIfAborted();
           // Success — validate response contract before returning. HTTP success is not answer quality.
           if (result.ok) {
@@ -2275,8 +2279,11 @@ async function handleComboChatRemote({
 
           // Check if this is a transient error worth retrying on same model.
           // A token-limit 429 is terminal for the client — never retry it.
+          // OVERLOAD_FAILOVER: a classified overload refusal (only marked while the flag is on)
+          // moves straight to the next target; retrying the overloaded model only adds delay.
           const isTransient =
             !isStreamReadinessFailure &&
+            !isOverloadRefusal(result) &&
             !isTokenLimitBreach &&
             !isLocalRateLimitQueueFailure(errorText, structuredError) &&
             [408, 429, 500, 502, 503, 504].includes(result.status);
@@ -3493,6 +3500,7 @@ async function handleRoundRobinCombo({
         // A token-limit 429 is terminal for the client — never retry it.
         const isTransient =
           !isStreamReadinessFailure &&
+          !isOverloadRefusal(result) &&
           !isTokenLimitBreach &&
           !isLocalRateLimitQueueFailure(errorText, structuredError) &&
           [408, 429, 500, 502, 503, 504].includes(result.status);

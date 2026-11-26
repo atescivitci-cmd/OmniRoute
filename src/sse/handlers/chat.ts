@@ -11,6 +11,8 @@ import {
   isDefiniteRoutingRejection,
   markKnownNonDispatch,
   routingFailure,
+  isOverloadRefusal,
+  markOverloadRefusal,
 } from "@omniroute/open-sse/services/combo/routingAttemptSafety.ts";
 import { MAX_GLOBAL_ATTEMPTS } from "@omniroute/open-sse/services/combo/comboPredicates.ts";
 import { buildTargetTimeoutRunner } from "@omniroute/open-sse/services/combo/targetTimeoutRunner.ts";
@@ -1672,6 +1674,16 @@ async function handleSingleModelChat(
   // re-attempt to exactly one for the whole request. Declared outside both retry
   // loops so it can never reset and loop.
   let streamEarlyEofRetries = 0;
+  // ROUTING_OVERLOAD_FAILOVER: when every account this request tried for the model failed with a
+  // classified overload refusal (chatCore marks those), the final "all accounts unavailable"
+  // answer is itself an overload refusal of this model and keeps the mark for the routing guard.
+  // Any other failure on the way (or an early-EOF re-attempt) removes that qualification.
+  let accountFailures = 0;
+  let overloadAccountFailures = 0;
+  const noteAccountFailure = (response: Response | null | undefined) => {
+    accountFailures += 1;
+    if (response && isOverloadRefusal(response)) overloadAccountFailures += 1;
+  };
 
   requestAttemptLoop: while (true) {
     const excludedConnectionIds = new Set<string>();
@@ -1806,6 +1818,9 @@ async function handleSingleModelChat(
           excludedConnectionIds.size > 0
             ? Array.from(excludedConnectionIds)[excludedConnectionIds.size - 1]
             : null;
+        if (accountFailures > 0 && overloadAccountFailures === accountFailures) {
+          markOverloadRefusal(noCredsRes);
+        }
         return withSelectedConnectionHeader(noCredsRes, lastFailedConnectionId);
       }
 
@@ -2085,6 +2100,7 @@ async function handleSingleModelChat(
           !hasForcedConnection
         ) {
           streamEarlyEofRetries += 1;
+          noteAccountFailure(null);
           log.warn(
             "STREAM",
             `${provider}/${model} closed the stream early before useful content — retrying once (attempt ${streamEarlyEofRetries})`
@@ -2137,6 +2153,7 @@ async function handleSingleModelChat(
           lastStatus = result.status;
           requestRetryLastError = result.error;
           requestRetryLastStatus = result.status;
+          noteAccountFailure(result.response);
           continue;
         }
 
@@ -2187,6 +2204,7 @@ async function handleSingleModelChat(
           lastStatus = result.status;
           requestRetryLastError = result.error;
           requestRetryLastStatus = result.status;
+          noteAccountFailure(result.response);
           continue;
         }
 
@@ -2209,6 +2227,7 @@ async function handleSingleModelChat(
         lastStatus = result.status;
         requestRetryLastError = result.error;
         requestRetryLastStatus = result.status;
+        noteAccountFailure(result.response);
         continue;
       }
 
@@ -2398,6 +2417,7 @@ async function handleSingleModelChat(
         lastStatus = result.status;
         requestRetryLastError = result.error;
         requestRetryLastStatus = result.status;
+        noteAccountFailure(result.response);
         continue;
       }
 

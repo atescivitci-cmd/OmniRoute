@@ -19,7 +19,12 @@ import {
   markKnownNonDispatch,
   markDefiniteRejection,
   markStallReplayCandidate,
+  markOverloadRefusal,
 } from "../services/combo/routingAttemptSafety.ts";
+import {
+  classifyOverloadRefusal,
+  isOverloadFailoverEnabled,
+} from "../services/combo/overloadFailover.ts";
 import { isStallFailoverEnabled } from "../services/combo/stallFailover.ts";
 import {
   accountModelRevision,
@@ -4737,7 +4742,7 @@ async function handleChatCoreRequest({
       // live here re-sent the FAILING provider's credentials to the emergency
       // provider's endpoint (e.g. the OpenAI API key to integrate.api.nvidia.com)
       // — a cross-provider credential leak that also never succeeded upstream.
-      return createErrorResult(
+      const failureResult = createErrorResult(
         statusCode,
         errMsg,
         retryAfterMs,
@@ -4746,6 +4751,28 @@ async function handleChatCoreRequest({
         upstreamErrorBody,
         { passthrough: sourceFormat === FORMATS.CLAUDE }
       );
+      // ROUTING_OVERLOAD_FAILOVER: the upstream refused with an error status before any output.
+      // When that refusal is a classified overload, mark it so the routing guard may treat it
+      // like a 429 (combo/overloadFailover.ts). Only this pre-output path ever marks.
+      try {
+        if (
+          isOverloadFailoverEnabled() &&
+          failureResult.response &&
+          classifyOverloadRefusal({
+            status: statusCode,
+            body: upstreamErrorBody,
+            message,
+            errorCode: upstreamErrorCode,
+            errorType: upstreamErrorType,
+            retryAfterMs,
+          }).overload
+        ) {
+          markOverloadRefusal(failureResult.response);
+        }
+      } catch {
+        /* classification must never change the failure path */
+      }
+      return failureResult;
     }
     // ── End T5 ───────────────────────────────────────────────────────────────
   }
