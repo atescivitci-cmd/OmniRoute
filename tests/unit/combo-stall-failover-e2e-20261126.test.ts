@@ -21,6 +21,7 @@ process.env.APP_LOG_TO_FILE = "false";
 process.env.STREAM_READINESS_TIMEOUT_MS = "500";
 
 const { POST: postMessages } = await import("../../src/app/api/v1/messages/route.ts");
+const { POST: postChat } = await import("../../src/app/api/v1/chat/completions/route.ts");
 const { createProviderConnection, deleteProviderConnection } =
   await import("../../src/lib/db/providers.ts");
 const { createCombo } = await import("../../src/lib/db/combos.ts");
@@ -53,10 +54,14 @@ function chunk(model: string, delta: Record<string, unknown>, finish: string | n
   })}\n\n`;
 }
 
-async function setup(behaviours: Record<string, Behaviour>) {
+async function setup(
+  behaviours: Record<string, Behaviour>,
+  comboExtra: Record<string, unknown> = {}
+) {
   resetAllCircuitBreakers();
   clearAllModelLockouts();
   const calls: string[] = [];
+  const bodies: string[] = [];
   const server = http.createServer((req, res) => {
     let raw = "";
     req.setEncoding("utf8");
@@ -69,6 +74,7 @@ async function setup(behaviours: Record<string, Behaviour>) {
         /* not JSON */
       }
       calls.push(model);
+      bodies.push(raw);
       const behaviour = behaviours[model] ?? "answer";
       if (behaviour === "hold-headers") return;
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
@@ -118,13 +124,14 @@ async function setup(behaviours: Record<string, Behaviour>) {
       provider: "openai",
     })),
     config: { maxRetries: 1 },
+    ...comboExtra,
   });
   const stop = async () => {
     await deleteProviderConnection(String(connection.id));
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(() => resolve(null)));
   };
-  return { connectionId: String(connection.id), comboName, calls, stop };
+  return { connectionId: String(connection.id), comboName, calls, bodies, stop };
 }
 
 const CLIENT_TOOL = {
@@ -359,6 +366,124 @@ test("both flags on: at most one stall failover per request (two stalled targets
       rows.map((r) => r.error_code),
       ["upstream_stalled", "upstream_stalled"]
     );
+  } finally {
+    setFlags(false, false);
+    await stop();
+  }
+});
+
+// A history bound to the stalled provider (reasoning artifacts with a signature) may move on only
+// through the combo's sanitized switch (same-terminal continuity + an explicit session). The
+// OpenAI chat format is used because its passthrough carries the message-level signature to the
+// upstream, so the test can see what the second target actually received. (Anthropic-format
+// thinking blocks are dropped by the claude->openai translator before any openai upstream, so they
+// cannot show whether the combo sanitized.)
+function signedChatRequest(comboName: string, session: string | null) {
+  return new Request("http://localhost/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(session ? { "x-omniroute-session": session } : {}),
+    },
+    body: JSON.stringify({
+      model: comboName,
+      stream: true,
+      max_tokens: 64,
+      tools: [
+        {
+          type: "function",
+          function: { name: "read_file", parameters: { type: "object", properties: {} } },
+        },
+      ],
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: "hello",
+          reasoning_content: "PLANTEXT",
+          signature: "SIG123",
+        },
+        { role: "user", content: "continue" },
+      ],
+    }),
+  });
+}
+
+test("both flags on, signed history + sanitized switch: the replacement receives a sanitized body", async () => {
+  setFlags(true, true);
+  const { comboName, calls, bodies, stop } = await setup(
+    { "gpt-4o": "headers-then-silent", "gpt-4o-mini": "answer" },
+    { same_terminal_continuity: true, context_cache_protection: true }
+  );
+  try {
+    const response = await postChat(signedChatRequest(comboName, "terminal-signed-1"));
+    const text = await readAll(response);
+    assert.equal(response.status, 200, text.slice(0, 300));
+    assert.match(text, /answered by gpt-4o-mini/);
+    assert.deepEqual(calls, ["gpt-4o", "gpt-4o-mini"]);
+    assert.ok(bodies[0].includes("SIG123"), "the stalled first target saw the original body");
+    assert.ok(!bodies[1].includes("SIG123"), "the replacement must not receive the signature");
+    assert.ok(!bodies[1].includes("PLANTEXT"), "nor the provider-bound reasoning");
+    assert.ok(bodies[1].includes("hello") && bodies[1].includes("continue"));
+  } finally {
+    setFlags(false, false);
+    await stop();
+  }
+});
+
+test("both flags on, signed history WITHOUT the sanitized switch: the replay is refused", async () => {
+  setFlags(true, true);
+  const { comboName, calls, stop } = await setup({
+    "gpt-4.1": "headers-then-silent",
+    "gpt-4.1-mini": "answer",
+  });
+  try {
+    const response = await postChat(signedChatRequest(comboName, null));
+    const text = await readAll(response);
+    assert.ok(text.includes("upstream_stalled"), `${response.status} ${text.slice(0, 300)}`);
+    assert.doesNotMatch(text, /answered by/);
+    assert.deepEqual(calls, ["gpt-4.1"], "provider_bound_unsanitized: no replay");
+  } finally {
+    setFlags(false, false);
+    await stop();
+  }
+});
+
+// Deadline above the 2 s keep-alive: /v1/messages commits a 200 with a gateway ping first, then the
+// replacement's stream follows as ONE clean Anthropic message.
+test("both flags on, deadline 3.5 s on /v1/messages: ping, then a single message from the replacement", async () => {
+  process.env.ROUTING_STALL_DEADLINE_MS = "3500";
+  process.env.ROUTING_STALL_FAILOVER = "1";
+  const { comboName, calls, stop } = await setup({
+    "gpt-4o": "hold-headers",
+    "gpt-4o-mini": "answer",
+  });
+  try {
+    const startedAt = Date.now();
+    const response = await postMessages(messagesRequest(comboName, [CLIENT_TOOL]));
+    const text = await readAll(response);
+    const elapsed = Date.now() - startedAt;
+    assert.equal(response.status, 200);
+    assert.ok(elapsed >= 3500 && elapsed < 3500 + 3000, `${elapsed} ms`);
+    assert.deepEqual(calls, ["gpt-4o", "gpt-4o-mini"]);
+    const events = [...text.matchAll(/^event: (\S+)$/gm)].map((m) => m[1]);
+    assert.equal(events[0], "ping", `keep-alive first: ${events.join(",")}`);
+    const afterPing = events.filter((e) => e !== "ping");
+    assert.deepEqual(
+      afterPing,
+      [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+      ],
+      text.slice(0, 600)
+    );
+    assert.equal(text.match(/"type":"message_start"/g)?.length, 1, "exactly one message");
+    assert.match(text, /answered by gpt-4o-mini/);
+    assert.doesNotMatch(text, /upstream_stalled|"type":"error"/);
   } finally {
     setFlags(false, false);
     await stop();

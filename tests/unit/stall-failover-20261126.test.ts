@@ -325,3 +325,115 @@ test("guard, flag OFF: every stall keeps exactly the old stops", async () => {
     assert.equal(isRoutingTerminal(firstEvent), true);
   });
 });
+
+test("provider-executed capabilities without a tool `type` are refused (review item 1)", () => {
+  const refused: Array<[string, Record<string, unknown>]> = [
+    ["gemini googleSearch", { tools: [{ googleSearch: {} }] }],
+    ["gemini google_search", { tools: [{ google_search: {} }] }],
+    ["gemini codeExecution", { tools: [{ codeExecution: {} }] }],
+    ["gemini code_execution", { tools: [{ code_execution: {} }] }],
+    ["gemini url_context", { tools: [{ url_context: {} }] }],
+    ["gemini urlContext", { tools: [{ urlContext: {} }] }],
+    ["gemini google_search_retrieval", { tools: [{ google_search_retrieval: { mode: "x" } }] }],
+    [
+      "gemini functions mixed with googleSearch",
+      { tools: [{ functionDeclarations: [{ name: "f" }], googleSearch: {} }] },
+    ],
+    [
+      "gemini executableCode in history",
+      { contents: [{ role: "model", parts: [{ executableCode: { code: "print(1)" } }] }] },
+    ],
+    [
+      "gemini codeExecutionResult in history",
+      { contents: [{ role: "user", parts: [{ codeExecutionResult: { output: "1" } }] }] },
+    ],
+    [
+      "gemini code_execution_result (snake) in history",
+      { contents: [{ parts: [{ code_execution_result: { output: "1" } }] }] },
+    ],
+    ["gemini tool_config beyond function calling", { tool_config: { retrievalConfig: {} } }],
+    ["openai web_search_options", { web_search_options: {} }],
+    ["openrouter plugins", { plugins: [{ id: "web" }] }],
+    ["xai search_parameters", { search_parameters: { mode: "auto" } }],
+    ["responses background", { background: true, store: true }],
+    ["assistants tool_resources", { tool_resources: { file_search: {} } }],
+    ["anthropic mcp_servers", { mcp_servers: [] }],
+    ["typeless tool with no name", { tools: [{ description: "?" }] }],
+  ];
+  for (const [label, body] of refused) {
+    assert.equal(hasProviderExecutedTools(body), true, label);
+  }
+  const allowed: Array<[string, Record<string, unknown>]> = [
+    ["gemini function declarations", { tools: [{ functionDeclarations: [{ name: "f" }] }] }],
+    [
+      "gemini function-calling-only tool_config",
+      { toolConfig: { functionCallingConfig: { mode: "AUTO" } } },
+    ],
+    [
+      "openai tool_choice / parallel_tool_calls",
+      { tool_choice: "auto", parallel_tool_calls: true },
+    ],
+    [
+      "anthropic custom tool with metadata keys",
+      { tools: [{ name: "read_file", input_schema: {}, cache_control: { type: "ephemeral" } }] },
+    ],
+    ["responses store without background", { store: true }],
+  ];
+  for (const [label, body] of allowed) {
+    assert.equal(hasProviderExecutedTools(body), false, label);
+  }
+});
+
+test("guard: one stall failover per REQUEST, shared with forked (staged) guards (review item 6)", async () => {
+  await withFlags(true, async () => {
+    const parent = guardFor();
+    const first = await parent.fork(TOOL_BODY, 5).wrap(firstEventStall())(
+      TOOL_BODY,
+      "openai/m1",
+      {} as never
+    );
+    assert.equal(isRoutingTerminal(first), false, "the first stall moves on");
+    const second = await parent.fork(TOOL_BODY, 5).wrap(firstEventStall())(
+      TOOL_BODY,
+      "openai/m2",
+      {} as never
+    );
+    assert.equal(isRoutingTerminal(second), true, "a second fork cannot spend another");
+  });
+});
+
+test("guard: a headers-phase failover emits the outcome record, and a refusal names its reason", async () => {
+  await withFlags(true, async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const guard = createRoutingAttemptGuard({
+      body: TOOL_BODY,
+      limit: 30,
+      emit: (event) => events.push(event),
+    });
+    await guard.wrap(stalledDispatch())(TOOL_BODY, "openai/m1", { provider: "openai" } as never);
+    const outcome = events.find((e) => e.event === "outcome");
+    assert.ok(outcome, JSON.stringify(events));
+    assert.equal(outcome!.status, 504);
+    assert.equal(outcome!.code, "upstream_stalled");
+    assert.equal(outcome!.execution, "uncertain");
+    assert.ok(events.some((e) => e.event === "stall_failover"));
+
+    const signedBody = {
+      messages: [
+        { role: "assistant", content: [{ type: "thinking", thinking: "x", signature: "sig" }] },
+      ],
+    };
+    const refusals: Array<Record<string, unknown>> = [];
+    await createRoutingAttemptGuard({
+      body: signedBody,
+      limit: 30,
+      emit: (event) => refusals.push(event),
+    }).wrap(firstEventStall())(signedBody, "openai/m1", {} as never);
+    assert.ok(
+      refusals.some(
+        (e) => e.event === "stall_failover_refused" && e.reason === "provider_bound_unsanitized"
+      ),
+      JSON.stringify(refusals)
+    );
+  });
+});

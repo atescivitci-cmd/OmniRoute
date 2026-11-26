@@ -170,7 +170,7 @@ export function inspectReplayInput(body: Record<string, unknown>): ReplayInput {
 // items), Anthropic (tools incl. server tools, mcp_servers, tool_use / server_tool_use /
 // mcp_tool_use / *_tool_result blocks) and Gemini (tools, tool_config / toolConfig,
 // functionCall / functionResponse parts).
-const REPLAY_UNSAFE_TOP_LEVEL_KEYS = [
+export const REPLAY_UNSAFE_TOP_LEVEL_KEYS = [
   "tool_choice",
   "function_call",
   "mcp_servers",
@@ -358,6 +358,8 @@ export function inheritRoutingGuard(wrapper: HandleSingleModel, original: Handle
 type AttemptBudget = {
   startedAt: number;
   attempts: number;
+  /** Stall failovers spent by this request (combo/stallFailover.ts), shared with every fork. */
+  stallFailovers?: number;
   limit: number;
   deadlineMs?: number;
   signal?: AbortSignal | null;
@@ -416,7 +418,7 @@ export function createRoutingAttemptGuard(options: {
   // mid-request env change cannot widen the exception.
   const stallFailoverEnabled = isStallFailoverEnabled();
   const providerExecutedTools = stallFailoverEnabled && hasProviderExecutedTools(options.body);
-  let stallFailoversUsed = 0;
+
   /**
    * The narrow exception: may this failed attempt advance to the next target? `transportStopped`
    * is the transport error the attempt ended with, when it ended with one.
@@ -446,7 +448,7 @@ export function createRoutingAttemptGuard(options: {
       hardBound: input.hardBound,
       providerBound: input.providerBound,
       sanitizedSwitch,
-      failoversUsed: stallFailoversUsed,
+      failoversUsed: budget.stallFailovers ?? 0,
       callerAborted:
         options.signal?.aborted === true ||
         budget.signal?.aborted === true ||
@@ -776,7 +778,7 @@ export function createRoutingAttemptGuard(options: {
           // STALL_FAILOVER: our own stall abort before any model output (combo/stallFailover.ts).
           // Placed before the provider-bound, nvidia and tool stops it is the exception to.
           if (stallFailoverAllowed(result, transport, null, target?.modelAbortSignal)) {
-            stallFailoversUsed++;
+            budget.stallFailovers = (budget.stallFailovers ?? 0) + 1;
             rejectedModels.add(model);
             emit({ event: "stall_failover", model: safeId(model), status: result.status });
             priorFailure = result;
@@ -876,8 +878,21 @@ export function createRoutingAttemptGuard(options: {
             ) &&
             stallFailoverAllowed(received, transportForCatch, error, target?.modelAbortSignal)
           ) {
-            stallFailoversUsed++;
+            budget.stallFailovers = (budget.stallFailovers ?? 0) + 1;
             rejectedModels.add(model);
+            // Same outcome record as the normal path, so both attempts show in the chain. The
+            // fetch was aborted by our own stall deadline: execution outcome is uncertain.
+            emit({
+              event: "outcome",
+              attempt: attempts,
+              provider: safeId(typed?.provider),
+              model: safeId(model),
+              status: (received as Response).status,
+              code: "upstream_stalled",
+              reason: null,
+              durationMs: Date.now() - start,
+              execution: "uncertain",
+            });
             emit({
               event: "stall_failover",
               model: safeId(model),
