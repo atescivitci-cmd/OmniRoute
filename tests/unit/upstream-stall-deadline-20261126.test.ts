@@ -13,8 +13,13 @@ import {
   createUpstreamStalledError,
   createUpstreamStalledResponse,
   isUpstreamStalledError,
+  resolveFirstEventWait,
   resolveRoutingStallDeadlineMs,
 } from "../../open-sse/handlers/chatCore/upstreamStall.ts";
+import {
+  ensureStreamReadiness,
+  STREAM_READINESS_CLIENT_ABORT_CODE,
+} from "../../open-sse/utils/streamReadiness.ts";
 import {
   BROKEN_NOW_MIN_FAILURES,
   brokenNowFor,
@@ -45,15 +50,14 @@ test("flag parsing: unset, empty, zero, negative and junk are off; a positive nu
   );
 });
 
-test("a disabled watch never aborts, never reports overdue, and leaves readiness budget unlimited", () => {
+test("a disabled watch never aborts and leaves the first-event budget unlimited", () => {
   const watch = createUpstreamStallWatch({ deadlineMs: 0, provider: "p", model: "m" });
   assert.equal(watch.enabled, false);
   assert.equal(watch.beginAttempt(), null);
   watch.markHeaders(true);
   assert.equal(watch.remainingMs(), Infinity);
-  assert.equal(watch.isOverdue(Date.now() + 10 ** 9), false);
+  assert.equal(watch.markFirstEvent(), null);
   watch.endAttempt();
-  assert.equal(watch.isOverdue(Date.now() + 10 ** 9), false);
 });
 
 test("the attempt signal aborts at the deadline with a trusted stall error when no headers arrive", async () => {
@@ -67,11 +71,10 @@ test("the attempt signal aborts at the deadline with a trusted stall error when 
   assert.equal((signal.reason as { status: number }).status, 504);
   assert.equal((signal.reason as Error).name, "TimeoutError");
   assert.match((signal.reason as Error).message, /nvidia\/glm/);
-  assert.equal(watch.isOverdue(), true);
   watch.dispose();
 });
 
-test("headers before the deadline stop the timer; the first-event phase spends the rest of the budget", async () => {
+test("headers before the deadline stop the timer; the first-event phase gets the rest of the budget", async () => {
   const watch = createUpstreamStallWatch({ deadlineMs: 60, provider: "p", model: "m" });
   const signal = watch.beginAttempt()!;
   await sleep(20);
@@ -80,48 +83,57 @@ test("headers before the deadline stop the timer; the first-event phase spends t
   assert.ok(remaining > 0 && remaining <= 40, `remaining ${remaining}`);
   await sleep(80);
   assert.equal(signal.aborted, false, "the headers timer no longer fires");
-  assert.equal(watch.isOverdue(), true, "no first event yet and past the deadline");
   assert.equal(watch.remainingMs(), 1, "budget never reads as 0 (0 would disable readiness)");
-  watch.markFirstEvent();
-  assert.equal(watch.isOverdue(), false);
+  const firstEventMs = watch.markFirstEvent();
+  assert.ok(firstEventMs !== null && firstEventMs >= 100, `first event after ${firstEventMs}`);
   assert.equal(watch.remainingMs(), Infinity);
 });
 
-test("a body drained server-side (headers, no readiness wait) is not watched past the headers", async () => {
+test("headers without a first-event wait (JSON body, server-side drain) close the watch", async () => {
   const watch = createUpstreamStallWatch({ deadlineMs: 20, provider: "p", model: "m" });
-  watch.beginAttempt();
+  const signal = watch.beginAttempt()!;
   watch.markHeaders(false);
   await sleep(50);
-  assert.equal(watch.isOverdue(), false);
+  assert.equal(signal.aborted, false);
+  assert.equal(watch.remainingMs(), Infinity, "readiness keeps its own timeout");
+  assert.equal(watch.markFirstEvent(), null, "nothing was watched");
 });
 
-test("a client that leaves an attempt already past the deadline is a stall; one that leaves earlier is not", async () => {
-  const early = createUpstreamStallWatch({ deadlineMs: 200, provider: "p", model: "m" });
-  early.beginAttempt();
-  await sleep(10);
-  early.endAttempt(); // the client abort reached the attempt before the deadline
-  assert.equal(early.isOverdue(), false, "early leave stays a client disconnect");
+test("an attempt that ends without a response stops its timer (no late abort, no stray STALL log)", async () => {
+  const warnings: string[] = [];
+  const watch = createUpstreamStallWatch({
+    deadlineMs: 30,
+    provider: "p",
+    model: "m",
+    log: { warn: (_tag, message) => warnings.push(message) },
+  });
+  const signal = watch.beginAttempt()!;
+  watch.endAttempt(); // e.g. ECONNREFUSED before the deadline
+  await sleep(60);
+  assert.equal(signal.aborted, false);
+  assert.deepEqual(warnings, []);
+});
 
-  const late = createUpstreamStallWatch({ deadlineMs: 20, provider: "p", model: "m" });
-  late.beginAttempt();
-  late.markHeaders(true);
-  await sleep(40);
-  late.endAttempt(); // the client left while no first event had come
-  assert.equal(late.isOverdue(), true, "the frozen outcome survives the attempt's end");
-
-  // A model that was streaming normally when the client pressed Escape stays client_disconnected.
-  const streaming = createUpstreamStallWatch({ deadlineMs: 20, provider: "p", model: "m" });
-  streaming.beginAttempt();
-  streaming.markHeaders(true);
-  streaming.markFirstEvent();
-  await sleep(40);
-  streaming.endAttempt();
-  assert.equal(streaming.isOverdue(), false);
-
-  // A new attempt starts clean.
-  late.beginAttempt();
-  assert.equal(late.isOverdue(), false);
-  late.dispose();
+test("first-event wait: the deadline never shortens readiness and labels by the binding bound", () => {
+  // Watch off: readiness unchanged, never a stall.
+  assert.deepEqual(resolveFirstEventWait(80_000, Infinity), {
+    timeoutMs: 80_000,
+    stallBound: false,
+  });
+  // Readiness (adaptive, e.g. 180 s) longer than the rest of the deadline: readiness wins.
+  assert.deepEqual(resolveFirstEventWait(180_000, 110_000), {
+    timeoutMs: 180_000,
+    stallBound: false,
+  });
+  // Rest of the deadline longer than readiness: the wait extends to the deadline.
+  assert.deepEqual(resolveFirstEventWait(80_000, 110_000), {
+    timeoutMs: 110_000,
+    stallBound: true,
+  });
+  // Equal: readiness is binding (its own label is kept).
+  assert.deepEqual(resolveFirstEventWait(80_000, 80_000), { timeoutMs: 80_000, stallBound: false });
+  // Readiness disabled: the deadline alone bounds the wait.
+  assert.deepEqual(resolveFirstEventWait(0, 5_000), { timeoutMs: 5_000, stallBound: true });
 });
 
 test("only errors the watch created are trusted as stalls", () => {
@@ -202,4 +214,46 @@ test("quality-first: an upstream_stalled row is a real model failure, and three 
     brokenNowFor({ recentRealFailures: failures, modelLocked: false, providerCooldown: false }),
     { reason: "broken_now_recent_failures", recentRealFailures: 3, windowMinutes: 30 }
   );
+});
+
+test("stream readiness: a client abort during the first-event wait is client_disconnected (499), not a timeout", async () => {
+  const controller = new AbortController();
+  const body = new ReadableStream<Uint8Array>({
+    start(sink) {
+      sink.enqueue(new TextEncoder().encode(": ping\n\n"));
+      controller.signal.addEventListener("abort", () => {
+        const error = new Error("The operation was aborted");
+        error.name = "AbortError";
+        sink.error(error);
+      });
+    },
+  });
+  setTimeout(() => controller.abort(), 20);
+  const result = await ensureStreamReadiness(
+    new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
+    { timeoutMs: 5_000, provider: "p", model: "m" }
+  );
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.code, STREAM_READINESS_CLIENT_ABORT_CODE);
+  assert.equal(result.response.status, 499);
+});
+
+test("stream readiness: a non-abort body error and a real timeout keep STREAM_READINESS_TIMEOUT", async () => {
+  const broken = new ReadableStream<Uint8Array>({
+    start(sink) {
+      setTimeout(() => sink.error(new Error("socket hang up")), 10);
+    },
+  });
+  const failed = await ensureStreamReadiness(new Response(broken, { status: 200 }), {
+    timeoutMs: 5_000,
+  });
+  assert.equal(failed.ok === false && failed.code, "STREAM_READINESS_TIMEOUT");
+
+  const silent = new ReadableStream<Uint8Array>({ start() {} });
+  const timedOut = await ensureStreamReadiness(new Response(silent, { status: 200 }), {
+    timeoutMs: 30,
+  });
+  assert.equal(timedOut.ok === false && timedOut.code, "STREAM_READINESS_TIMEOUT");
+  assert.equal(timedOut.ok === false && timedOut.response.status, 504);
 });

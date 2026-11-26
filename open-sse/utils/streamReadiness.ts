@@ -1,4 +1,8 @@
 import { HTTP_STATUS } from "../config/constants.ts";
+import { isLocalStreamLifecycleError } from "@/shared/utils/circuitBreaker";
+
+/** Readiness ended because the client (or its caller) aborted, not because the model stalled. */
+export const STREAM_READINESS_CLIENT_ABORT_CODE = "client_disconnected";
 
 type StreamReadinessLogger = {
   debug?: (tag: string, message: string) => void;
@@ -428,7 +432,33 @@ export async function ensureStreamReadiness(
       let readResult: ReadableStreamReadResult<Uint8Array>;
       try {
         readResult = await readWithTimeout(reader, remainingMs);
-      } catch {
+      } catch (error) {
+        // A client that leaves while the first event is awaited aborts the upstream body, which
+        // rejects this read. That is the client leaving, not the model stalling: reporting it as
+        // STREAM_READINESS_TIMEOUT wrote a model failure, so a few quick Escapes could get a
+        // healthy model excluded as "broken right now". Our own timeout rejects with a plain
+        // Error("STREAM_READINESS_TIMEOUT"), which is not a lifecycle error. Any other read error
+        // keeps today's timeout classification.
+        if (isLocalStreamLifecycleError(error)) {
+          const reason = "Client disconnected before the first stream event";
+          options.log?.debug?.(
+            "STREAM",
+            `${reason} (${options.provider || "provider"}/${options.model || "unknown"})`
+          );
+          await reader.cancel(reason).catch(() => {});
+          return {
+            ok: false,
+            reason,
+            code: STREAM_READINESS_CLIENT_ABORT_CODE,
+            type: STREAM_READINESS_CLIENT_ABORT_CODE,
+            response: createErrorResponse(
+              499,
+              reason,
+              STREAM_READINESS_CLIENT_ABORT_CODE,
+              STREAM_READINESS_CLIENT_ABORT_CODE
+            ),
+          };
+        }
         const reason = timeoutReason();
         options.log?.warn?.(
           "STREAM",

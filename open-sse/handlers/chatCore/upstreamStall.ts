@@ -1,26 +1,33 @@
 /**
  * Per-attempt "no first byte" deadline for a combo attempt whose upstream call streams
- * (ROUTING_STALL_DEADLINE_MS, default off).
+ * (ROUTING_STALL_DEADLINE_MS, default off; recommended value when enabled: 120000).
  *
  * Live 2026-11-26: a model that never answered (nvidia/z-ai/glm-5.3-flash) held each combo
  * request until the client gave up at 140 s. Nothing before that could fire: the combo per-target
  * headers timeout is 310 s while combo cooldown-wait is on (max(120 s, wait budget + 10 s)), the
- * upstream start timeout is FETCH_TIMEOUT_MS (600 s), and stream readiness (80 s) only starts once
- * response headers exist. The client's abort then wrote no usage row for the model at all (a
- * client abort is deliberately not a provider failure), so the "broken right now" guard never saw
- * the stall and the model stayed first in rotation.
+ * upstream start timeout is FETCH_TIMEOUT_MS (600 s), and stream readiness (80 s, adaptive up to
+ * 180 s) only starts once response headers exist. The client's abort then wrote no usage row for
+ * the model at all, so the "broken right now" guard never saw the stall.
  *
- * With the flag set, an attempt that streams upstream must produce its first non-ping SSE event
- * (headers plus first event) within the deadline, counted from the moment the attempt is
- * dispatched (after any local queue or semaphore wait). Otherwise the attempt is aborted, a
- * per-model usage row is written as 504 `upstream_stalled`, and the combo moves to the next
- * candidate. Nothing has reached the client at that point: chatCore holds the response until
- * stream readiness confirms the first event.
+ * With the flag set, the deadline counts from dispatch (after any local queue or semaphore wait):
+ *   - Headers phase: no response headers by the deadline aborts the attempt.
+ *   - First-event phase: stream readiness waits max(its own adaptive timeout, what is left of the
+ *     deadline). The deadline never shortens what readiness already grants; it only extends the
+ *     wait to the deadline when readiness alone would give up earlier, and labels the timeout
+ *     upstream_stalled when the deadline was the binding bound.
+ * A stall writes a per-model 504 `upstream_stalled` row and returns a JSON 504 to the combo.
+ * Nothing has reached the client at that point: chatCore holds the response until stream
+ * readiness confirms the first event. Whether the combo then fails over is decided by the
+ * routing replay-safety guard, unchanged here.
  *
- * Deliberately NOT applied to an upstream call that does not stream. A non-streaming upstream
- * legitimately sends nothing (not even headers, for most providers) until the whole generation is
- * done, and real non-streaming generations of 60 to 285 s exist, so "no first byte yet" is no
- * evidence of a stall there. Those attempts keep today's timeouts.
+ * Why 120 s and not lower: live nvidia/mistralai/mistral-large-4-1t-a52b on /v1/messages had
+ * successful answers with tiny outputs after 73 s and 285 s, so first-token time itself can be
+ * that long; usage_history.ttft_ms cannot settle it (it equals latency_ms for streams).
+ *
+ * Deliberately NOT applied to an upstream call that does not stream, nor to a stream:true call
+ * that the upstream answered with a JSON body. Those legitimately send nothing until the whole
+ * generation is done (real non-streaming generations of 60 to 285 s exist), so "no first byte
+ * yet" is no evidence of a stall. They keep today's timeouts.
  */
 
 export const UPSTREAM_STALLED_CODE = "upstream_stalled";
@@ -83,26 +90,20 @@ export type UpstreamStallWatch = {
    */
   beginAttempt: () => AbortSignal | null;
   /**
-   * Response headers arrived. The headers timer stops; when the caller will next wait for the
-   * first stream event (stream readiness) it passes `awaitFirstEvent` and spends the rest of the
-   * budget there. Otherwise (the body is drained server-side) the watch is finished.
+   * Response headers arrived. The headers timer stops. Pass `awaitFirstEvent` only when the
+   * caller will next wait for the first SSE event (stream readiness); otherwise (a JSON body, or
+   * a body drained server-side) the watch is finished for this attempt.
    */
   markHeaders: (awaitFirstEvent: boolean) => void;
-  /** The first non-ping event arrived: the attempt is not stalled. */
-  markFirstEvent: () => void;
-  /**
-   * The attempt ended without a response (it threw). Stops the timer and freezes whether it was
-   * already overdue, so the handler that maps the error can still read `isOverdue()`.
-   */
+  /** The first non-ping event arrived. Returns ms from dispatch to it, or null when not watched. */
+  markFirstEvent: () => number | null;
+  /** The attempt ended without a response (it threw): stop the timer, close the phase. */
   endAttempt: () => void;
-  /** Budget left for the first event, in ms (at least 1 while a phase is open). */
-  remainingMs: (now?: number) => number;
   /**
-   * True while an attempt is still waiting for headers or its first event and has been waiting
-   * for at least the deadline. A client that disconnects at that point left because the model
-   * stalled, so the model's row says so instead of `client_disconnected`.
+   * Budget for the first event in ms: what is left of the deadline (at least 1), or Infinity when
+   * no first-event phase is open.
    */
-  isOverdue: (now?: number) => boolean;
+  remainingMs: (now?: number) => number;
   dispose: () => void;
 };
 
@@ -111,10 +112,9 @@ const DISABLED_WATCH: UpstreamStallWatch = {
   deadlineMs: 0,
   beginAttempt: () => null,
   markHeaders: () => {},
-  markFirstEvent: () => {},
+  markFirstEvent: () => null,
   endAttempt: () => {},
   remainingMs: () => Infinity,
-  isOverdue: () => false,
   dispose: () => {},
 };
 
@@ -129,8 +129,6 @@ export function createUpstreamStallWatch(options: {
 
   let phase: StallPhase = "idle";
   let startedAt = 0;
-  // Whether the last attempt that ended without a response had already waited past the deadline.
-  let endedOverdue = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const clearTimer = () => {
@@ -145,7 +143,6 @@ export function createUpstreamStallWatch(options: {
       clearTimer();
       phase = "awaiting_headers";
       startedAt = Date.now();
-      endedOverdue = false;
       const controller = new AbortController();
       timer = setTimeout(() => {
         timer = null;
@@ -165,25 +162,38 @@ export function createUpstreamStallWatch(options: {
     },
     markFirstEvent() {
       clearTimer();
+      const watched = phase === "awaiting_first_event";
       phase = "done";
-      endedOverdue = false;
+      return watched ? Date.now() - startedAt : null;
     },
     endAttempt() {
       clearTimer();
-      if (phase !== "awaiting_headers" && phase !== "awaiting_first_event") return;
-      endedOverdue = Date.now() - startedAt >= deadlineMs;
       phase = "done";
     },
     remainingMs(now = Date.now()) {
-      if (phase === "idle" || phase === "done") return Infinity;
+      if (phase !== "awaiting_first_event") return Infinity;
       return Math.max(1, startedAt + deadlineMs - now);
-    },
-    isOverdue(now = Date.now()) {
-      if (phase !== "awaiting_headers" && phase !== "awaiting_first_event") return endedOverdue;
-      return now - startedAt >= deadlineMs;
     },
     dispose() {
       clearTimer();
     },
   };
+}
+
+/**
+ * The first-event wait under the stall deadline: never shorter than stream readiness's own
+ * (adaptive) timeout, extended to the rest of the stall budget when that is longer. Reports which
+ * bound is binding so a timeout is labelled by cause, not by clock comparison afterwards.
+ */
+export function resolveFirstEventWait(
+  readinessTimeoutMs: number,
+  stallRemainingMs: number
+): { timeoutMs: number; stallBound: boolean } {
+  if (!Number.isFinite(stallRemainingMs))
+    return { timeoutMs: readinessTimeoutMs, stallBound: false };
+  // readiness <= 0 means readiness is off; the stall budget alone then bounds the wait.
+  if (readinessTimeoutMs <= 0) return { timeoutMs: stallRemainingMs, stallBound: true };
+  return stallRemainingMs > readinessTimeoutMs
+    ? { timeoutMs: stallRemainingMs, stallBound: true }
+    : { timeoutMs: readinessTimeoutMs, stallBound: false };
 }
