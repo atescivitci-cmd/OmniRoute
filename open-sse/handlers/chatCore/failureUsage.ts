@@ -20,11 +20,20 @@ export function buildFailureUsageRecord(opts: {
   errorCode: string | null | undefined;
   latencyMs: number;
   endpoint?: string | null | undefined;
+  /**
+   * Usage the provider reported for a response that was received but rejected afterwards (for
+   * example a 200 with no usable output). The provider billed those tokens, so the failure row
+   * carries them. Absent: zeroed, as for every failure that produced no response.
+   */
+  tokens?: object | null;
 }) {
   return {
     provider: opts.provider || "unknown",
     model: opts.model || "unknown",
-    tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, reasoning: 0 },
+    tokens:
+      opts.tokens && typeof opts.tokens === "object"
+        ? opts.tokens
+        : { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, reasoning: 0 },
     status: String(opts.statusCode),
     success: false,
     latencyMs: opts.latencyMs,

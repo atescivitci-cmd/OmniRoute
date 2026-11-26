@@ -13,6 +13,8 @@ import { requestCompatibilityErrorResult } from "../requestCompatibilityResponse
 import { inferFitFirstTaskType, inferRequiredCapabilities } from "../autoCombo/fitFirstPolicy.ts";
 import { hasCurrentCostAdmission, zeroCostErrorResponse } from "../autoCombo/zeroCostAdmission.ts";
 import { resolveFitFirstFreeConfig } from "../autoCombo/fitFirstPolicy.ts";
+import { fairSelectionSettings } from "../autoCombo/fairSelectionSettings.ts";
+import { deriveRequestClass } from "../autoCombo/requestClass.ts";
 import { randomUUID } from "node:crypto";
 import {
   errorResponse,
@@ -88,7 +90,8 @@ type BuildAutoCandidates = (
   sessionId?: string | null,
   resetWindowConfig?: ResetWindowConfig,
   resilienceSettings?: ResilienceSettings | null,
-  bypassQuotaPolicy?: boolean
+  bypassQuotaPolicy?: boolean,
+  evidenceOptions?: { requestClass?: string | null }
 ) => Promise<AutoProviderCandidate[]>;
 
 export interface ResolveAutoStrategyDeps {
@@ -430,7 +433,10 @@ export async function resolveAutoStrategyOrder(
     relayOptions?.sessionId,
     resetWindowConfig,
     resilienceSettings,
-    relayOptions?.bypassProviderQuotaPolicy === true
+    relayOptions?.bypassProviderQuotaPolicy === true,
+    // ROUTING_DURABLE_EVIDENCE: the request's class selects which evidence family ranks it. Not
+    // derived (and not passed) while the setting is off, so the default call is unchanged.
+    fairSelectionSettings().durableEvidence ? { requestClass: deriveRequestClass(body) } : undefined
   );
   const expandedCandidates = candidates;
   // Account expansion happens inside buildAutoCandidates; model-free catalog

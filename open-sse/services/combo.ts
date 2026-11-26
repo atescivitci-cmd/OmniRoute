@@ -229,6 +229,14 @@ import {
 } from "./combo/comboStructure.ts";
 import { fairSelectionSettings } from "./autoCombo/fairSelectionSettings.ts";
 import { aggregateOutcomeRows, type PoolClassEvidence } from "./autoCombo/classEvidence.ts";
+import { requestClassTier } from "./autoCombo/requestClass.ts";
+import {
+  DURABLE_EVIDENCE_WINDOW_HOURS,
+  aggregateDurableEvidence,
+  requestClassFamily,
+  totalExcluded,
+} from "./autoCombo/durableEvidence.ts";
+import type { DurableEvidenceNote } from "./combo/types.ts";
 import { getKnownContextOverflow } from "./combo/knownContextOverflow.ts";
 import {
   QUOTA_SOFT_DEPRIORITIZE_FACTOR,
@@ -335,7 +343,12 @@ export async function buildAutoCandidates(
   sessionId: string | null | undefined = null,
   resetWindowConfig: ResetWindowConfig = resolveResetWindowConfig(null),
   resilienceSettings: ResilienceSettings | null = null,
-  bypassQuotaPolicy = false
+  bypassQuotaPolicy = false,
+  /**
+   * The request's class (requestClass.ts). Read only while ROUTING_DURABLE_EVIDENCE is on: it
+   * selects the evidence family. Absent or null keeps the 24 h evidence for that request.
+   */
+  evidenceOptions: { requestClass?: string | null } = {}
 ): Promise<AutoProviderCandidate[]> {
   const hiddenModelsMap = getHiddenModelsByProvider();
   const metrics = getComboMetrics(comboName);
@@ -347,18 +360,68 @@ export async function buildAutoCandidates(
   const { getPricingForModel } = await import("../../src/lib/localDb");
   const quotaPromises = new Map<string, Promise<unknown>>();
   let historicalLatencyStats: Record<string, HistoricalLatencyStatsEntry> = {};
-  try {
-    const { getModelLatencyStats } = await import("../../src/lib/usageDb");
-    historicalLatencyStats = await getModelLatencyStats({
-      windowHours: 24,
-      minSamples: 3,
-      maxRows: 10000,
-      // ROUTING_CLIENT_ABANDON_NEUTRAL (default off): a client closing a stream within seconds is
-      // not a failure of the model. Absent unless the setting is on, so the default call is unchanged.
-      ...(fairSelectionSettings().clientAbandonNeutral ? { excludeClientAbandons: true } : {}),
-    });
-  } catch {
-    // keep empty stats — auto-combo will use runtime + bootstrap signals
+  // ROUTING_DURABLE_EVIDENCE (default off): 7-day decayed evidence from rows of the request's
+  // class family only (durableEvidence.ts). Needs a request class; without one, or when the read
+  // fails, the 24 h evidence below is used and the note says why.
+  let durableEvidence: DurableEvidenceNote | undefined;
+  const durableRequestClass = fairSelectionSettings().durableEvidence
+    ? (evidenceOptions.requestClass ?? null)
+    : null;
+  // Owner decision 2026-11-26 ("Keep them on NVIDIA"): only HEAVY-tier requests (tools, or an
+  // input of 8k tokens or more) use the durable evidence. A light request (c0*: no tools, small)
+  // takes exactly today's 24 h path below, so light chat keeps today's picks. Keyed on the request
+  // class only, never on a route, combo or client.
+  if (
+    durableRequestClass &&
+    requestClassFamily(durableRequestClass) &&
+    requestClassTier(durableRequestClass) !== "heavy"
+  ) {
+    durableEvidence = { status: "light_tier_24h" };
+  } else if (durableRequestClass && requestClassFamily(durableRequestClass)) {
+    try {
+      const { getModelEvidenceRows } = await import("../../src/lib/usageDb");
+      const durable = aggregateDurableEvidence(
+        await getModelEvidenceRows({ windowHours: DURABLE_EVIDENCE_WINDOW_HOURS, maxRows: 20000 }),
+        {
+          now: Date.now(),
+          requestClass: durableRequestClass,
+          excludeClientAbandons: fairSelectionSettings().clientAbandonNeutral,
+        }
+      );
+      historicalLatencyStats = durable.stats;
+      durableEvidence = {
+        status: "active",
+        windowHours: durable.windowHours,
+        halfLifeHours: durable.halfLifeHours,
+        classFamily: durable.family,
+        minSizeBucket: durable.minSizeBucket,
+        rowsUsed: durable.rowsUsed,
+        rowsExcluded: totalExcluded(durable.rowsExcluded),
+      };
+    } catch (err) {
+      durableEvidence = {
+        status: `unavailable:${err instanceof Error ? err.message.slice(0, 80) : "error"}`,
+      };
+      console.warn(
+        `[routing] durable evidence unavailable, using the 24 h evidence: ${durableEvidence.status}`
+      );
+    }
+  }
+  const durableActive = durableEvidence?.status === "active";
+  if (!durableActive) {
+    try {
+      const { getModelLatencyStats } = await import("../../src/lib/usageDb");
+      historicalLatencyStats = await getModelLatencyStats({
+        windowHours: 24,
+        minSamples: 3,
+        maxRows: 10000,
+        // ROUTING_CLIENT_ABANDON_NEUTRAL (default off): a client closing a stream within seconds is
+        // not a failure of the model. Absent unless the setting is on, so the default call is unchanged.
+        ...(fairSelectionSettings().clientAbandonNeutral ? { excludeClientAbandons: true } : {}),
+      });
+    } catch {
+      // keep empty stats — auto-combo will use runtime + bootstrap signals
+    }
   }
 
   // ROUTING_CLASS_EVIDENCE: success evidence per request class with partial pooling, shared by
@@ -594,7 +657,9 @@ export async function buildAutoCandidates(
         p95LatencyMs,
         latencyStdDev,
         latencySampleSource: hasSuccessfulLatencySignal
-          ? ("successful_usage_24h" as const)
+          ? durableActive
+            ? ("successful_usage_durable" as const)
+            : ("successful_usage_24h" as const)
           : ("unqualified" as const),
         successfulLatencySampleCount:
           hasHistoricalSignal &&
@@ -611,6 +676,13 @@ export async function buildAutoCandidates(
           runtimeSamples: modelMetric?.requests,
           runtimeLatest: modelMetric?.lastUsedAt,
           quota: quotaEvidence,
+          ...(durableActive && {
+            historicalSource: "usage_durable" as const,
+            historicalWindowHours: durableEvidence!.windowHours,
+            historicalEffectiveSamples: Number(
+              (historicalModelMetric as { effectiveSamples?: number } | null)?.effectiveSamples ?? 0
+            ),
+          }),
         }),
         ...speedTelemetry,
         accountTier: "standard" as const,
@@ -625,6 +697,7 @@ export async function buildAutoCandidates(
         connectionId: target.connectionId ?? undefined,
         ...(classEvidencePool && { classEvidencePool }),
         ...(classEvidenceStatus && { classEvidenceStatus }),
+        ...(durableEvidence && { durableEvidence }),
       };
     })
   );
