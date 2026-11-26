@@ -15,6 +15,7 @@
  * HTTP 402, which the status check in routingAttemptSafety.ts already handles.
  */
 const CREDIT_EXHAUSTION_PATTERNS: readonly RegExp[] = [
+  /\byou(?:'|’)ve reached your additional usage limit for your plan\b/i,
   /\bcredit[ _]balance[ _](?:is[ _])?too[ _]low\b/i,
   /\binsufficient[ _]quota\b/i,
   /\bexceeded[ ]your[ ]current(?:[ ]usage)?[ ]quota\b/i,
