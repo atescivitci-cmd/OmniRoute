@@ -1,4 +1,6 @@
 import { HTTP_STATUS } from "../config/constants.ts";
+/** Readiness ended because the client (or its caller) aborted, not because the model stalled. */
+export const STREAM_READINESS_CLIENT_ABORT_CODE = "client_disconnected";
 
 type StreamReadinessLogger = {
   debug?: (tag: string, message: string) => void;
@@ -374,6 +376,14 @@ export async function ensureStreamReadiness(
     provider?: string | null;
     model?: string | null;
     log?: StreamReadinessLogger | null;
+    /**
+     * The request's own abort signal (the client side). A read error while it is aborted is the
+     * client leaving, reported as client_disconnected. Without it, or while it is not aborted,
+     * any read error keeps the STREAM_READINESS_TIMEOUT classification: an error's name or
+     * message alone ("AbortError", "operation was aborted") cannot tell a client leaving apart
+     * from a local abort.
+     */
+    abortSignal?: AbortSignal | null;
   }
 ): Promise<StreamReadinessResult> {
   if (!response.body || options.timeoutMs <= 0) return { ok: true, response };
@@ -429,6 +439,31 @@ export async function ensureStreamReadiness(
       try {
         readResult = await readWithTimeout(reader, remainingMs);
       } catch {
+        // A client that leaves while the first event is awaited aborts the upstream body, which
+        // rejects this read. Reported as client_disconnected so the caller can decide, from how
+        // long the wait already ran, whether that is the client giving up on a stalled model or
+        // a quick Escape. Decided by the request's own signal, never by the error's shape. Our
+        // own timeout and every other read error keep STREAM_READINESS_TIMEOUT.
+        if (options.abortSignal?.aborted === true) {
+          const reason = "Client disconnected before the first stream event";
+          options.log?.debug?.(
+            "STREAM",
+            `${reason} (${options.provider || "provider"}/${options.model || "unknown"})`
+          );
+          await reader.cancel(reason).catch(() => {});
+          return {
+            ok: false,
+            reason,
+            code: STREAM_READINESS_CLIENT_ABORT_CODE,
+            type: STREAM_READINESS_CLIENT_ABORT_CODE,
+            response: createErrorResponse(
+              499,
+              reason,
+              STREAM_READINESS_CLIENT_ABORT_CODE,
+              STREAM_READINESS_CLIENT_ABORT_CODE
+            ),
+          };
+        }
         const reason = timeoutReason();
         options.log?.warn?.(
           "STREAM",

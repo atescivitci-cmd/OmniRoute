@@ -13,8 +13,8 @@
  * counted: client disconnects (error_code client_disconnected or HTTP 499: the client left) and
  * gateway errors (post_processing_error: the gateway threw after the model answered;
  * routing_transport_replay_blocked: the gateway refused to replay). Deadlines (routing_deadline,
- * probe_deadline) count: the model did not answer in time. With ROUTING_CANARY_NOT_EVIDENCE on,
- * routing-canary rows are not read at all.
+ * probe_deadline, upstream_stalled from ROUTING_STALL_DEADLINE_MS) count: the model did not answer
+ * in time. With ROUTING_CANARY_NOT_EVIDENCE on, routing-canary rows are not read at all.
  */
 import { USAGE_SOURCE_ROUTING_CANARY } from "../../../src/shared/constants/usageSource.ts";
 

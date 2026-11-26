@@ -153,7 +153,10 @@ import {
   COLORS,
   withBodyTimeout,
 } from "../utils/stream.ts";
-import { ensureStreamReadiness } from "../utils/streamReadiness.ts";
+import {
+  ensureStreamReadiness,
+  STREAM_READINESS_CLIENT_ABORT_CODE,
+} from "../utils/streamReadiness.ts";
 import { resolveSuppressThinkClose, THINKING_MARKER_HEADER } from "../utils/thinkCloseMarker.ts";
 import { resolveStreamReadinessTimeout } from "../utils/streamReadinessPolicy.ts";
 import { resolveAgentGoalPolicy } from "../utils/agentGoalPolicy.ts";
@@ -334,6 +337,15 @@ import {
   normalizeExecutorResult,
   executeWithUpstreamStartTimeout,
 } from "./chatCore/upstreamTimeouts.ts";
+import {
+  UPSTREAM_STALLED_CODE,
+  createUpstreamStallWatch,
+  createUpstreamStalledResponse,
+  isUpstreamStalledError,
+  classifyFirstEventClientAbort,
+  resolveFirstEventWait,
+  resolveRoutingStallDeadlineMs,
+} from "./chatCore/upstreamStall.ts";
 import { getModelNormalizeToolCallId, getModelPreserveOpenAIDeveloperRole } from "@/lib/localDb";
 import { getProviderCredentials, extractSessionAffinityKey } from "@/sse/services/auth";
 import { deleteSessionAccountAffinity } from "@/lib/db/sessionAccountAffinity";
@@ -686,13 +698,15 @@ async function handleChatCoreRequest({
   // path already records its own failure row. The abort reason is matched by
   // identity (see routingDeadlineReason.ts), never by message, so an upstream error cannot pose as
   // a local deadline. A client that gives up carries no such reason and stays unrecorded.
-  const persistProbeDeadlineUsage = () => {
+  // Returns whether a row was written.
+  const persistProbeDeadlineUsage = (): boolean => {
     if (requestUsageSource && clientRawRequest?.signal?.aborted) {
       persistFailureUsage(HTTP_STATUS.GATEWAY_TIMEOUT, "probe_deadline");
-      return;
+      return true;
     }
     const deadlineKind = routingDeadlineKind(clientRawRequest?.signal?.reason);
     if (deadlineKind) persistFailureUsage(HTTP_STATUS.GATEWAY_TIMEOUT, deadlineKind);
+    return Boolean(deadlineKind);
   };
 
   // Key-health updater extracted to chatCore/keyHealth.ts (#3501); bind the per-request log once
@@ -2157,6 +2171,16 @@ async function handleChatCoreRequest({
   // it back to JSON (same mechanism already used for Claude-Code-compatible
   // providers via isClaudeCodeCompatible).
   const upstreamStream = stream || isClaudeCodeCompatible || providerRequiresStreaming;
+  // ROUTING_STALL_DEADLINE_MS (default off): a combo attempt whose upstream call streams must
+  // produce its first event within the deadline or it is aborted, recorded against the model as
+  // 504 upstream_stalled, and the combo moves on. Not applied to non-streaming upstream calls,
+  // which legitimately send nothing until the whole answer is done (see upstreamStall.ts).
+  const upstreamStall = createUpstreamStallWatch({
+    deadlineMs: isCombo && upstreamStream ? resolveRoutingStallDeadlineMs() : 0,
+    provider: provider || "unknown",
+    model: model || "unknown",
+    log,
+  });
   let ccSessionId: string | null = null;
   const stripTypes = getStripTypesForProviderModel(provider || "", model || "");
 
@@ -3189,11 +3213,15 @@ async function handleChatCoreRequest({
                   updatePendingScope(pendingScope, {
                     stage: "rate_limit_slot_acquired",
                   });
+                  // The stall deadline counts from dispatch, after any local queue wait.
+                  const stallSignal = upstreamStall.beginAttempt();
                   return executeWithUpstreamStartTimeout({
                     executor,
                     provider,
                     model: modelToCall,
-                    signal: streamController.signal,
+                    signal: stallSignal
+                      ? AbortSignal.any([streamController.signal, stallSignal])
+                      : streamController.signal,
                     // A streaming client consumes the body live, so its disconnect must reach the
                     // upstream. A non-streaming request reads the body here and still wants the
                     // result for accounting after the client is gone.
@@ -3225,6 +3253,15 @@ async function handleChatCoreRequest({
                 streamController.signal
               );
               const res = normalizeExecutorResult(rawExecutorResult);
+              // Headers are in. A streaming client next waits for the first SSE event (stream
+              // readiness) under the stall budget. A body drained server-side, or a stream:true
+              // call answered with a JSON body (read whole by maybeConvertJsonBodyToSse), is
+              // not watched past this point: a JSON body legitimately arrives all at once.
+              upstreamStall.markHeaders(
+                Boolean(stream) &&
+                  res.response.ok &&
+                  !/application\/json/i.test(res.response.headers.get("content-type") || "")
+              );
               trace("post_executor", { status: res?.response?.status });
 
               // Track Gemini RPM + RPD request counts for 429 classification
@@ -3533,6 +3570,7 @@ async function handleChatCoreRequest({
               };
             } catch (error) {
               releaseAccountSemaphore();
+              upstreamStall.endAttempt();
               throw error;
             }
           }
@@ -3757,6 +3795,40 @@ async function handleChatCoreRequest({
       return requestCompatibilityErrorResult(error);
     }
     if (error instanceof ZeroCostAdmissionError) return zeroCostErrorResult(error);
+    if (isUpstreamStalledError(error)) {
+      // Our own stall deadline cut this attempt before any response headers. Record it against
+      // the model and hand the combo a JSON failure (nothing reached the client yet). It must
+      // carry errorType "stream_timeout", the same class as a stream-readiness stall: chat.ts
+      // then returns it without cooling the connection down, and the combo neither retries the
+      // same model nor trips the provider breaker. The generic catch below would tag it
+      // "upstream_timeout", which takes a different path. Antigravity is the one exception, as
+      // it already is for readiness stalls: its own policy cools the account on stream_timeout.
+      // Whether the combo may then fail over is the replay-safety guard's decision.
+      const stallMessage = (error as Error).message;
+      appendRequestLog({
+        model,
+        provider,
+        connectionId,
+        status: `FAILED ${HTTP_STATUS.GATEWAY_TIMEOUT}`,
+      }).catch(() => {});
+      persistAttemptLogs({
+        status: HTTP_STATUS.GATEWAY_TIMEOUT,
+        error: stallMessage,
+        providerRequest: finalBody || translatedBody,
+        clientResponse: buildErrorBody(HTTP_STATUS.GATEWAY_TIMEOUT, stallMessage),
+        claudeCacheMeta: claudePromptCacheLogMeta,
+        cacheSource: "upstream",
+      });
+      persistFailureUsage(HTTP_STATUS.GATEWAY_TIMEOUT, UPSTREAM_STALLED_CODE);
+      return {
+        success: false,
+        status: HTTP_STATUS.GATEWAY_TIMEOUT,
+        error: stallMessage,
+        errorType: "stream_timeout",
+        errorCode: UPSTREAM_STALLED_CODE,
+        response: createUpstreamStalledResponse(stallMessage),
+      };
+    }
     if (isSemaphoreCapacityError(error)) {
       appendRequestLog({
         model,
@@ -5428,12 +5500,73 @@ async function handleChatCoreRequest({
     );
   }
 
-  const streamReadiness = await ensureStreamReadiness(providerResponse, {
-    timeoutMs: streamReadinessPolicy.timeoutMs,
+  // With the stall deadline on, the first-event wait is max(readiness's own adaptive timeout,
+  // what is left of the stall budget counted from dispatch): the deadline never shortens what
+  // readiness grants, and a timeout is labelled by whichever bound was binding.
+  const firstEventWait = resolveFirstEventWait(
+    streamReadinessPolicy.timeoutMs,
+    upstreamStall.remainingMs()
+  );
+  const readinessStartedAt = Date.now();
+  let streamReadiness = await ensureStreamReadiness(providerResponse, {
+    timeoutMs: firstEventWait.timeoutMs,
     provider,
     model,
     log,
+    abortSignal: clientRawRequest?.signal ?? null,
   });
+  if (
+    streamReadiness.ok === false &&
+    streamReadiness.code === "STREAM_READINESS_TIMEOUT" &&
+    firstEventWait.stallBound
+  ) {
+    const stallMessage = `Upstream produced no response within ${upstreamStall.deadlineMs}ms (${provider}/${model})`;
+    log?.warn?.("STALL", `${stallMessage}; no first stream event`);
+    streamReadiness = {
+      ok: false,
+      reason: stallMessage,
+      code: UPSTREAM_STALLED_CODE,
+      type: "stream_timeout",
+      response: createUpstreamStalledResponse(stallMessage),
+    };
+  }
+  if (streamReadiness.ok === true) {
+    const firstEventMs = upstreamStall.markFirstEvent();
+    // Real time to first event, for tuning ROUTING_STALL_DEADLINE_MS (usage_history.ttft_ms
+    // records total latency for streams). Logged only while the flag is on.
+    if (firstEventMs !== null) {
+      log?.info?.("STALL", `first stream event after ${firstEventMs}ms (${provider}/${model})`);
+    }
+  } else {
+    upstreamStall.endAttempt();
+  }
+  if (streamReadiness.ok === false && streamReadiness.code === STREAM_READINESS_CLIENT_ABORT_CODE) {
+    // The request's own signal aborted while the first event was awaited. Exactly one usage row:
+    // a probe or routing deadline when that was the cause; otherwise, by how long the model had
+    // already been given, a model failure (it stalled and outlasted the client) or a 499
+    // client_disconnected (a quick Escape). The response is a 499 either way: nobody is listening.
+    trackPendingRequest(model, provider, connectionId, false);
+    appendRequestLog({ model, provider, connectionId, status: "FAILED 499" }).catch(() => {});
+    persistAttemptLogs({
+      status: 499,
+      error: streamReadiness.reason,
+      providerRequest: finalBody || translatedBody,
+      // Nothing was delivered to the client (see the pre-headers abort path).
+      clientResponse: undefined,
+      claudeCacheMeta: claudePromptCacheLogMeta,
+      cacheSource: "upstream",
+    });
+    if (!persistProbeDeadlineUsage()) {
+      const row = classifyFirstEventClientAbort({
+        stallDeadlineMs: upstreamStall.deadlineMs,
+        attemptElapsedMs: upstreamStall.attemptElapsedMs(),
+        baseReadinessTimeoutMs: streamReadinessPolicy.baseTimeoutMs,
+        readinessElapsedMs: Date.now() - readinessStartedAt,
+      });
+      persistFailureUsage(row.status, row.code);
+    }
+    return createErrorResult(499, "Request aborted");
+  }
   if (streamReadiness.ok === false) {
     const { response: failureResponse, reason } = streamReadiness;
     const failure = {
