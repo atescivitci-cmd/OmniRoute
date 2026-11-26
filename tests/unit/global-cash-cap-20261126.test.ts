@@ -278,3 +278,60 @@ test("selection: the share limit holds only the provider that used its share", a
   assert.equal(await pick("glm"), null, "glm used its $15 share");
   assert.equal(await pick("deepseek"), other.id, "deepseek still under its share and the total");
 });
+
+// ── review fixes ─────────────────────────────────────────────────────────────
+
+test("streaming cost is attributed to the serving connection's provider", async () => {
+  const { recordStreamingCost } = await import("../../open-sse/handlers/chatCore/streamingCost.ts");
+  const seen: Array<string | undefined> = [];
+  const run = (costProvider?: string) =>
+    recordStreamingCost({
+      apiKeyId: "k",
+      provider: "nvidia",
+      model: "m",
+      streamUsage: { prompt_tokens: 1 },
+      cashClass: "metered",
+      ...(costProvider ? { costProvider } : {}),
+      calculateCost: async () => 1,
+      recordCost: (_k, _c, _cash, provider) => void seen.push(provider),
+    });
+  run("nvidia_nim");
+  run();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(seen, ["nvidia_nim", "nvidia"]);
+});
+
+test("a session pin cannot swap in a held metered account", async () => {
+  const affinity = await import("../../src/lib/db/sessionAccountAffinity.ts");
+  const { applySessionAffinityPin } = await import("../../src/sse/services/sessionAffinityPin.ts");
+  globalCap(50);
+  spend("k", "openai", 60); // cap reached
+  const conns = [
+    { id: "sub-x", provider: "glm", providerSpecificData: { cashClass: "subscription" } },
+    { id: "paid-y", provider: "glm", providerSpecificData: { cashClass: "metered" } },
+  ];
+  affinity.upsertSessionAccountAffinity("sess-1", "glm", "paid-y", Date.now(), 60_000);
+  const params = {
+    forcedConnectionId: "sub-x",
+    options: { sessionKey: "sess-1" },
+    sessionAffinityTtlMs: 60_000,
+    connections: conns,
+    provider: "glm",
+    requestedModel: null,
+    excludedConnectionIds: new Set<string>(),
+    isTerminalConnectionStatus: () => false,
+    isCodexScopeUnavailable: () => false,
+    isQuotaPolicyBlocked: () => false,
+  } as unknown as Parameters<typeof applySessionAffinityPin>[0];
+  assert.equal(applySessionAffinityPin(params), null, "held metered pin is not applied");
+  costRules.setBudget(GLOBAL_BUDGET_ID, { monthlyLimitUsd: 500 }); // cap lifted
+  assert.equal(applySessionAffinityPin(params), "paid-y", "pin applies when not capped");
+});
+
+test("deleting the global budget lifts the cap immediately", () => {
+  globalCap(50);
+  spend("k", "openai", 60);
+  assert.equal(costRules.isProviderCashCapped("openai"), true);
+  costRules.deleteBudget(GLOBAL_BUDGET_ID);
+  assert.equal(costRules.isProviderCashCapped("openai"), false);
+});

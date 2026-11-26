@@ -450,6 +450,7 @@ export function getBudget(apiKeyId: string): NormalizedBudgetConfig | null {
  */
 export function deleteBudget(apiKeyId: string) {
   budgets.delete(apiKeyId);
+  invalidateCashCapCache();
   discardSpendBatchEntries(apiKeyId);
   try {
     dbDeleteBudget(apiKeyId);

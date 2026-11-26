@@ -27,6 +27,8 @@ export function recordStreamingCost(args: {
   serviceTier?: string;
   /** Connection cash class; omitted means metered (cash cost = estimate). */
   cashClass?: CashClass;
+  /** Provider of the serving connection, recorded for share limits (falls back to provider). */
+  costProvider?: string | null;
   calculateCost: CostResolver;
   recordCost: (apiKeyId: string, cost: number, cashCost?: number, provider?: string) => void;
 }): void {
@@ -41,7 +43,7 @@ export function recordStreamingCost(args: {
           apiKeyId,
           estimatedCost,
           cashCostFor(estimatedCost, args.cashClass ?? "metered"),
-          args.provider ?? undefined
+          args.costProvider || args.provider || undefined
         );
     })
     .catch(() => {});
