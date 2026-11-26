@@ -56,6 +56,46 @@ export function validZeroCostEvidence(
       (Number.isFinite(evidence.validUntilMs) && evidence.validUntilMs! > now))
   );
 }
+/** Cash classes that mean "no additional cash" (src/lib/usage/cashCost.ts; metered is the default). */
+const NO_ADDITIONAL_CASH_CLASSES = new Set(["free", "subscription", "local"]);
+/** How long cash-class evidence is valid; every dispatch re-checks admission anyway. */
+const CASH_CLASS_EVIDENCE_TTL_MS = 60_000;
+
+/** ROUTING_ZERO_COST_BY_CASH_CLASS (default off); read at call time like the other routing flags. */
+export function zeroCostByCashClassEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = String(env.ROUTING_ZERO_COST_BY_CASH_CLASS ?? "")
+    .trim()
+    .toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+/**
+ * ROUTING_ZERO_COST_BY_CASH_CLASS: evidence from the operator-set cash class of the exact active
+ * connection (providerSpecificData.cashClass = free | subscription | local). Data-driven: no
+ * provider or model name. A connection with no class, or class "metered", gets no evidence, so
+ * today's behaviour is unchanged for it. Gated (default off) because it widens a MONEY gate: the
+ * label is operator data the gateway cannot verify per request (a free-tier key on a project that
+ * later enables billing would be charged), whereas the existing resolvers prove the exact
+ * account/model. Only used for providers that have no provider-specific resolver: where one
+ * exists (local Ollama, scoped NVIDIA trial) its answer stays authoritative, so a label can never
+ * override a resolver's denial.
+ */
+async function resolveCashClassEvidence(
+  request: ZeroCostRequest
+): Promise<ZeroCostEvidence | null> {
+  const { getActiveConnectionCashClass } = await import("../../../src/lib/db/providers.ts");
+  const cashClass = getActiveConnectionCashClass(request.connectionId, request.provider);
+  if (!cashClass || !NO_ADDITIONAL_CASH_CLASSES.has(cashClass)) return null;
+  return {
+    provider: request.provider,
+    model: request.model,
+    connectionId: request.connectionId,
+    noAdditionalCost: true,
+    validUntilMs: Date.now() + CASH_CLASS_EVIDENCE_TTL_MS,
+    evidenceId: `cash_class:${cashClass}`,
+  };
+}
+
 export async function hasCurrentZeroCostAdmission(request: ZeroCostRequest): Promise<boolean> {
   if (!request.provider || !request.model || !request.connectionId) return false;
   try {
@@ -65,7 +105,9 @@ export async function hasCurrentZeroCostAdmission(request: ZeroCostRequest): Pro
         ? await (await import("./configuredLocalOllama.ts")).resolveConfiguredLocalOllama(request)
         : request.provider === "nvidia"
           ? await resolveConfiguredNvidiaTrial(request)
-          : null;
+          : zeroCostByCashClassEnabled()
+            ? await resolveCashClassEvidence(request)
+            : null;
     return validZeroCostEvidence(request, evidence);
   } catch {
     return false;

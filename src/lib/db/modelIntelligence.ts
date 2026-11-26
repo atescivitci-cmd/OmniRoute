@@ -275,3 +275,95 @@ export function deleteUserFitnessOverrideEntry(
 ): boolean {
   return deleteModelIntelligence(model.toLowerCase(), "user_override", category.toLowerCase());
 }
+
+// ──────────────── Quality-first lookups (ROUTING_QUALITY_FIRST) ────────────────
+
+export interface QualityScoreRow {
+  key: string;
+  score: number;
+  eloRaw: number | null;
+  confidence: string | null;
+  syncedAt: string;
+}
+
+/**
+ * First row of `source` for `category` among `keys`, in the order the keys are given. Rows of
+ * this source never expire (the feed keeps its last good snapshot), so expiry is not filtered.
+ */
+export function getQualityScoreByKeys(
+  keys: string[],
+  category: string,
+  source: string
+): QualityScoreRow | null {
+  const unique = [...new Set(keys.filter((key) => typeof key === "string" && key.length > 0))];
+  if (unique.length === 0) return null;
+  const db = getDbInstance();
+  const placeholders = unique.map(() => "?").join(", ");
+  const rows = db
+    .prepare(
+      `SELECT model, score, elo_raw, confidence, synced_at FROM model_intelligence
+       WHERE source = ? AND category = ? AND model IN (${placeholders})`
+    )
+    .all(source, category, ...unique) as Array<Record<string, unknown>>;
+  const byKey = new Map(rows.map((row) => [String(row.model), row]));
+  for (const key of unique) {
+    const row = byKey.get(key);
+    if (!row || typeof row.score !== "number") continue;
+    return {
+      key,
+      score: row.score,
+      eloRaw: typeof row.elo_raw === "number" ? row.elo_raw : null,
+      confidence: typeof row.confidence === "string" ? row.confidence : null,
+      syncedAt: String(row.synced_at ?? ""),
+    };
+  }
+  return null;
+}
+
+/** Row count and sync-time range of one source; zero rows gives nulls. */
+export function getModelIntelligenceSourceSummary(source: string): {
+  rows: number;
+  oldestSyncedAt: string | null;
+  newestSyncedAt: string | null;
+} {
+  const db = getDbInstance();
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n, MIN(synced_at) AS oldest, MAX(synced_at) AS newest
+       FROM model_intelligence WHERE source = ?`
+    )
+    .get(source) as { n?: number; oldest?: string | null; newest?: string | null } | undefined;
+  return {
+    rows: Number(row?.n ?? 0),
+    oldestSyncedAt: row?.oldest ?? null,
+    newestSyncedAt: row?.newest ?? null,
+  };
+}
+
+/**
+ * Operator-reviewed benchmark mapping for one provider model (table model_benchmark_mappings,
+ * created by an earlier build on some databases and not by this fork's migrations). Returns the
+ * mapped benchmark model id for `source` when an unexpired row exists, else null. A database
+ * without the table has no mappings.
+ */
+export function getBenchmarkModelId(
+  providerId: string,
+  modelId: string,
+  source: string
+): string | null {
+  const db = getDbInstance();
+  const table = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'model_benchmark_mappings'")
+    .get();
+  if (!table) return null;
+  const row = db
+    .prepare(
+      `SELECT benchmark_model_id FROM model_benchmark_mappings
+       WHERE provider_id = ? AND model_id = ? AND source = ?
+         AND datetime(expires_at) > datetime('now')`
+    )
+    .get(providerId, modelId, source) as { benchmark_model_id?: string } | undefined;
+  return typeof row?.benchmark_model_id === "string" && row.benchmark_model_id
+    ? row.benchmark_model_id
+    : null;
+}

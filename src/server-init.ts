@@ -151,6 +151,14 @@ async function startServer() {
   } catch (err) {
     startupLog.warn({ error: getErrorMessage(err) }, "Arena ELO sync could not initialize");
   }
+
+  // Quality-score sync (LMArena via Hugging Face) for ROUTING_QUALITY_FIRST. Same flag as above.
+  try {
+    const { initQualityScoreSync } = await import("./lib/qualityScoreSync");
+    await initQualityScoreSync();
+  } catch (err) {
+    startupLog.error({ error: getErrorMessage(err) }, "Quality score sync could not initialize");
+  }
 }
 
 // Start the server initialization

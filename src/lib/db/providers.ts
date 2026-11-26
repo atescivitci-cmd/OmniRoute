@@ -1079,3 +1079,24 @@ export function getActiveCostAdmissionAccount(
     )
     .get(connectionId, provider) as { id: string; provider: string; is_active: number } | undefined;
 }
+
+/**
+ * Operator-set cash class of one ACTIVE connection (providerSpecificData.cashClass), or null when
+ * the connection is inactive/unknown or carries no valid class. Reads only that one JSON field,
+ * never a credential. Used by ROUTING_ZERO_COST_BY_CASH_CLASS (autoCombo/zeroCostAdmission.ts).
+ */
+export function getActiveConnectionCashClass(
+  connectionId: string,
+  provider: string
+): "subscription" | "free" | "local" | "metered" | null {
+  const row = getDbInstance()
+    .prepare(
+      `SELECT json_extract(provider_specific_data, '$.cashClass') AS cash_class
+       FROM provider_connections WHERE id=? AND provider=? AND is_active=1`
+    )
+    .get(connectionId, provider) as { cash_class?: unknown } | undefined;
+  const value = row?.cash_class;
+  return value === "subscription" || value === "free" || value === "local" || value === "metered"
+    ? value
+    : null;
+}

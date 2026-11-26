@@ -159,6 +159,8 @@ export type AutoProviderCandidate = ProviderCandidate & {
   provenance?: CandidateProvenance;
   latencySampleSource?: "successful_usage_24h" | "successful_usage_durable" | "unqualified";
   durableEvidence?: DurableEvidenceNote;
+  /** ROUTING_QUALITY_FIRST only: why this candidate is broken right now (excluded), or null. */
+  brokenNow?: import("../autoCombo/qualityFirst.ts").BrokenNow | null;
   successfulLatencySampleCount?: number;
   stepId: string;
   executionKey: string;
