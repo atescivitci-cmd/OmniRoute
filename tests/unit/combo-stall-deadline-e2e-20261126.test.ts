@@ -200,6 +200,29 @@ function chatRequest(comboName: string, stream: boolean, signal?: AbortSignal) {
   });
 }
 
+/** 15 tools: stream readiness adds its tool_heavy extension (+15 s) on top of the base. */
+function toolHeavyChatRequest(comboName: string, signal?: AbortSignal) {
+  return new Request("http://localhost/api/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: comboName,
+      stream: true,
+      max_tokens: 16,
+      tools: Array.from({ length: 15 }, (_, i) => ({
+        type: "function",
+        function: {
+          name: `tool_${i}`,
+          description: "noop",
+          parameters: { type: "object", properties: {} },
+        },
+      })),
+      messages: [{ role: "user", content: `stall probe ${comboName}` }],
+    }),
+    signal,
+  });
+}
+
 /** Anthropic-format request like the live one (Claude Code sends stream:true and tools). */
 function messagesRequest(comboName: string, signal?: AbortSignal) {
   return new Request("http://localhost/api/v1/messages", {
@@ -444,43 +467,96 @@ test("flag on: a streaming request answered with a JSON body slower than the dea
   }
 });
 
-// Pre-existing defect fixed alongside: a client that leaves while the first event is awaited was
-// recorded as a 504 STREAM_READINESS_TIMEOUT model failure (any body read error became a timeout),
-// so a few quick Escapes could get a healthy model excluded as broken. It is the client leaving.
-test("flag off: a client that leaves during the first-event wait is recorded as 499 client_disconnected, not a model failure", async () => {
-  setFlag(null);
-  const client = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  // Leave shortly after the upstream has the request (headers go out at once), well inside the
-  // first-event wait (READINESS_MS), so the abort lands during readiness and nowhere else.
-  const { connectionId, comboName, calls, stop } = await setup(
-    { o3: "headers-then-silent", "o4-mini": "answer" },
-    () => {
-      timer = setTimeout(() => client.abort(), 150);
-    }
-  );
-  try {
-    // Keep the Request reachable: undici's Request follows the caller's signal through a WeakRef to
-    // its own AbortController, so a collected Request silently drops the client's abort (a test
-    // harness artifact; a real server request is held by the socket).
-    const request = chatRequest(comboName, true, client.signal);
-    const response = await postChatCompletion(request);
-    await readAll(response);
-    assert.deepEqual(
-      calls.map((c) => c.model),
-      ["o3"]
+// A client that leaves while the first event is awaited. Readiness here is adaptive (15 tools:
+// base READINESS_MS + 15 s), like a large Claude Code turn, so the client gives up long before
+// readiness would. Exactly one usage row is written for the model:
+//   - flag off: past the BASE readiness timeout (from readiness start) -> 504 STREAM_READINESS_TIMEOUT
+//   - flag on:  past the stall deadline (from dispatch)                 -> 504 upstream_stalled
+//   - below the threshold (a quick Escape)                              -> 499 client_disconnected
+// Before 6bc4443a66 every such abort was a 504 STREAM_READINESS_TIMEOUT, so quick Escapes counted
+// against a healthy model; 6bc4443a66 made every one a 499, so a stalled model that outlasted the
+// client was never counted.
+for (const [label, flag, leaveAfterMs, status, code, stalled, healthy] of [
+  ["flag off, quick Escape", null, 150, "499", "client_disconnected", "o3", "o4-mini"],
+  [
+    "flag off, client gives up past the base readiness timeout",
+    null,
+    READINESS_MS + 700,
+    "504",
+    "STREAM_READINESS_TIMEOUT",
+    "o1",
+    "o1-mini",
+  ],
+  [
+    "flag on, quick Escape",
+    String(DEADLINE_MS),
+    300,
+    "499",
+    "client_disconnected",
+    "gpt-4.1",
+    "gpt-4.1-mini",
+  ],
+  [
+    "flag on, client gives up past the stall deadline",
+    String(DEADLINE_MS),
+    DEADLINE_MS + 500,
+    "504",
+    "upstream_stalled",
+    "gpt-4o",
+    "gpt-4o-mini",
+  ],
+] as const) {
+  test(`${label}: a client leaving during the first-event wait writes one ${status} ${code} row`, async () => {
+    setFlag(flag);
+    const client = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Leave a fixed time after the upstream has the request (headers go out at once).
+    const { connectionId, comboName, calls, stop } = await setup(
+      { [stalled]: "headers-then-silent", [healthy]: "answer" },
+      () => {
+        timer = setTimeout(() => client.abort(), leaveAfterMs);
+      }
     );
-    const rows = await usageRows(connectionId);
-    assert.ok(request.signal.aborted, "the client left");
-    const modelRows = rows.filter((r) => r.model === "o3");
-    assert.equal(modelRows.length, 1, JSON.stringify(rows));
-    assert.equal(modelRows[0].status, "499", JSON.stringify(modelRows[0]));
-    assert.equal(modelRows[0].error_code, "client_disconnected");
-  } finally {
-    clearTimeout(timer);
-    await stop();
-  }
-});
+    try {
+      // Keep the Request reachable: undici's Request follows the caller's signal through a
+      // WeakRef to its own AbortController, so a collected Request silently drops the client's
+      // abort (a test harness artifact; a real server request is held by the socket).
+      const request = toolHeavyChatRequest(comboName, client.signal);
+      let leftAt = 0;
+      client.signal.addEventListener("abort", () => (leftAt = Date.now()));
+      const response = await postChatCompletion(request);
+      await readAll(response);
+      const endedAt = Date.now();
+      assert.ok(request.signal.aborted, "the client left");
+      assert.ok(
+        endedAt >= leftAt && leftAt > 0,
+        "the request ended because the client left, not on a readiness or stall timeout"
+      );
+      assert.deepEqual(
+        calls.map((c) => c.model),
+        [stalled],
+        "nothing is retried or failed over once the client is gone"
+      );
+      const rows = await usageRows(connectionId);
+      const modelRows = rows.filter((r) => r.model === stalled);
+      assert.equal(modelRows.length, 1, `exactly one row: ${JSON.stringify(rows)}`);
+      assert.equal(modelRows[0].status, status, JSON.stringify(modelRows[0]));
+      assert.equal(modelRows[0].error_code, code, JSON.stringify(modelRows[0]));
+      // The attempt also leaves its call-log entry, like the pre-headers abort path does.
+      const callLogs = getDbInstance()
+        .prepare("SELECT status, model FROM call_logs WHERE connection_id = ?")
+        .all(connectionId) as Array<{ status: number; model: string }>;
+      assert.ok(
+        callLogs.some((row) => Number(row.status) === 499 && String(row.model).includes(stalled)),
+        `call log for the aborted attempt: ${JSON.stringify(callLogs)}`
+      );
+    } finally {
+      clearTimeout(timer);
+      setFlag(null);
+      await stop();
+    }
+  });
+}
 
 // The live request shape (Anthropic /v1/messages, streaming, with tools). Even when the model sends
 // headers, the replay-safety guard does not replay a tool request after a 5xx

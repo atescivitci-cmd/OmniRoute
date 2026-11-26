@@ -104,6 +104,8 @@ export type UpstreamStallWatch = {
    * no first-event phase is open.
    */
   remainingMs: (now?: number) => number;
+  /** ms since the current (or last) attempt was dispatched; 0 before any attempt or when off. */
+  attemptElapsedMs: (now?: number) => number;
   dispose: () => void;
 };
 
@@ -115,6 +117,7 @@ const DISABLED_WATCH: UpstreamStallWatch = {
   markFirstEvent: () => null,
   endAttempt: () => {},
   remainingMs: () => Infinity,
+  attemptElapsedMs: () => 0,
   dispose: () => {},
 };
 
@@ -174,10 +177,38 @@ export function createUpstreamStallWatch(options: {
       if (phase !== "awaiting_first_event") return Infinity;
       return Math.max(1, startedAt + deadlineMs - now);
     },
+    attemptElapsedMs(now = Date.now()) {
+      return startedAt > 0 ? Math.max(0, now - startedAt) : 0;
+    },
     dispose() {
       clearTimer();
     },
   };
+}
+
+/**
+ * The usage row for a client that left while the first stream event was awaited. A client that
+ * gives up after the model already had its fair wait left because the model stalled: that is a
+ * model failure, or a stalled model that outlasts every client would never be excluded. A quick
+ * Escape below the threshold is the client's choice and stays client_disconnected (499).
+ *   - flag on:  threshold = the stall deadline, measured from dispatch -> 504 upstream_stalled
+ *   - flag off: threshold = the BASE readiness timeout (not the adaptive extension), measured from
+ *               the start of the first-event wait -> 504 STREAM_READINESS_TIMEOUT
+ */
+export function classifyFirstEventClientAbort(args: {
+  stallDeadlineMs: number;
+  attemptElapsedMs: number;
+  baseReadinessTimeoutMs: number;
+  readinessElapsedMs: number;
+}): { status: number; code: string } {
+  if (args.stallDeadlineMs > 0) {
+    return args.attemptElapsedMs >= args.stallDeadlineMs
+      ? { status: 504, code: UPSTREAM_STALLED_CODE }
+      : { status: 499, code: "client_disconnected" };
+  }
+  return args.baseReadinessTimeoutMs > 0 && args.readinessElapsedMs >= args.baseReadinessTimeoutMs
+    ? { status: 504, code: "STREAM_READINESS_TIMEOUT" }
+    : { status: 499, code: "client_disconnected" };
 }
 
 /**

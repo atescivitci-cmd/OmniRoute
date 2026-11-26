@@ -13,6 +13,7 @@ import {
   createUpstreamStalledError,
   createUpstreamStalledResponse,
   isUpstreamStalledError,
+  classifyFirstEventClientAbort,
   resolveFirstEventWait,
   resolveRoutingStallDeadlineMs,
 } from "../../open-sse/handlers/chatCore/upstreamStall.ts";
@@ -216,9 +217,8 @@ test("quality-first: an upstream_stalled row is a real model failure, and three 
   );
 });
 
-test("stream readiness: a client abort during the first-event wait is client_disconnected (499), not a timeout", async () => {
-  const controller = new AbortController();
-  const body = new ReadableStream<Uint8Array>({
+function abortingBody(controller: AbortController) {
+  return new ReadableStream<Uint8Array>({
     start(sink) {
       sink.enqueue(new TextEncoder().encode(": ping\n\n"));
       controller.signal.addEventListener("abort", () => {
@@ -228,15 +228,44 @@ test("stream readiness: a client abort during the first-event wait is client_dis
       });
     },
   });
-  setTimeout(() => controller.abort(), 20);
+}
+
+test("stream readiness: a read error while the request's own signal is aborted is client_disconnected (499)", async () => {
+  const client = new AbortController();
+  setTimeout(() => client.abort(), 20);
   const result = await ensureStreamReadiness(
-    new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
-    { timeoutMs: 5_000, provider: "p", model: "m" }
+    new Response(abortingBody(client), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }),
+    { timeoutMs: 5_000, provider: "p", model: "m", abortSignal: client.signal }
   );
   assert.equal(result.ok, false);
   if (result.ok) return;
   assert.equal(result.code, STREAM_READINESS_CLIENT_ABORT_CODE);
   assert.equal(result.response.status, 499);
+});
+
+test("stream readiness: an AbortError-shaped read error is NOT a client abort unless the request signal is aborted", async () => {
+  // A local abort (another controller, an AbortSignal.timeout) with the request still live.
+  const local = new AbortController();
+  const requestSignal = new AbortController().signal;
+  setTimeout(() => local.abort(), 20);
+  const live = await ensureStreamReadiness(new Response(abortingBody(local), { status: 200 }), {
+    timeoutMs: 5_000,
+    abortSignal: requestSignal,
+  });
+  assert.equal(live.ok === false && live.code, "STREAM_READINESS_TIMEOUT");
+  assert.equal(live.ok === false && live.response.status, 504);
+
+  // No signal passed (e.g. the glm executor): the old classification is kept.
+  const other = new AbortController();
+  setTimeout(() => other.abort(), 20);
+  const unsignalled = await ensureStreamReadiness(
+    new Response(abortingBody(other), { status: 200 }),
+    { timeoutMs: 5_000 }
+  );
+  assert.equal(unsignalled.ok === false && unsignalled.code, "STREAM_READINESS_TIMEOUT");
 });
 
 test("stream readiness: a non-abort body error and a real timeout keep STREAM_READINESS_TIMEOUT", async () => {
@@ -256,4 +285,41 @@ test("stream readiness: a non-abort body error and a real timeout keep STREAM_RE
   });
   assert.equal(timedOut.ok === false && timedOut.code, "STREAM_READINESS_TIMEOUT");
   assert.equal(timedOut.ok === false && timedOut.response.status, 504);
+});
+
+test("client leaving during the first-event wait: model failure past the threshold, 499 below it", () => {
+  // Flag on: the stall deadline, measured from dispatch.
+  const on = { stallDeadlineMs: 120_000, baseReadinessTimeoutMs: 80_000, readinessElapsedMs: 0 };
+  assert.deepEqual(classifyFirstEventClientAbort({ ...on, attemptElapsedMs: 140_000 }), {
+    status: 504,
+    code: UPSTREAM_STALLED_CODE,
+  });
+  assert.deepEqual(classifyFirstEventClientAbort({ ...on, attemptElapsedMs: 119_999 }), {
+    status: 499,
+    code: "client_disconnected",
+  });
+  // Flag off: the BASE readiness timeout (80 s), from the start of the first-event wait, even
+  // when the adaptive window is longer (the live 140 s Claude Code case).
+  const off = { stallDeadlineMs: 0, attemptElapsedMs: 0, baseReadinessTimeoutMs: 80_000 };
+  assert.deepEqual(classifyFirstEventClientAbort({ ...off, readinessElapsedMs: 139_000 }), {
+    status: 504,
+    code: "STREAM_READINESS_TIMEOUT",
+  });
+  assert.deepEqual(classifyFirstEventClientAbort({ ...off, readinessElapsedMs: 80_000 }), {
+    status: 504,
+    code: "STREAM_READINESS_TIMEOUT",
+  });
+  assert.deepEqual(classifyFirstEventClientAbort({ ...off, readinessElapsedMs: 2_000 }), {
+    status: 499,
+    code: "client_disconnected",
+  });
+  // Readiness disabled and flag off: no threshold, the client leaving stays a 499.
+  assert.deepEqual(
+    classifyFirstEventClientAbort({
+      ...off,
+      baseReadinessTimeoutMs: 0,
+      readinessElapsedMs: 10 ** 9,
+    }),
+    { status: 499, code: "client_disconnected" }
+  );
 });

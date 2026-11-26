@@ -1,6 +1,4 @@
 import { HTTP_STATUS } from "../config/constants.ts";
-import { isLocalStreamLifecycleError } from "@/shared/utils/circuitBreaker";
-
 /** Readiness ended because the client (or its caller) aborted, not because the model stalled. */
 export const STREAM_READINESS_CLIENT_ABORT_CODE = "client_disconnected";
 
@@ -378,6 +376,14 @@ export async function ensureStreamReadiness(
     provider?: string | null;
     model?: string | null;
     log?: StreamReadinessLogger | null;
+    /**
+     * The request's own abort signal (the client side). A read error while it is aborted is the
+     * client leaving, reported as client_disconnected. Without it, or while it is not aborted,
+     * any read error keeps the STREAM_READINESS_TIMEOUT classification: an error's name or
+     * message alone ("AbortError", "operation was aborted") cannot tell a client leaving apart
+     * from a local abort.
+     */
+    abortSignal?: AbortSignal | null;
   }
 ): Promise<StreamReadinessResult> {
   if (!response.body || options.timeoutMs <= 0) return { ok: true, response };
@@ -432,14 +438,13 @@ export async function ensureStreamReadiness(
       let readResult: ReadableStreamReadResult<Uint8Array>;
       try {
         readResult = await readWithTimeout(reader, remainingMs);
-      } catch (error) {
+      } catch {
         // A client that leaves while the first event is awaited aborts the upstream body, which
-        // rejects this read. That is the client leaving, not the model stalling: reporting it as
-        // STREAM_READINESS_TIMEOUT wrote a model failure, so a few quick Escapes could get a
-        // healthy model excluded as "broken right now". Our own timeout rejects with a plain
-        // Error("STREAM_READINESS_TIMEOUT"), which is not a lifecycle error. Any other read error
-        // keeps today's timeout classification.
-        if (isLocalStreamLifecycleError(error)) {
+        // rejects this read. Reported as client_disconnected so the caller can decide, from how
+        // long the wait already ran, whether that is the client giving up on a stalled model or
+        // a quick Escape. Decided by the request's own signal, never by the error's shape. Our
+        // own timeout and every other read error keep STREAM_READINESS_TIMEOUT.
+        if (options.abortSignal?.aborted === true) {
           const reason = "Client disconnected before the first stream event";
           options.log?.debug?.(
             "STREAM",

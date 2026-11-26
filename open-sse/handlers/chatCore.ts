@@ -342,6 +342,7 @@ import {
   createUpstreamStallWatch,
   createUpstreamStalledResponse,
   isUpstreamStalledError,
+  classifyFirstEventClientAbort,
   resolveFirstEventWait,
   resolveRoutingStallDeadlineMs,
 } from "./chatCore/upstreamStall.ts";
@@ -5506,11 +5507,13 @@ async function handleChatCoreRequest({
     streamReadinessPolicy.timeoutMs,
     upstreamStall.remainingMs()
   );
+  const readinessStartedAt = Date.now();
   let streamReadiness = await ensureStreamReadiness(providerResponse, {
     timeoutMs: firstEventWait.timeoutMs,
     provider,
     model,
     log,
+    abortSignal: clientRawRequest?.signal ?? null,
   });
   if (
     streamReadiness.ok === false &&
@@ -5538,12 +5541,30 @@ async function handleChatCoreRequest({
     upstreamStall.endAttempt();
   }
   if (streamReadiness.ok === false && streamReadiness.code === STREAM_READINESS_CLIENT_ABORT_CODE) {
-    // The client left while the first event was awaited: not a model failure. Record it like any
-    // other pre-content abort (probe / routing deadline when that was the cause, otherwise a 499
-    // client_disconnected row that quality-first does not count).
+    // The request's own signal aborted while the first event was awaited. Exactly one usage row:
+    // a probe or routing deadline when that was the cause; otherwise, by how long the model had
+    // already been given, a model failure (it stalled and outlasted the client) or a 499
+    // client_disconnected (a quick Escape). The response is a 499 either way: nobody is listening.
     trackPendingRequest(model, provider, connectionId, false);
     appendRequestLog({ model, provider, connectionId, status: "FAILED 499" }).catch(() => {});
-    if (!persistProbeDeadlineUsage()) persistFailureUsage(499, STREAM_READINESS_CLIENT_ABORT_CODE);
+    persistAttemptLogs({
+      status: 499,
+      error: streamReadiness.reason,
+      providerRequest: finalBody || translatedBody,
+      // Nothing was delivered to the client (see the pre-headers abort path).
+      clientResponse: undefined,
+      claudeCacheMeta: claudePromptCacheLogMeta,
+      cacheSource: "upstream",
+    });
+    if (!persistProbeDeadlineUsage()) {
+      const row = classifyFirstEventClientAbort({
+        stallDeadlineMs: upstreamStall.deadlineMs,
+        attemptElapsedMs: upstreamStall.attemptElapsedMs(),
+        baseReadinessTimeoutMs: streamReadinessPolicy.baseTimeoutMs,
+        readinessElapsedMs: Date.now() - readinessStartedAt,
+      });
+      persistFailureUsage(row.status, row.code);
+    }
     return createErrorResult(499, "Request aborted");
   }
   if (streamReadiness.ok === false) {
