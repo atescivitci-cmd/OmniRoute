@@ -323,7 +323,10 @@ import {
 } from "./chatCore/nonStreamingSse.ts";
 import { parseNonStreamingResponseBody } from "./chatCore/nonStreamingResponseParse.ts";
 import { unwrapClinepassEnvelope } from "../utils/clinepassEnvelope.ts";
-import { recordNonStreamingUsageStats } from "./chatCore/nonStreamingUsageStats.ts";
+import {
+  persistNonStreamingUsageRow,
+  recordNonStreamingUsageStats,
+} from "./chatCore/nonStreamingUsageStats.ts";
 import {
   createBodyTimeoutError,
   readStreamChunkWithTimeout,
@@ -645,7 +648,11 @@ async function handleChatCoreRequest({
   ): EffectiveServiceTier | null => resolveReportedServiceTierFor(provider, payload, maxDepth);
   // Failure usage record building extracted to chatCore/failureUsage.ts (#3501); the handler keeps
   // the fire-and-forget save + computes latencyMs, so the call sites stay byte-identical.
-  const persistFailureUsage = (statusCode: number, errorCode?: string | null) => {
+  const persistFailureUsage = (
+    statusCode: number,
+    errorCode?: string | null,
+    reportedTokens?: object | null
+  ) => {
     saveRequestUsage(
       buildFailureUsageRecord({
         provider,
@@ -659,6 +666,7 @@ async function handleChatCoreRequest({
         errorCode,
         latencyMs: Date.now() - startTime,
         endpoint: endpointPath,
+        ...(reportedTokens && { tokens: reportedTokens }),
       })
     ).catch(() => {});
   };
@@ -4979,7 +4987,7 @@ async function handleChatCoreRequest({
 
     // Save structured call log with full payloads
     const cacheUsageLogMeta = buildCacheUsageLogMeta(usage);
-    recordNonStreamingUsageStats(usage, {
+    const nonStreamingUsageCtx = {
       traceEnabled,
       provider,
       connectionId: successConnectionId,
@@ -4990,249 +4998,287 @@ async function handleChatCoreRequest({
       isCombo,
       comboStrategy,
       endpoint: endpointPath,
-    });
+      endTime: Date.now(),
+    };
+    // The usage ROW waits until the translated response is known to be usable: a 200 that turns
+    // out malformed below writes only its failure row (it used to write a success row here AND
+    // the failure row, so every malformed answer also counted as a success in the ranking
+    // evidence). Trace and the per-key billable-token counter still run here, as before.
+    recordNonStreamingUsageStats(usage, { ...nonStreamingUsageCtx, deferUsageRow: true });
+    // Exactly one usage row per request: success (below), malformed or guardrail-blocked (inside).
+    // If a post-processing step throws (translation, tool execution, guardrails, cost), none of
+    // those runs, so the finally writes the failure row, with the tokens the provider reported
+    // (the billable-token counter above already counted them).
+    let nonStreamUsageRowWritten = false;
+    // Declared outside the try because the response path after it reads them.
+    let translatedResponse: typeof responseBody;
+    let responseUsage: typeof responseBody = null;
+    let estimatedCost = 0;
+    try {
+      // Translate response to client's expected format (usually OpenAI)
+      // Pass toolNameMap so Claude OAuth proxy_ prefix is stripped in tool_use blocks (#605)
+      translatedResponse = needsTranslation(responsePayloadFormat, clientResponseFormat)
+        ? translateNonStreamingResponse(
+            responseBody,
+            responsePayloadFormat,
+            clientResponseFormat,
+            responseToolNameMap,
+            sourceToolSchemas
+          )
+        : responseBody;
+      const memoryExtractionResponse = translatedResponse;
 
-    // Translate response to client's expected format (usually OpenAI)
-    // Pass toolNameMap so Claude OAuth proxy_ prefix is stripped in tool_use blocks (#605)
-    let translatedResponse = needsTranslation(responsePayloadFormat, clientResponseFormat)
-      ? translateNonStreamingResponse(
-          responseBody,
-          responsePayloadFormat,
-          clientResponseFormat,
-          responseToolNameMap,
-          sourceToolSchemas
-        )
-      : responseBody;
-    const memoryExtractionResponse = translatedResponse;
-
-    // T26: Strip markdown code blocks if provider format is Claude
-    if (sourceFormat === "claude" && !stream) {
-      if (typeof translatedResponse?.choices?.[0]?.message?.content === "string") {
-        translatedResponse.choices[0].message.content = stripMarkdownCodeFence(
-          translatedResponse.choices[0].message.content
-        ) as string;
-      }
-    }
-
-    // T18: Normalize finish_reason to 'tool_calls' if tool calls are present
-    if (translatedResponse?.choices) {
-      for (const choice of translatedResponse.choices) {
-        if (
-          choice.message?.tool_calls &&
-          choice.message.tool_calls.length > 0 &&
-          choice.finish_reason !== "tool_calls"
-        ) {
-          choice.finish_reason = "tool_calls";
+      // T26: Strip markdown code blocks if provider format is Claude
+      if (sourceFormat === "claude" && !stream) {
+        if (typeof translatedResponse?.choices?.[0]?.message?.content === "string") {
+          translatedResponse.choices[0].message.content = stripMarkdownCodeFence(
+            translatedResponse.choices[0].message.content
+          ) as string;
         }
       }
-    }
 
-    // Reasoning Replay Cache (#1628): Capture reasoning_content from non-streaming responses
-    // with tool_calls so it can be replayed on subsequent turns (DeepSeek V4, Kimi K2, etc.)
-    try {
-      const firstChoice = translatedResponse?.choices?.[0];
-      const msg = firstChoice?.message;
-      cacheReasoningFromAssistantMessage(msg, provider, model, {
-        requestId: skillRequestId,
-        messageIndex: 0,
-      });
-    } catch {
-      // Cache capture is non-critical — never block the response
-    }
-    // Sanitize response for OpenAI SDK compatibility
-    // Strips non-standard fields (x_groq, usage_breakdown, service_tier, etc.)
-    // Extracts <think> and <thinking> tags into reasoning_content
-    // Source format determines output shape. If we are outputting OpenAI shape or pseudo-OpenAI shape, sanitize.
-    if (clientResponseFormat === FORMATS.OPENAI_RESPONSES) {
-      translatedResponse = sanitizeResponsesApiResponse(translatedResponse);
-      // Responses-API non-stream path: restore `{namespace, name}` on every
-      // `function_call` item that was flattened from a namespace sub-tool on
-      // the request side (#7936 round-trip closure).
-      const responseOutput = translatedResponse?.output;
-      if (requestToolIdentityMap && Array.isArray(responseOutput)) {
-        for (const item of responseOutput) {
-          if (item?.type !== "function_call") continue;
-          const identity = requestToolIdentityMap.get(item.name);
-          if (identity) {
-            item.namespace = identity.namespace;
-            item.name = identity.name;
+      // T18: Normalize finish_reason to 'tool_calls' if tool calls are present
+      if (translatedResponse?.choices) {
+        for (const choice of translatedResponse.choices) {
+          if (
+            choice.message?.tool_calls &&
+            choice.message.tool_calls.length > 0 &&
+            choice.finish_reason !== "tool_calls"
+          ) {
+            choice.finish_reason = "tool_calls";
           }
         }
       }
-    } else if (clientResponseFormat === FORMATS.OPENAI) {
-      // Port of decolua/9router#517: opt-in `x-omniroute-strip-reasoning` header
-      // unconditionally drops `reasoning_content` from the final non-streaming
-      // JSON for clients (e.g. Firecrawl AI SDK) whose JSON parsers break on
-      // that non-standard field. Reasoning replay cache is captured above this
-      // sanitize step, so the cache feature is unaffected.
-      const stripReasoning = isStripReasoningRequested(clientRawRequest?.headers ?? null);
-      translatedResponse = sanitizeOpenAIResponse(translatedResponse, {
-        stripReasoning,
-        parseTextualReasoningTags: shouldParseTextualReasoningTags(provider, model),
-      });
-    }
 
-    // #8331: keep the client-visible metering fields real everywhere except Claude-Code-compatible
-    // providers, where Claude Code's own context accounting relies on the buffered number — see
-    // clientUsageBuffer.ts module docstring.
-    applyClientUsageBuffer(translatedResponse, body, clientResponseFormat, {
-      preserveContextBudgetInVisibleUsage: isClaudeCodeCompatible,
-    });
-
-    if (memoryOwnerId && memorySettings?.enabled && memorySettings.maxTokens > 0) {
-      const requestMemoryText = extractMemoryTextFromRequestBody(body as Record<string, unknown>);
-      if (requestMemoryText) {
-        extractFacts(requestMemoryText, memoryOwnerId, pipelineSessionId);
-      }
-
-      const memoryText = extractMemoryTextFromResponse(memoryExtractionResponse);
-      if (memoryText) {
-        extractFacts(memoryText, memoryOwnerId, pipelineSessionId);
-      }
-    }
-
-    const customSkillExecutionEnabled =
-      Boolean(memoryOwnerId) && memorySettings?.skillsEnabled === true;
-    const builtinToolNames = [webSearchFallbackPlan.toolName, webFetchFallbackPlan.toolName].filter(
-      (name): name is string => Boolean(name)
-    );
-    if (customSkillExecutionEnabled || builtinToolNames.length > 0) {
-      const skillSessionId = pipelineSessionId;
-
-      translatedResponse = await handleToolCallExecution(
-        translatedResponse,
-        getSkillsModelIdForFormat(sourceFormat),
-        {
-          apiKeyId: memoryOwnerId || "local",
-          sessionId: skillSessionId,
+      // Reasoning Replay Cache (#1628): Capture reasoning_content from non-streaming responses
+      // with tool_calls so it can be replayed on subsequent turns (DeepSeek V4, Kimi K2, etc.)
+      try {
+        const firstChoice = translatedResponse?.choices?.[0];
+        const msg = firstChoice?.message;
+        cacheReasoningFromAssistantMessage(msg, provider, model, {
           requestId: skillRequestId,
-          builtinToolNames,
-          customSkillExecutionEnabled,
-          provider,
-          model: effectiveModel,
-        }
-      );
-    }
-
-    const guardrailContext = buildPostCallGuardrailContext({
-      apiKeyInfo,
-      body,
-      clientRawRequest,
-      log,
-      model,
-      provider,
-      responsePayloadFormat,
-      clientResponseFormat,
-    });
-    const postCallGuardrails = await guardrailRegistry.runPostCallHooks(
-      translatedResponse,
-      guardrailContext
-    );
-    translatedResponse = postCallGuardrails.response;
-
-    const responseUsage =
-      (usage && typeof usage === "object" ? usage : null) ||
-      (translatedResponse?.usage && typeof translatedResponse.usage === "object"
-        ? translatedResponse.usage
-        : null);
-    const estimatedCost = responseUsage
-      ? await calculateCost(provider, model, responseUsage, { serviceTier: effectiveServiceTier })
-      : 0;
-
-    if (postCallGuardrails.blocked) {
-      const guardrailMessage = postCallGuardrails.message || "Response blocked by guardrail";
-      persistAttemptLogs({
-        status: HTTP_STATUS.BAD_REQUEST,
-        tokens: usage,
-        responseBody,
-        providerRequest: finalBody || translatedBody,
-        providerResponse: looksLikeSSE
-          ? {
-              _streamed: true,
-              _format: "sse-json",
-              summary: responseBody,
-            }
-          : responseBody,
-        clientResponse: buildErrorBody(HTTP_STATUS.BAD_REQUEST, guardrailMessage),
-        claudeCacheMeta: claudePromptCacheLogMeta,
-        claudeCacheUsageMeta: cacheUsageLogMeta,
-        cacheSource: "upstream",
-      });
-      if (apiKeyInfo?.id && estimatedCost > 0) {
-        recordConnectionCost(recordCost, apiKeyInfo.id, estimatedCost, credentials);
+          messageIndex: 0,
+        });
+      } catch {
+        // Cache capture is non-critical — never block the response
       }
-      log?.warn?.(
-        "GUARDRAIL",
-        `Response blocked by ${postCallGuardrails.guardrail || "guardrail"}: ${guardrailMessage}`
-      );
-      finalizePendingScope(pendingScope, {
-        providerResponse: responseBody,
-        clientResponse: translatedResponse,
-      });
-      return createErrorResult(HTTP_STATUS.BAD_REQUEST, guardrailMessage);
-    }
-
-    // Validate the *translated* response actually carries client-usable output.
-    // isEmptyContentResponse (above) runs on the raw responseBody before translation;
-    // this check runs after translation + sanitization + tool-call execution to catch
-    // cases where a provider returns a structurally valid raw body that translates into
-    // choices:[] or output:[] with no usable content (Responses API shape included).
-    const malformedTranslatedReason = detectMalformedNonStream(translatedResponse);
-    if (malformedTranslatedReason) {
-      const totalLatency = Date.now() - startTime;
-      const rawBytes = (() => {
-        try {
-          return JSON.stringify(responseBody || {}).length;
-        } catch {
-          return -1;
+      // Sanitize response for OpenAI SDK compatibility
+      // Strips non-standard fields (x_groq, usage_breakdown, service_tier, etc.)
+      // Extracts <think> and <thinking> tags into reasoning_content
+      // Source format determines output shape. If we are outputting OpenAI shape or pseudo-OpenAI shape, sanitize.
+      if (clientResponseFormat === FORMATS.OPENAI_RESPONSES) {
+        translatedResponse = sanitizeResponsesApiResponse(translatedResponse);
+        // Responses-API non-stream path: restore `{namespace, name}` on every
+        // `function_call` item that was flattened from a namespace sub-tool on
+        // the request side (#7936 round-trip closure).
+        const responseOutput = translatedResponse?.output;
+        if (requestToolIdentityMap && Array.isArray(responseOutput)) {
+          for (const item of responseOutput) {
+            if (item?.type !== "function_call") continue;
+            const identity = requestToolIdentityMap.get(item.name);
+            if (identity) {
+              item.namespace = identity.namespace;
+              item.name = identity.name;
+            }
+          }
         }
-      })();
-      reportMalformed200({
-        mode: "nonstream",
-        provider,
-        model,
-        connectionId,
-        reason: malformedTranslatedReason,
-        recvBytes: rawBytes,
-        recvLines: -1,
-        emitted: -1,
-        events: {},
-        ttftMs: totalLatency,
-        elapsedMs: totalLatency,
+      } else if (clientResponseFormat === FORMATS.OPENAI) {
+        // Port of decolua/9router#517: opt-in `x-omniroute-strip-reasoning` header
+        // unconditionally drops `reasoning_content` from the final non-streaming
+        // JSON for clients (e.g. Firecrawl AI SDK) whose JSON parsers break on
+        // that non-standard field. Reasoning replay cache is captured above this
+        // sanitize step, so the cache feature is unaffected.
+        const stripReasoning = isStripReasoningRequested(clientRawRequest?.headers ?? null);
+        translatedResponse = sanitizeOpenAIResponse(translatedResponse, {
+          stripReasoning,
+          parseTextualReasoningTags: shouldParseTextualReasoningTags(provider, model),
+        });
+      }
+
+      // #8331: keep the client-visible metering fields real everywhere except Claude-Code-compatible
+      // providers, where Claude Code's own context accounting relies on the buffered number — see
+      // clientUsageBuffer.ts module docstring.
+      applyClientUsageBuffer(translatedResponse, body, clientResponseFormat, {
+        preserveContextBudgetInVisibleUsage: isClaudeCodeCompatible,
       });
-      appendRequestLog({
+
+      if (memoryOwnerId && memorySettings?.enabled && memorySettings.maxTokens > 0) {
+        const requestMemoryText = extractMemoryTextFromRequestBody(body as Record<string, unknown>);
+        if (requestMemoryText) {
+          extractFacts(requestMemoryText, memoryOwnerId, pipelineSessionId);
+        }
+
+        const memoryText = extractMemoryTextFromResponse(memoryExtractionResponse);
+        if (memoryText) {
+          extractFacts(memoryText, memoryOwnerId, pipelineSessionId);
+        }
+      }
+
+      const customSkillExecutionEnabled =
+        Boolean(memoryOwnerId) && memorySettings?.skillsEnabled === true;
+      const builtinToolNames = [
+        webSearchFallbackPlan.toolName,
+        webFetchFallbackPlan.toolName,
+      ].filter((name): name is string => Boolean(name));
+      if (customSkillExecutionEnabled || builtinToolNames.length > 0) {
+        const skillSessionId = pipelineSessionId;
+
+        translatedResponse = await handleToolCallExecution(
+          translatedResponse,
+          getSkillsModelIdForFormat(sourceFormat),
+          {
+            apiKeyId: memoryOwnerId || "local",
+            sessionId: skillSessionId,
+            requestId: skillRequestId,
+            builtinToolNames,
+            customSkillExecutionEnabled,
+            provider,
+            model: effectiveModel,
+          }
+        );
+      }
+
+      const guardrailContext = buildPostCallGuardrailContext({
+        apiKeyInfo,
+        body,
+        clientRawRequest,
+        log,
         model,
         provider,
-        connectionId,
-        status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}`,
-      }).catch(() => {});
-      const malformed = describeMalformedNonStream(translatedResponse, malformedTranslatedReason);
-      const malformedMessage = `[${provider}/${model}] ${malformed.message}`;
-      const malformedClientBody = buildErrorBody(HTTP_STATUS.BAD_GATEWAY, malformedMessage);
-      malformedClientBody.error.code = malformed.code;
-      malformedClientBody.error.type = malformed.type;
-      persistAttemptLogs({
-        status: HTTP_STATUS.BAD_GATEWAY,
-        tokens: usage,
-        responseBody,
-        providerRequest: finalBody || translatedBody,
-        providerResponse: looksLikeSSE
-          ? { _streamed: true, _format: "sse-json", summary: responseBody }
-          : responseBody,
-        clientResponse: malformedClientBody,
-        claudeCacheMeta: claudePromptCacheLogMeta,
-        claudeCacheUsageMeta: cacheUsageLogMeta,
-        cacheSource: "upstream",
+        responsePayloadFormat,
+        clientResponseFormat,
       });
-      persistFailureUsage(HTTP_STATUS.BAD_GATEWAY, "malformed_translated_response");
-      trackPendingRequest(model, provider, pendingConnId, false);
-      return createErrorResult(
-        HTTP_STATUS.BAD_GATEWAY,
-        malformedMessage,
-        null,
-        malformed.code,
-        malformed.type
+      const postCallGuardrails = await guardrailRegistry.runPostCallHooks(
+        translatedResponse,
+        guardrailContext
       );
+      translatedResponse = postCallGuardrails.response;
+
+      responseUsage =
+        (usage && typeof usage === "object" ? usage : null) ||
+        (translatedResponse?.usage && typeof translatedResponse.usage === "object"
+          ? translatedResponse.usage
+          : null);
+      estimatedCost = responseUsage
+        ? await calculateCost(provider, model, responseUsage, { serviceTier: effectiveServiceTier })
+        : 0;
+
+      if (postCallGuardrails.blocked) {
+        const guardrailMessage = postCallGuardrails.message || "Response blocked by guardrail";
+        persistAttemptLogs({
+          status: HTTP_STATUS.BAD_REQUEST,
+          tokens: usage,
+          responseBody,
+          providerRequest: finalBody || translatedBody,
+          providerResponse: looksLikeSSE
+            ? {
+                _streamed: true,
+                _format: "sse-json",
+                summary: responseBody,
+              }
+            : responseBody,
+          clientResponse: buildErrorBody(HTTP_STATUS.BAD_REQUEST, guardrailMessage),
+          claudeCacheMeta: claudePromptCacheLogMeta,
+          claudeCacheUsageMeta: cacheUsageLogMeta,
+          cacheSource: "upstream",
+        });
+        if (apiKeyInfo?.id && estimatedCost > 0) {
+          recordConnectionCost(recordCost, apiKeyInfo.id, estimatedCost, credentials);
+        }
+        // The provider answered usably; the block is OmniRoute's own policy. Keep the success row
+        // this path has always written.
+        persistNonStreamingUsageRow(usage, nonStreamingUsageCtx);
+        nonStreamUsageRowWritten = true;
+        log?.warn?.(
+          "GUARDRAIL",
+          `Response blocked by ${postCallGuardrails.guardrail || "guardrail"}: ${guardrailMessage}`
+        );
+        finalizePendingScope(pendingScope, {
+          providerResponse: responseBody,
+          clientResponse: translatedResponse,
+        });
+        return createErrorResult(HTTP_STATUS.BAD_REQUEST, guardrailMessage);
+      }
+
+      // Validate the *translated* response actually carries client-usable output.
+      // isEmptyContentResponse (above) runs on the raw responseBody before translation;
+      // this check runs after translation + sanitization + tool-call execution to catch
+      // cases where a provider returns a structurally valid raw body that translates into
+      // choices:[] or output:[] with no usable content (Responses API shape included).
+      const malformedTranslatedReason = detectMalformedNonStream(translatedResponse);
+      if (malformedTranslatedReason) {
+        const totalLatency = Date.now() - startTime;
+        const rawBytes = (() => {
+          try {
+            return JSON.stringify(responseBody || {}).length;
+          } catch {
+            return -1;
+          }
+        })();
+        reportMalformed200({
+          mode: "nonstream",
+          provider,
+          model,
+          connectionId,
+          reason: malformedTranslatedReason,
+          recvBytes: rawBytes,
+          recvLines: -1,
+          emitted: -1,
+          events: {},
+          ttftMs: totalLatency,
+          elapsedMs: totalLatency,
+        });
+        appendRequestLog({
+          model,
+          provider,
+          connectionId,
+          status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}`,
+        }).catch(() => {});
+        const malformed = describeMalformedNonStream(translatedResponse, malformedTranslatedReason);
+        const malformedMessage = `[${provider}/${model}] ${malformed.message}`;
+        const malformedClientBody = buildErrorBody(HTTP_STATUS.BAD_GATEWAY, malformedMessage);
+        malformedClientBody.error.code = malformed.code;
+        malformedClientBody.error.type = malformed.type;
+        persistAttemptLogs({
+          status: HTTP_STATUS.BAD_GATEWAY,
+          tokens: usage,
+          responseBody,
+          providerRequest: finalBody || translatedBody,
+          providerResponse: looksLikeSSE
+            ? { _streamed: true, _format: "sse-json", summary: responseBody }
+            : responseBody,
+          clientResponse: malformedClientBody,
+          claudeCacheMeta: claudePromptCacheLogMeta,
+          claudeCacheUsageMeta: cacheUsageLogMeta,
+          cacheSource: "upstream",
+        });
+        // The only usage row of this request: a failure, with the tokens the provider reported.
+        persistFailureUsage(
+          HTTP_STATUS.BAD_GATEWAY,
+          "malformed_translated_response",
+          usage && typeof usage === "object" ? usage : null
+        );
+        nonStreamUsageRowWritten = true;
+        trackPendingRequest(model, provider, pendingConnId, false);
+        return createErrorResult(
+          HTTP_STATUS.BAD_GATEWAY,
+          malformedMessage,
+          null,
+          malformed.code,
+          malformed.type
+        );
+      }
+
+      persistNonStreamingUsageRow(usage, nonStreamingUsageCtx);
+      nonStreamUsageRowWritten = true;
+    } finally {
+      if (!nonStreamUsageRowWritten) {
+        persistFailureUsage(
+          HTTP_STATUS.SERVER_ERROR,
+          "post_processing_error",
+          usage && typeof usage === "object" ? usage : null
+        );
+      }
     }
 
     // ── Phase 9.1: Cache store (non-streaming, temp=0) ──

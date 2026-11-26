@@ -1,10 +1,17 @@
 import { createHash } from "node:crypto";
+import { DURABLE_EVIDENCE_WINDOW_HOURS } from "./durableEvidence.ts";
 
 export interface CandidateProvenance {
   connectionFingerprint: string | null;
   health: {
-    source: "usage_24h" | "runtime_process" | "bootstrap";
+    /** usage_durable: 7-day decayed, class-family-gated rows (ROUTING_DURABLE_EVIDENCE). */
+    source: "usage_24h" | "usage_durable" | "runtime_process" | "bootstrap";
     sampleCount: number | null;
+    /**
+     * usage_durable only: decay-weighted sample count, the confidence of the estimate. sampleCount
+     * stays the RAW gated row count, which decides whether evidence exists at all.
+     */
+    effectiveSampleCount?: number;
     windowHours: number | null;
     latestObservationAt: string | null;
     evaluatedAt: string;
@@ -38,6 +45,10 @@ export function candidateProvenance(args: {
   runtimeLatest: unknown;
   quota: unknown;
   now?: number;
+  /** Set only when the historical stats came from the durable evidence. Default: usage_24h, 24. */
+  historicalSource?: "usage_durable";
+  historicalWindowHours?: number;
+  historicalEffectiveSamples?: number;
 }): CandidateProvenance {
   const now = new Date(args.now ?? Date.now()).toISOString();
   const quota =
@@ -60,14 +71,19 @@ export function candidateProvenance(args: {
       : null,
     health: {
       source: args.historical
-        ? "usage_24h"
+        ? (args.historicalSource ?? "usage_24h")
         : count(args.runtimeSamples)
           ? "runtime_process"
           : "bootstrap",
       sampleCount: count(
         args.historical ? args.historicalSamples : args.runtimeSamples,
       ),
-      windowHours: args.historical ? 24 : null,
+      windowHours: args.historical ? (args.historicalSource ? args.historicalWindowHours ?? null : 24) : null,
+      ...(args.historical &&
+        args.historicalSource &&
+        args.historicalEffectiveSamples !== undefined && {
+          effectiveSampleCount: args.historicalEffectiveSamples,
+        }),
       latestObservationAt: args.historical ? null : latest,
       evaluatedAt: now,
       errorClass: "unknown",
@@ -91,6 +107,19 @@ export function candidateProvenance(args: {
   };
 }
 
+/**
+ * True for the bounded usage aggregates that may be read as recent evidence: the 24 h window, or
+ * the durable 7-day decayed window (whose sample count is already the decayed effective count).
+ */
+export function isBoundedUsageHealth(
+  health: { source: string; windowHours: number | null } | undefined,
+): boolean {
+  if (!health) return false;
+  if (health.source === "usage_24h") return health.windowHours === 24;
+  if (health.source === "usage_durable") return health.windowHours === DURABLE_EVIDENCE_WINDOW_HOURS;
+  return false;
+}
+
 /** An aggregate process-lifetime failure is a soft signal, not permanent availability proof. */
 export function healthEvidenceHasRecentSamples(
   provenance: CandidateProvenance | undefined,
@@ -99,8 +128,7 @@ export function healthEvidenceHasRecentSamples(
   const health = provenance?.health;
   if (
     !health ||
-    health.source !== "usage_24h" ||
-    health.windowHours !== 24 ||
+    !isBoundedUsageHealth(health) ||
     (health.sampleCount ?? 0) < 10
   )
     return false;

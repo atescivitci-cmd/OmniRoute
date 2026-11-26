@@ -44,6 +44,7 @@ import {
 import { toRecord, toNumber, getFieldValue } from "./scalars.ts";
 import { type UsageQuota, parseResetTime } from "./quota.ts";
 import { fetchAndParseAntigravityWeeklyQuotas } from "./antigravityWeeklyQuota.ts";
+import { BILLED_USAGE_ROW_SQL } from "@/shared/constants/usageSource";
 
 type JsonRecord = Record<string, unknown>;
 type SubscriptionCacheEntry = {
@@ -139,7 +140,7 @@ function getAntigravityLocalUsageUnits(
          WHERE provider = ?
            AND connection_id = ?
            AND model = ?
-           AND success = 1
+           AND ${BILLED_USAGE_ROW_SQL}
            AND timestamp >= ?
            AND timestamp < ?`
       )

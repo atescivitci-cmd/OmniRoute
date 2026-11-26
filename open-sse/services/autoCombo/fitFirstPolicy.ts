@@ -4,6 +4,7 @@ import {
   type AnswerQualityEvidence,
 } from "./validatedAnswerQuality.ts";
 import { operationalReliability, type ReliabilityEvidence } from "./rankingEvidence.ts";
+import { durableHealth } from "./durableEvidence.ts";
 import { deriveRequestClass, requestClassTier } from "./requestClass.ts";
 import {
   classHealthFactor,
@@ -26,7 +27,7 @@ import { createHash } from "node:crypto";
 import { localFallbackTier } from "./localFallbackPolicy.ts";
 import { noThinkingIntent, noThinkingHandling } from "../reasoningEffortCompatibility.ts";
 
-import type { ComboLike } from "../combo/types.ts";
+import type { ComboLike, DurableEvidenceNote } from "../combo/types.ts";
 import { getResolvedModelCapabilities } from "../modelCapabilities.ts";
 import { resolveCanonicalProviderModel } from "../model.ts";
 import {
@@ -74,7 +75,9 @@ export interface FitFirstCandidate extends ProviderCandidate {
   /** Set by assembly when class evidence was requested but could not be read: "unavailable:<why>". */
   classEvidenceStatus?: string;
   /** Only bounded successful-request timings can earn measured speed credit. */
-  latencySampleSource?: "successful_usage_24h" | "unqualified";
+  latencySampleSource?: "successful_usage_24h" | "successful_usage_durable" | "unqualified";
+  /** Set by assembly while ROUTING_DURABLE_EVIDENCE is on and the request has a class. */
+  durableEvidence?: DurableEvidenceNote;
   successfulLatencySampleCount?: number;
 }
 
@@ -145,6 +148,19 @@ export interface FitFirstFactors {
   };
   /** Present when band selection chose this entry (see bandSelection.ts). */
   bandSelection?: BandNote;
+  /**
+   * Present only while ROUTING_DURABLE_EVIDENCE is on and the request has a class: which evidence
+   * ranked this candidate. "active" = 7-day decayed rows of evidenceClassFamily only;
+   * "unavailable:<why>" = the read failed and the 24 h evidence was used.
+   */
+  evidenceStatus?: string;
+  evidenceWindowHours?: number;
+  evidenceHalfLifeHours?: number;
+  evidenceClassFamily?: "tools" | "chat";
+  /** Classified rows from a smaller size bucket than this were not evidence (0, 1 or 2). */
+  evidenceMinSizeBucket?: number;
+  evidenceRowsUsed?: number;
+  evidenceRowsExcluded?: number;
 }
 
 export interface RankedFitFirstCandidate {
@@ -918,6 +934,18 @@ function weightProfile(level: ReturnType<typeof classifyTask>["level"]) {
   };
 }
 
+function durableEvidenceFactors(note: DurableEvidenceNote): Partial<FitFirstFactors> {
+  return {
+    evidenceStatus: note.status,
+    ...(note.windowHours !== undefined && { evidenceWindowHours: note.windowHours }),
+    ...(note.halfLifeHours !== undefined && { evidenceHalfLifeHours: note.halfLifeHours }),
+    ...(note.classFamily && { evidenceClassFamily: note.classFamily }),
+    ...(note.minSizeBucket !== undefined && { evidenceMinSizeBucket: note.minSizeBucket }),
+    ...(note.rowsUsed !== undefined && { evidenceRowsUsed: note.rowsUsed }),
+    ...(note.rowsExcluded !== undefined && { evidenceRowsExcluded: note.rowsExcluded }),
+  };
+}
+
 export function rankFitFirstFreeCandidates(args: {
   candidates: FitFirstCandidate[];
   body: Record<string, unknown>;
@@ -1057,7 +1085,8 @@ export function rankFitFirstFreeCandidates(args: {
   );
   const validLatency = (candidate: FitFirstCandidate) =>
     evidence.get(candidate)!.sampleCount > 0 &&
-    candidate.latencySampleSource === "successful_usage_24h" &&
+    (candidate.latencySampleSource === "successful_usage_24h" ||
+      candidate.latencySampleSource === "successful_usage_durable") &&
     Number.isSafeInteger(candidate.successfulLatencySampleCount) &&
     candidate.successfulLatencySampleCount! >= 3 &&
     candidate.successfulLatencySampleCount! <= candidate.provenance!.health.sampleCount! &&
@@ -1110,9 +1139,14 @@ export function rankFitFirstFreeCandidates(args: {
           ? classEvidenceHealth
           : candidate.circuitBreakerState === "CLOSED" &&
               healthEvidenceHasRecentSamples(candidate.provenance)
-            ? confidentlyFailing
-              ? operational.score
-              : 1
+            ? operational.source === "usage_durable" && operational.reason === "observed"
+              ? // ROUTING_DURABLE_EVIDENCE only: health follows the record instead of being 1 for
+                // any record that is not confidently failing, so a 57% model ranks below an
+                // untried one (durableHealth: neutral at a 0.7 score).
+                durableHealth(operational.score, operational.healthWeight)
+              : confidentlyFailing
+                ? operational.score
+                : 1
             : 0.5;
       const quota = quotaRankingFactor(candidate);
       const reliability = operational.score;
@@ -1163,6 +1197,7 @@ export function rankFitFirstFreeCandidates(args: {
           latencyFit,
           score,
           ...(classEvidenceStatus && { classEvidenceStatus }),
+          ...(candidate.durableEvidence && durableEvidenceFactors(candidate.durableEvidence)),
           ...(classByCandidate.has(candidate) && {
             requestClass: requestClass!,
             classEvidence: classByCandidate.get(candidate)!,
