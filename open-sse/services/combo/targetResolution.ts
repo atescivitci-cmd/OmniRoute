@@ -111,6 +111,8 @@ export interface ResolveComboTargetPipelineDeps {
   log: ComboLogger;
   resilienceSettings: ResilienceSettings;
   isModelAvailable?: IsModelAvailable;
+  /** ROUTING_QUALITY_BAND continuity: this conversation's previous model (provider/model). */
+  priorModel?: string | null;
   /** handleSingleModel already wrapped by buildTargetTimeoutRunner. */
   handleSingleModelWithTimeout: HandleSingleModel;
   /**
@@ -432,6 +434,7 @@ async function orderByStrategy(
       log,
       buildAutoCandidates: deps.buildAutoCandidates,
       isModelAvailable: deps.isModelAvailable,
+      priorModel: deps.priorModel ?? null,
     });
     if ("earlyResponse" in autoResult) return { earlyResponse: autoResult.earlyResponse };
     return {

@@ -193,6 +193,10 @@ export interface FitFirstFactors {
   qualityBandSize?: number;
   qualityBandMember?: boolean;
   qualityBandWinner?: string;
+  /** Set when the conversation had a prior model: true when it was kept as the band winner. */
+  qualityBandKeptPrior?: boolean;
+  /** Quality-first could not rank this request on quality and used the blended ranking. */
+  qualityFallback?: "no_measured_candidates";
 }
 
 export interface RankedFitFirstCandidate {
@@ -932,6 +936,18 @@ function qualityEvidenceKind(source: string): QualityEvidenceKind {
   return "no_evidence";
 }
 
+/** Task category used for the quality lookup (see rankFitFirstFreeCandidates). */
+export function qualityTaskFor(
+  taskType: string,
+  requiredCapabilities: string[],
+  intent?: string | null
+): string {
+  if (taskType !== "general") return taskType;
+  if (requiredCapabilities.includes("tools")) return "coding";
+  const normalized = String(intent ?? "").toLowerCase();
+  return normalized === "code" || normalized === "coding" ? "coding" : taskType;
+}
+
 function weightProfile(level: ReturnType<typeof classifyTask>["level"]) {
   // Preserve each profile's existing operational weight budget. Reliability
   // receives four parts to speed's one, so a speed-only advantage cannot
@@ -992,6 +1008,11 @@ export function rankFitFirstFreeCandidates(args: {
   conversationKey?: string | null;
   /** Fair-selection settings; read from the process environment when absent (all off by default). */
   settings?: FairSelectionSettings;
+  /**
+   * ROUTING_QUALITY_BAND only: the model this conversation used last (session_model_history,
+   * `provider/model`). Kept while it is eligible and inside the band for the current task.
+   */
+  priorModel?: string | null;
 }): FitFirstDecision {
   const task = classifyTask(args.body);
   const { profile: _taskProfileProposal, ...taskIntent } = inferFitFirstIntent(args.body);
@@ -1172,11 +1193,21 @@ export function rankFitFirstFreeCandidates(args: {
     ReturnType<typeof getTaskQualityWithSource>
   >();
   let neutralBasis: "pool_min" | "scale_midpoint" | undefined;
+  // Quality category: the fit-first task, except that a "general" (fallback) request that is
+  // about code (classifier intent "code", or it carries tools) reads the coding leaderboard.
+  // Live 2026-11-26: most terminal tool requests were "general" and ranked on overall chat.
+  const qualityTask = qualityTaskFor(
+    taskDecision.taskType,
+    requiredCapabilities,
+    args.fallbackIntent
+  );
+  let qualityRanking = qualityFirst;
+  let qualityFallback: "no_measured_candidates" | undefined;
   if (qualityFirst) {
     for (const candidate of eligible) {
       qualityByCandidate.set(
         candidate,
-        getTaskQualityWithSource(candidate.provider, candidate.model, taskDecision.taskType, now)
+        getTaskQualityWithSource(candidate.provider, candidate.model, qualityTask, now)
       );
     }
     const measured = [...qualityByCandidate.values()]
@@ -1194,8 +1225,13 @@ export function rankFitFirstFreeCandidates(args: {
           });
         }
       }
-    } else {
+    } else if (eligible.length > 0) {
+      // No measured candidate (empty or failed quality table, or a pool of unrated models): a
+      // uniform hash over the whole pool would be no selection at all, so this request falls back
+      // to the blended ranking and records why. No band is formed.
       neutralBasis = "scale_midpoint";
+      qualityRanking = false;
+      qualityFallback = "no_measured_candidates";
     }
   }
   const unproven = (entry: RankedFitFirstCandidate) =>
@@ -1252,7 +1288,7 @@ export function rankFitFirstFreeCandidates(args: {
         ),
         args.now
       );
-      const quality = qualityFirst ? qualityByCandidate.get(candidate)! : null;
+      const quality = qualityRanking ? qualityByCandidate.get(candidate)! : null;
       const qualityAge = quality ? qualityAgeHours(quality.syncedAt, now) : null;
       const blendedScore = clamp01(
         fitness.score * weights.task +
@@ -1312,12 +1348,17 @@ export function rankFitFirstFreeCandidates(args: {
             qualityStale: qualityAge !== null && qualityAge > QUALITY_STALE_AFTER_HOURS,
             tieBreak: "spread_conversation_hash" as const,
           }),
+          ...(qualityFallback && { qualityFallback }),
         },
-        tieBreaker: neutralTieBreaker(fingerprint, candidate, fair.spreadTieBreak || qualityFirst),
+        tieBreaker: neutralTieBreaker(
+          fingerprint,
+          candidate,
+          fair.spreadTieBreak || qualityRanking
+        ),
       };
     })
     .sort((a, b) =>
-      qualityFirst
+      qualityRanking
         ? // Quality-first: local-last tier (a cost policy), then quality, then the provider-spread
           // conversation hash. Nothing measured from usage breaks a quality tie.
           localFallbackTier(a.candidate.provider, args.localFallbackPolicy) -
@@ -1340,7 +1381,7 @@ export function rankFitFirstFreeCandidates(args: {
   // quality is within `band` of the best counts as equal quality; the provider-spread conversation
   // hash orders them (a hash of the conversation key, so one conversation keeps its pick turn to
   // turn while the pool and the scores are unchanged). Nothing else moves.
-  const qualityBand = qualityFirst ? (fair.qualityBand ?? 0) : 0;
+  const qualityBand = qualityRanking ? (fair.qualityBand ?? 0) : 0;
   if (qualityBand > 0 && ranked.length > 0) {
     const topTier = localFallbackTier(ranked[0].candidate.provider, args.localFallbackPolicy);
     const floor = ranked[0].factors.score - qualityBand - 1e-9;
@@ -1352,6 +1393,15 @@ export function rankFitFirstFreeCandidates(args: {
     );
     const memberSet = new Set(members);
     members.sort((a, b) => a.tieBreaker.localeCompare(b.tieBreaker));
+    // Conversation continuity: the model this conversation used last stays first while it is
+    // still eligible and inside the band for THIS request's task. The task category can change
+    // between turns (general -> debugging -> review), which moves the band and the hash; without
+    // this a terminal hopped models (and lost its prompt cache) on about half its turns.
+    const prior = args.priorModel ? args.priorModel.toLowerCase() : null;
+    const priorIndex = prior
+      ? members.findIndex((entry) => candidateModelString(entry.candidate).toLowerCase() === prior)
+      : -1;
+    if (priorIndex > 0) members.unshift(...members.splice(priorIndex, 1));
     const reordered = [...members, ...ranked.filter((entry) => !memberSet.has(entry))];
     const winner = `${reordered[0].candidate.provider}/${reordered[0].candidate.model}`;
     for (const entry of reordered) {
@@ -1359,6 +1409,7 @@ export function rankFitFirstFreeCandidates(args: {
       entry.factors.qualityBandSize = members.length;
       entry.factors.qualityBandMember = memberSet.has(entry);
       entry.factors.qualityBandWinner = winner;
+      if (prior) entry.factors.qualityBandKeptPrior = priorIndex >= 0;
     }
     ranked.splice(0, ranked.length, ...reordered);
   }

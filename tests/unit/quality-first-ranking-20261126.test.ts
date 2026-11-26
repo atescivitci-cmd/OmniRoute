@@ -373,9 +373,10 @@ test("flag on: an unproven (unrated) model sits at the pool minimum and never ti
     const body = { ...CODING_BODY, metadata: { session_id: `n-${i}` } };
     assert.equal(order(await assembleAndRank([unknown, LOW], body)).at(-1), unknown.join("/"));
   }
+  // No measured candidate at all: the request falls back to the blended ranking (challenger D1).
   const alone = await assembleAndRank([unknown], CODING_BODY);
-  assert.equal(alone.ranked[0].factors.score, NEUTRAL_QUALITY_SCORE);
-  assert.equal(alone.ranked[0].factors.qualityNeutralBasis, "scale_midpoint");
+  assert.equal(alone.ranked[0].factors.qualityFallback, "no_measured_candidates");
+  assert.equal(alone.ranked[0].factors.rankingPolicy, undefined);
   setFlags({});
 });
 

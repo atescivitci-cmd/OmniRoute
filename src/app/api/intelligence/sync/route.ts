@@ -1,8 +1,10 @@
 /**
  * API Route: /api/intelligence/sync
  *
- * POST — Trigger a manual Arena ELO intelligence sync and a manual LMArena quality-score sync
- *        (src/lib/qualityScoreSync.ts; the one-shot fill after install). 200 when either succeeds.
+ * POST — Trigger a manual LMArena quality-score sync (src/lib/qualityScoreSync.ts; the one-shot
+ *        fill after install) and, independently and concurrently, the legacy Arena ELO sync.
+ *        The HTTP status is the quality sync's: 409 while a sync (e.g. the boot sync) is already
+ *        running, 200 on success, 502 on failure. Each feed reports its own result.
  * GET — Get current intelligence sync status; `qualityFeed` is the quality-score feed status
  *       (state fresh / stale / failing / never_synced, data age, last error).
  * DELETE — Clear all synced arena_elo intelligence data.
@@ -41,19 +43,32 @@ export async function POST(request: NextRequest) {
     const { dryRun = false } = validation.data;
 
     const { syncArenaElo } = await import("@/lib/arenaEloSync");
-    const { syncQualityScores } = await import("@/lib/qualityScoreSync");
-    const result = await syncArenaElo(dryRun);
-    const qualityFeed = await syncQualityScores({ dryRun });
-
+    const { manualQualitySync } = await import("@/lib/qualityScoreSync");
+    const [quality, arena] = await Promise.all([
+      manualQualitySync({ dryRun }),
+      syncArenaElo(dryRun).catch((err) => ({
+        success: false,
+        modelCount: 0,
+        source: "arena_elo",
+        error: sanitizeErrorMessage(err),
+      })),
+    ]);
+    if (quality.httpStatus === 409) {
+      return NextResponse.json(
+        {
+          error: { message: "Quality score sync already in progress", code: "sync_in_progress" },
+          qualityFeed: quality.result,
+          arenaElo: arena,
+        },
+        { status: 409 }
+      );
+    }
     return NextResponse.json(
-      { ...result, qualityFeed },
-      { status: result.success || qualityFeed.success ? 200 : 502 }
+      { qualityFeed: quality.result, arenaElo: arena },
+      { status: quality.httpStatus }
     );
   } catch (err) {
-    return NextResponse.json(
-      { error: sanitizeErrorMessage(err) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: sanitizeErrorMessage(err) }, { status: 500 });
   }
 }
 
@@ -69,10 +84,7 @@ export async function GET(request: NextRequest) {
       qualityFeed: getQualityScoreSyncStatus(),
     });
   } catch (err) {
-    return NextResponse.json(
-      { error: sanitizeErrorMessage(err) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: sanitizeErrorMessage(err) }, { status: 500 });
   }
 }
 
@@ -85,9 +97,6 @@ export async function DELETE(request: NextRequest) {
     clearSyncedIntelligence();
     return NextResponse.json({ success: true, message: "Synced intelligence data cleared" });
   } catch (err) {
-    return NextResponse.json(
-      { error: sanitizeErrorMessage(err) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: sanitizeErrorMessage(err) }, { status: 500 });
   }
 }

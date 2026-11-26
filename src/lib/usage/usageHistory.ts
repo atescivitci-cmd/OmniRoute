@@ -1051,6 +1051,7 @@ export async function getModelEvidenceRows(
     source: string | null;
     requestClass: string | null;
     timestamp: string;
+    status: string | null;
   }>
 > {
   const windowHours = resolvePositiveOption(options.windowHours, 168);
@@ -1060,7 +1061,7 @@ export async function getModelEvidenceRows(
   const classColumn = hasRequestClassColumn(db) ? "request_class" : "NULL AS request_class";
   const rows = db
     .prepare(
-      `SELECT provider, model, success, latency_ms, ttft_ms, tokens_output, error_code, source,
+      `SELECT provider, model, success, status, latency_ms, ttft_ms, tokens_output, error_code, source,
               ${classColumn}, timestamp
        FROM usage_history
        WHERE timestamp >= @sinceIso AND provider IS NOT NULL AND model IS NOT NULL
@@ -1079,6 +1080,8 @@ export async function getModelEvidenceRows(
     source: toStringOrNull(row.source),
     requestClass: toStringOrNull(row.request_class),
     timestamp: String(row.timestamp),
+    // Read by the quality-first broken-now window (a 499 is the client leaving, not a failure).
+    status: toStringOrNull(row.status),
   }));
 }
 
