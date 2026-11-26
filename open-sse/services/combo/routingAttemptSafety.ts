@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { LOCAL_COST_ERROR_CODES } from "../autoCombo/zeroCostAdmission.ts";
 import { isCredentialRejectionText } from "./credentialRejection.ts";
 import { isCreditExhaustionError } from "./creditExhaustion.ts";
+import { isModelSupportRejectionText } from "./clientVersionCompatibility.ts";
 import { CONTENT_SHAPE_QUALITY_CODES, type QualityRejection } from "./qualityCodes.ts";
 import {
   createRoutingTransportAttempt,
@@ -227,6 +228,7 @@ async function boundedErrorCode(
   reason: string | null;
   credentialRejection: boolean;
   creditExhaustion: boolean;
+  modelSupportRejection: boolean;
 } | null> {
   if (!response.headers.get("content-type")?.includes("application/json")) return null;
   const reader = response.clone().body?.getReader();
@@ -260,6 +262,8 @@ async function boundedErrorCode(
           reason: typeof detail?.reason === "string" ? detail.reason : null,
           credentialRejection: isCredentialRejectionText(value?.error?.message),
           creditExhaustion: isCreditExhaustionError(status, value),
+          modelSupportRejection:
+            status === 400 && isModelSupportRejectionText(value?.error?.message),
         };
       })(),
       new Promise<{
@@ -268,6 +272,7 @@ async function boundedErrorCode(
         reason: string;
         credentialRejection: boolean;
         creditExhaustion: boolean;
+        modelSupportRejection: boolean;
       }>((resolve) => {
         timer = setTimeout(
           () =>
@@ -277,6 +282,7 @@ async function boundedErrorCode(
               reason: "error_body_deadline",
               credentialRejection: false,
               creditExhaustion: false,
+              modelSupportRejection: false,
             }),
           100
         );
@@ -289,6 +295,7 @@ async function boundedErrorCode(
       reason: "error_body_unreadable",
       credentialRejection: false,
       creditExhaustion: false,
+      modelSupportRejection: false,
     };
   } finally {
     clearTimeout(timer);
@@ -732,11 +739,15 @@ export function createRoutingAttemptGuard(options: {
             return result;
           }
           // A 400 whose upstream text says the target's own authorization header is
-          // malformed is about this connection, not the request: it was refused at the
+          // malformed, or that its client version cannot support the model, is
+          // about this target, not the request: it was refused at the
           // auth layer before any processing, so another target is safe for plain and tool
           // requests alike. Provider-bound state never reaches here (stopped above), and
           // every other 400 and 401/403/422/499 keep the stop below.
-          if (result.status === 400 && error?.credentialRejection) {
+          if (
+            result.status === 400 &&
+            (error?.credentialRejection || error?.modelSupportRejection)
+          ) {
             rejected.add(key);
             priorFailure = result;
             return result;
