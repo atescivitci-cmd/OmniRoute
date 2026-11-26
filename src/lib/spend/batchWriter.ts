@@ -1,9 +1,12 @@
 import { batchSaveCostEntries } from "@/lib/db/domainState";
+import { entryAmount, type CostBasis } from "@/lib/usage/cashCost";
 
 export interface BufferedCostEntry {
   apiKeyId: string;
   cost: number;
   timestamp: number;
+  /** Real money spent; absent means unknown and counts at list price under the cash basis. */
+  cashCost?: number;
 }
 
 interface SpendBatchWriterOptions {
@@ -34,11 +37,21 @@ function getMaxBufferSize() {
 
 function normalizeEntry(entry: BufferedCostEntry): BufferedCostEntry | null {
   if (!entry?.apiKeyId || !Number.isFinite(entry.cost) || entry.cost <= 0) return null;
-  return {
+  const normalized: BufferedCostEntry = {
     apiKeyId: entry.apiKeyId,
     cost: entry.cost,
     timestamp: Number.isFinite(entry.timestamp) ? entry.timestamp : Date.now(),
   };
+  // Cash cost can be zero (subscription, free, local) but never above list price. A negative or
+  // non-finite value is invalid: leave it unknown so it counts at list price (never under-count).
+  if (
+    typeof entry.cashCost === "number" &&
+    Number.isFinite(entry.cashCost) &&
+    entry.cashCost >= 0
+  ) {
+    normalized.cashCost = Math.min(entry.cashCost, entry.cost);
+  }
+  return normalized;
 }
 
 export class SpendBatchWriter {
@@ -69,8 +82,8 @@ export class SpendBatchWriter {
     this.timer.unref?.();
   }
 
-  increment(apiKeyId: string, cost: number, timestamp = Date.now()) {
-    const entry = normalizeEntry({ apiKeyId, cost, timestamp });
+  increment(apiKeyId: string, cost: number, timestamp = Date.now(), cashCost?: number) {
+    const entry = normalizeEntry({ apiKeyId, cost, timestamp, cashCost });
     if (!entry) return;
 
     this.start();
@@ -98,10 +111,11 @@ export class SpendBatchWriter {
   getPendingCostTotal(
     apiKeyId: string,
     sinceTimestamp = 0,
-    untilTimestamp = Number.POSITIVE_INFINITY
+    untilTimestamp = Number.POSITIVE_INFINITY,
+    basis: CostBasis = "list"
   ) {
     return this.getBufferedEntries(apiKeyId, sinceTimestamp, untilTimestamp).reduce(
-      (sum, entry) => sum + entry.cost,
+      (sum, entry) => sum + entryAmount(entry, basis),
       0
     );
   }

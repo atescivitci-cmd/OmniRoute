@@ -288,6 +288,7 @@ import { isLearnableContextRejection, recordContextRejection } from "@/lib/db/le
 import { deriveRequestCompatibilityRequirements } from "../services/combo/comboStructure.ts";
 import { finalizePendingScope, updatePendingScope } from "@/lib/usage/pendingRequestScope";
 import { recordCost } from "@/domain/costRules";
+import { resolveCashClass } from "@/lib/usage/cashCost";
 import { calculateCost } from "@/lib/usage/costCalculator";
 import {
   buildClaudePassthroughToolNameMap,
@@ -315,7 +316,7 @@ import { emitRequestGamificationEvent } from "./chatCore/gamificationEvent.ts";
 import { runPluginOnResponseHook } from "./chatCore/pluginOnResponse.ts";
 import { scheduleStreamingQuotaShareConsumption } from "./chatCore/streamingQuotaShare.ts";
 import { recordStreamingUsageStats } from "./chatCore/streamingUsageStats.ts";
-import { recordStreamingCost } from "./chatCore/streamingCost.ts";
+import { recordConnectionCost, recordStreamingCost } from "./chatCore/streamingCost.ts";
 import {
   appendNonStreamingSseTerminalSignal,
   type NonStreamingSseTerminalState,
@@ -5158,7 +5159,7 @@ async function handleChatCoreRequest({
         cacheSource: "upstream",
       });
       if (apiKeyInfo?.id && estimatedCost > 0) {
-        recordCost(apiKeyInfo.id, estimatedCost);
+        recordConnectionCost(recordCost, apiKeyInfo.id, estimatedCost, credentials);
       }
       log?.warn?.(
         "GUARDRAIL",
@@ -5269,7 +5270,7 @@ async function handleChatCoreRequest({
       cacheSource: "upstream",
     });
     if (apiKeyInfo?.id && estimatedCost > 0) {
-      recordCost(apiKeyInfo.id, estimatedCost);
+      recordConnectionCost(recordCost, apiKeyInfo.id, estimatedCost, credentials);
     }
 
     // === Quota Share POST-hook (B/F7) — fire-and-forget, fail-open ===
@@ -5568,6 +5569,7 @@ async function handleChatCoreRequest({
       model,
       streamUsage,
       serviceTier: effectiveServiceTier,
+      cashClass: resolveCashClass(credentials?.providerSpecificData),
       calculateCost,
       recordCost,
     });

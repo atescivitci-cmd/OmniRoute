@@ -3,6 +3,7 @@ import {
   OPENROUTER_PRESET_MAX_LENGTH,
   isOpenRouterPresetValue,
 } from "@/shared/constants/openRouterPreset";
+import { CASH_CLASSES, isCashClass } from "@/lib/usage/cashCost";
 
 function isHttpUrl(value: string): boolean {
   try {
@@ -107,6 +108,16 @@ export function validateProviderSpecificData(
       code: z.ZodIssueCode.custom,
       message: "providerSpecificData.baseUrl must be a valid http(s) URL",
       path: ["baseUrl"],
+    });
+  }
+
+  // Operator-set cash class (see src/lib/usage/cashCost.ts). null clears it (treated as metered).
+  const cashClass = data.cashClass;
+  if (cashClass !== undefined && cashClass !== null && !isCashClass(cashClass)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `providerSpecificData.cashClass must be one of: ${CASH_CLASSES.join(", ")}`,
+      path: ["cashClass"],
     });
   }
 

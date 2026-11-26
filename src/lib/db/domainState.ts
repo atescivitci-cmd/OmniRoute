@@ -11,6 +11,7 @@
  */
 
 import { getDbInstance } from "./core";
+import { normalizeCostBasis, type CostBasis } from "@/lib/usage/cashCost";
 
 type JsonRecord = Record<string, unknown>;
 type BudgetResetInterval = "daily" | "weekly" | "monthly";
@@ -26,6 +27,8 @@ interface BudgetConfigRecord {
   lastBudgetResetAt: number | null;
   warningEmittedAt: number | null;
   warningPeriodStart: number | null;
+  /** "list" (default) counts list-price estimates; "cash" counts only real money spent. */
+  costBasis?: CostBasis;
 }
 
 interface BudgetResetLogRecord {
@@ -106,6 +109,7 @@ function ensureBudgetSchema() {
   if (!columnNames.has("warning_period_start")) {
     db.exec("ALTER TABLE domain_budgets ADD COLUMN warning_period_start INTEGER");
   }
+  // cost_basis (domain_budgets) and cash_cost (domain_cost_history) come from migration 141.
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS domain_budget_reset_logs (
@@ -211,9 +215,10 @@ export function saveBudget(apiKeyId: string, config: Partial<BudgetConfigRecord>
        budget_reset_at,
        last_budget_reset_at,
        warning_emitted_at,
-       warning_period_start
+       warning_period_start,
+       cost_basis
      )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     apiKeyId,
     toNumber(config.dailyLimitUsd),
@@ -225,7 +230,8 @@ export function saveBudget(apiKeyId: string, config: Partial<BudgetConfigRecord>
     config.budgetResetAt ?? null,
     config.lastBudgetResetAt ?? null,
     config.warningEmittedAt ?? null,
-    config.warningPeriodStart ?? null
+    config.warningPeriodStart ?? null,
+    normalizeCostBasis(config.costBasis)
   );
 }
 
@@ -254,6 +260,7 @@ export function loadBudget(apiKeyId: string): BudgetConfigRecord | null {
     lastBudgetResetAt: toNumber(record.last_budget_reset_at, 0) || null,
     warningEmittedAt: toNumber(record.warning_emitted_at, 0) || null,
     warningPeriodStart: toNumber(record.warning_period_start, 0) || null,
+    costBasis: normalizeCostBasis(record.cost_basis),
   };
 }
 
@@ -286,6 +293,7 @@ export function loadAllBudgets() {
       lastBudgetResetAt: toNumber(record.last_budget_reset_at, 0) || null,
       warningEmittedAt: toNumber(record.warning_emitted_at, 0) || null,
       warningPeriodStart: toNumber(record.warning_period_start, 0) || null,
+      costBasis: normalizeCostBasis(record.cost_basis),
     };
   }
 
@@ -370,43 +378,54 @@ export function deleteBudget(apiKeyId: string) {
  * @param {number} cost
  * @param {number} [timestamp]
  */
-export function saveCostEntry(apiKeyId: string, cost: number, timestamp = Date.now()) {
-  ensureBudgetSchema();
-  const db = getDbInstance();
-  db.prepare("INSERT INTO domain_cost_history (api_key_id, cost, timestamp) VALUES (?, ?, ?)").run(
-    apiKeyId,
-    cost,
-    timestamp
-  );
+function toCashCostParam(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-export function batchSaveCostEntries(
-  entries: Array<{ apiKeyId: string; cost: number; timestamp: number }>
+/** SQL amount expression for a cost basis; NULL cash cost falls back to the list estimate. */
+function costAmountSql(basis: CostBasis): string {
+  return basis === "cash" ? "COALESCE(cash_cost, cost)" : "cost";
+}
+
+export function saveCostEntry(
+  apiKeyId: string,
+  cost: number,
+  timestamp = Date.now(),
+  cashCost?: number | null
 ) {
+  ensureBudgetSchema();
+  const db = getDbInstance();
+  db.prepare(
+    "INSERT INTO domain_cost_history (api_key_id, cost, timestamp, cash_cost) VALUES (?, ?, ?, ?)"
+  ).run(apiKeyId, cost, timestamp, toCashCostParam(cashCost));
+}
+
+type CostEntryInput = { apiKeyId: string; cost: number; timestamp: number; cashCost?: number };
+
+export function batchSaveCostEntries(entries: Array<CostEntryInput>) {
   ensureBudgetSchema();
   if (!Array.isArray(entries) || entries.length === 0) return;
 
   const db = getDbInstance();
   const stmt = db.prepare(
-    "INSERT INTO domain_cost_history (api_key_id, cost, timestamp) VALUES (?, ?, ?)"
+    "INSERT INTO domain_cost_history (api_key_id, cost, timestamp, cash_cost) VALUES (?, ?, ?, ?)"
   );
-  const tx = db.transaction(
-    (rows: Array<{ apiKeyId: string; cost: number; timestamp: number }>) => {
-      for (const entry of rows) {
-        stmt.run(entry.apiKeyId, entry.cost, entry.timestamp);
-      }
+  const tx = db.transaction((rows: Array<CostEntryInput>) => {
+    for (const entry of rows) {
+      stmt.run(entry.apiKeyId, entry.cost, entry.timestamp, toCashCostParam(entry.cashCost));
     }
-  );
+  });
 
   tx(entries);
 }
 
-export function loadCostTotal(apiKeyId: string, sinceTimestamp: number) {
+export function loadCostTotal(apiKeyId: string, sinceTimestamp: number, basis: CostBasis = "list") {
   ensureBudgetSchema();
   const db = getDbInstance();
   const row = db
     .prepare(
-      "SELECT COALESCE(SUM(cost), 0) AS total FROM domain_cost_history WHERE api_key_id = ? AND timestamp >= ?"
+      `SELECT COALESCE(SUM(${costAmountSql(normalizeCostBasis(basis))}), 0) AS total
+       FROM domain_cost_history WHERE api_key_id = ? AND timestamp >= ?`
     )
     .get(apiKeyId, sinceTimestamp) as { total?: number } | undefined;
   return Number(row?.total || 0);
@@ -423,7 +442,7 @@ export function loadCostEntries(apiKeyId: string, sinceTimestamp: number) {
   const db = getDbInstance();
   return db
     .prepare(
-      "SELECT cost, timestamp FROM domain_cost_history WHERE api_key_id = ? AND timestamp >= ? ORDER BY timestamp"
+      "SELECT cost, cash_cost AS cashCost, timestamp FROM domain_cost_history WHERE api_key_id = ? AND timestamp >= ? ORDER BY timestamp"
     )
     .all(apiKeyId, sinceTimestamp);
 }
@@ -444,7 +463,7 @@ export function loadCostEntriesInRange(
   const db = getDbInstance();
   return db
     .prepare(
-      `SELECT cost, timestamp
+      `SELECT cost, cash_cost AS cashCost, timestamp
        FROM domain_cost_history
        WHERE api_key_id = ? AND timestamp >= ? AND timestamp < ?
        ORDER BY timestamp`

@@ -57,6 +57,7 @@ test("setBudget normalizes defaults and getBudget returns the stored config", ()
     lastBudgetResetAt: costRules.getBudget("key-budget")?.lastBudgetResetAt ?? null,
     warningEmittedAt: null,
     warningPeriodStart: null,
+    costBasis: "list",
   });
   assert.equal(costRules.getBudget("missing-key"), null);
 });
@@ -112,6 +113,10 @@ test("getDailyTotal and getCostSummary split daily and monthly totals correctly"
       dailyLimitUsd: 50,
       monthlyLimitUsd: 100,
       warningThreshold: 0.75,
+      costBasis: "list",
+      cashCostToday: 2.5,
+      cashCostMonth: 4,
+      cashCostPeriod: 2.5,
     });
 
     const now = Date.now();
@@ -140,6 +145,7 @@ test("getDailyTotal and getCostSummary split daily and monthly totals correctly"
         lastBudgetResetAt: costRules.getBudget("key-summary")?.lastBudgetResetAt ?? null,
         warningEmittedAt: null,
         warningPeriodStart: null,
+        costBasis: "list",
       },
       totalCostToday: 2.5,
       totalCostMonth: 4,
@@ -155,6 +161,10 @@ test("getDailyTotal and getCostSummary split daily and monthly totals correctly"
       weeklyLimitUsd: 0,
       monthlyLimitUsd: 100,
       warningThreshold: 0.75,
+      costBasis: "list",
+      cashCostToday: 2.5,
+      cashCostMonth: 4,
+      cashCostPeriod: 2.5,
     });
   } finally {
     global.Date = OriginalDate;
@@ -183,6 +193,7 @@ test("costRules covers DB-loaded budgets, malformed entries and storage failure 
     lastBudgetResetAt: costRules.getBudget("db-loaded")?.lastBudgetResetAt ?? null,
     warningEmittedAt: null,
     warningPeriodStart: null,
+    costBasis: "list",
   });
 
   assert.deepEqual(costRules.checkBudget("missing-budget"), {
@@ -238,6 +249,10 @@ test("costRules covers DB-loaded budgets, malformed entries and storage failure 
     weeklyLimitUsd: 0,
     monthlyLimitUsd: 0,
     warningThreshold: null,
+    costBasis: "list",
+    cashCostToday: 2.25,
+    cashCostMonth: 2.25,
+    cashCostPeriod: 0,
   });
 
   db.exec("DROP TABLE domain_cost_history");
@@ -261,6 +276,10 @@ test("costRules covers DB-loaded budgets, malformed entries and storage failure 
     weeklyLimitUsd: 0,
     monthlyLimitUsd: 0,
     warningThreshold: null,
+    costBasis: "list",
+    cashCostToday: 0,
+    cashCostMonth: 0,
+    cashCostPeriod: 0,
   });
 });
 

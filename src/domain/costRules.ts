@@ -26,6 +26,7 @@ import {
   resetSpendBatchWriterForTests,
   spendBatchWriter,
 } from "@/lib/spend/batchWriter";
+import { entryAmount, normalizeCostBasis, type CostBasis } from "@/lib/usage/cashCost";
 
 export type BudgetResetInterval = "daily" | "weekly" | "monthly";
 
@@ -40,6 +41,8 @@ interface BudgetConfig {
   lastBudgetResetAt?: number | null;
   warningEmittedAt?: number | null;
   warningPeriodStart?: number | null;
+  /** "list" (default) counts list-price estimates; "cash" counts only real money spent. */
+  costBasis?: CostBasis;
 }
 
 interface NormalizedBudgetConfig {
@@ -53,11 +56,13 @@ interface NormalizedBudgetConfig {
   lastBudgetResetAt: number | null;
   warningEmittedAt: number | null;
   warningPeriodStart: number | null;
+  costBasis: CostBasis;
 }
 
 interface CostEntry {
   cost: number;
   timestamp: number;
+  cashCost?: number | null;
 }
 
 interface BudgetWindow {
@@ -89,6 +94,12 @@ interface BudgetSummary {
   weeklyLimitUsd: number;
   monthlyLimitUsd: number;
   warningThreshold: number | null;
+  /** Cost basis the period total and limit use ("list" when no budget is set). */
+  costBasis: CostBasis;
+  /** Real money spent (cash basis), shown next to the list totals above. */
+  cashCostToday: number;
+  cashCostMonth: number;
+  cashCostPeriod: number;
 }
 
 const VALID_RESET_INTERVALS = new Set<BudgetResetInterval>(["daily", "weekly", "monthly"]);
@@ -115,13 +126,14 @@ function toCostEntries(value: unknown): CostEntry[] {
     const cost = toNumber(record.cost, Number.NaN);
     const timestamp = toNumber(record.timestamp, Number.NaN);
     if (!Number.isFinite(cost) || !Number.isFinite(timestamp)) continue;
-    entries.push({ cost, timestamp });
+    const cashCost = toNumber(record.cashCost, Number.NaN);
+    entries.push(Number.isFinite(cashCost) ? { cost, timestamp, cashCost } : { cost, timestamp });
   }
   return entries;
 }
 
-function sumEntries(entries: CostEntry[]): number {
-  return entries.reduce((sum, entry) => sum + entry.cost, 0);
+function sumEntries(entries: CostEntry[], basis: CostBasis = "list"): number {
+  return entries.reduce((sum, entry) => sum + entryAmount(entry, basis), 0);
 }
 
 function normalizeResetInterval(value: unknown): BudgetResetInterval {
@@ -163,6 +175,7 @@ function normalizeBudgetConfig(config: BudgetConfig): NormalizedBudgetConfig {
     lastBudgetResetAt: normalizeTimestamp(config.lastBudgetResetAt),
     warningEmittedAt: normalizeTimestamp(config.warningEmittedAt),
     warningPeriodStart: normalizeTimestamp(config.warningPeriodStart),
+    costBasis: normalizeCostBasis(config.costBasis),
   };
 }
 
@@ -236,11 +249,15 @@ function getActiveBudgetLimit(budget: NormalizedBudgetConfig): number {
   return budget.dailyLimitUsd;
 }
 
-function getBudgetWindowTotal(apiKeyId: string, periodStartAt: number): number {
+function getBudgetWindowTotal(
+  apiKeyId: string,
+  periodStartAt: number,
+  basis: CostBasis = "list"
+): number {
   try {
     return (
-      loadCostTotal(apiKeyId, periodStartAt) +
-      spendBatchWriter.getPendingCostTotal(apiKeyId, periodStartAt)
+      loadCostTotal(apiKeyId, periodStartAt, basis) +
+      spendBatchWriter.getPendingCostTotal(apiKeyId, periodStartAt, Number.POSITIVE_INFINITY, basis)
     );
   } catch {
     return 0;
@@ -250,12 +267,15 @@ function getBudgetWindowTotal(apiKeyId: string, periodStartAt: number): number {
 function getBudgetWindowRangeTotal(
   apiKeyId: string,
   periodStartAt: number,
-  periodEndAt: number
+  periodEndAt: number,
+  basis: CostBasis = "list"
 ): number {
   try {
     return (
-      sumEntries(toCostEntries(loadCostEntriesInRange(apiKeyId, periodStartAt, periodEndAt))) +
-      spendBatchWriter.getPendingCostTotal(apiKeyId, periodStartAt, periodEndAt)
+      sumEntries(
+        toCostEntries(loadCostEntriesInRange(apiKeyId, periodStartAt, periodEndAt)),
+        basis
+      ) + spendBatchWriter.getPendingCostTotal(apiKeyId, periodStartAt, periodEndAt, basis)
     );
   } catch {
     return 0;
@@ -291,7 +311,8 @@ function syncBudgetSchedule(
     const previousSpend = getBudgetWindowRangeTotal(
       apiKeyId,
       normalized.lastBudgetResetAt as number,
-      window.periodStartAt
+      window.periodStartAt,
+      normalized.costBasis
     );
     try {
       saveBudgetResetLog({
@@ -326,7 +347,8 @@ function syncBudgetSchedule(
     normalized.monthlyLimitUsd !== updated.monthlyLimitUsd ||
     normalized.warningThreshold !== updated.warningThreshold ||
     normalized.resetInterval !== updated.resetInterval ||
-    normalized.resetTime !== updated.resetTime;
+    normalized.resetTime !== updated.resetTime ||
+    normalized.costBasis !== updated.costBasis;
 
   if (changed && options.persist !== false) {
     try {
@@ -346,8 +368,28 @@ function syncBudgetSchedule(
  * @param {string} apiKeyId
  * @param {BudgetConfig} config
  */
+/** Stored cost basis of a budget, read without the schedule sync (no reset log, no save). */
+function currentCostBasis(apiKeyId: string): CostBasis {
+  const cached = budgets.get(apiKeyId);
+  if (cached) return cached.costBasis;
+  try {
+    return normalizeCostBasis(loadBudget(apiKeyId)?.costBasis);
+  } catch {
+    return "list";
+  }
+}
+
 export function setBudget(apiKeyId: string, config: BudgetConfig) {
-  return syncBudgetSchedule(apiKeyId, config, Date.now(), { logReset: false, persist: true });
+  // A save that does not mention the cost basis (for example the dashboard form) keeps the
+  // current one, so a cash budget is never silently switched back to list prices.
+  const costBasis =
+    config.costBasis !== undefined
+      ? normalizeCostBasis(config.costBasis)
+      : currentCostBasis(apiKeyId);
+  return syncBudgetSchedule(apiKeyId, { ...config, costBasis }, Date.now(), {
+    logReset: false,
+    persist: true,
+  });
 }
 
 /**
@@ -396,9 +438,9 @@ export function deleteBudget(apiKeyId: string) {
  * @param {string} apiKeyId
  * @param {number} cost - Cost in USD
  */
-export function recordCost(apiKeyId: string, cost: number): void {
+export function recordCost(apiKeyId: string, cost: number, cashCost?: number): void {
   try {
-    spendBatchWriter.increment(apiKeyId, cost, Date.now());
+    spendBatchWriter.increment(apiKeyId, cost, Date.now(), cashCost);
   } catch {
     // Non-critical.
   }
@@ -454,7 +496,7 @@ export function checkBudget(apiKeyId: string, additionalCost = 0) {
   }
 
   const window = getBudgetWindow(budget.resetInterval, budget.resetTime);
-  const periodUsed = getBudgetWindowTotal(apiKeyId, window.periodStartAt);
+  const periodUsed = getBudgetWindowTotal(apiKeyId, window.periodStartAt, budget.costBasis);
   const projectedTotal = periodUsed + additionalCost;
   const activeLimitUsd = getActiveBudgetLimit(budget);
   const warningReached =
@@ -570,7 +612,8 @@ export function getCostSummary(apiKeyId: string): BudgetSummary {
 
     const dailyTotal = sumEntries(dailyEntries);
     const monthlyTotal = sumEntries(monthlyEntries);
-    const periodTotal = sumEntries(periodEntries);
+    const costBasis = budget?.costBasis ?? "list";
+    const periodTotal = sumEntries(periodEntries, costBasis);
     const activeLimitUsd = budget ? getActiveBudgetLimit(budget) : 0;
 
     return {
@@ -592,6 +635,10 @@ export function getCostSummary(apiKeyId: string): BudgetSummary {
       weeklyLimitUsd: budget?.weeklyLimitUsd ?? 0,
       monthlyLimitUsd: budget?.monthlyLimitUsd ?? 0,
       warningThreshold: budget?.warningThreshold ?? null,
+      costBasis,
+      cashCostToday: sumEntries(dailyEntries, "cash"),
+      cashCostMonth: sumEntries(monthlyEntries, "cash"),
+      cashCostPeriod: sumEntries(periodEntries, "cash"),
     };
   } catch {
     return {
@@ -613,6 +660,10 @@ export function getCostSummary(apiKeyId: string): BudgetSummary {
       weeklyLimitUsd: budget?.weeklyLimitUsd ?? 0,
       monthlyLimitUsd: budget?.monthlyLimitUsd ?? 0,
       warningThreshold: budget?.warningThreshold ?? null,
+      costBasis: budget?.costBasis ?? "list",
+      cashCostToday: 0,
+      cashCostMonth: 0,
+      cashCostPeriod: 0,
     };
   }
 }
