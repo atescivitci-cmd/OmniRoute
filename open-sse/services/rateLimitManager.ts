@@ -8,6 +8,7 @@
  * Can be toggled per provider connection via dashboard.
  */
 
+import { AsyncResource } from "node:async_hooks";
 import Bottleneck from "bottleneck";
 import { parseRetryAfterFromBody } from "./accountFallback.ts";
 import { getAntigravityQuotaFamily } from "./antigravityQuotaFamily.ts";
@@ -580,23 +581,33 @@ async function getQueueHealthSnapshot(key: string, limiter: Bottleneck) {
 // The queue deadline stops at dispatch. Never use Bottleneck expiration for it.
 // Bottleneck 2.19.5: follow submit then registration locks, never stop a limiter.
 function removeAbandonedQueueJob(limiter, id) {
-  if (!limiter._submitLock?.schedule || !limiter._registerLock?.schedule) return Promise.resolve(false);
-  return limiter._submitLock.schedule(() => {}).then(() => limiter._registerLock.schedule(() => {
-    if (limiter.jobStatus(id) !== 'QUEUED') return false;
-    const lists = limiter._queues?._lists;
-    if (!Array.isArray(lists)) return false;
-    for (const list of lists) {
-      for (let node = list._first; node; node = node.next) {
-        if (node.value?.options?.id !== id) continue;
-        if (typeof node.value.doDrop !== 'function' || typeof list.decr !== 'function') return false;
-        if (node.prev) node.prev.next = node.next; else list._first = node.next;
-        if (node.next) node.next.prev = node.prev; else list._last = node.prev;
-        list.length--; list.decr();
-        return node.value.doDrop({ message: 'rate-limit-queued-job-abandoned' }) === true;
-      }
-    }
-    return false;
-  })).catch(() => false);
+  if (!limiter._submitLock?.schedule || !limiter._registerLock?.schedule)
+    return Promise.resolve(false);
+  return limiter._submitLock
+    .schedule(() => {})
+    .then(() =>
+      limiter._registerLock.schedule(() => {
+        if (limiter.jobStatus(id) !== "QUEUED") return false;
+        const lists = limiter._queues?._lists;
+        if (!Array.isArray(lists)) return false;
+        for (const list of lists) {
+          for (let node = list._first; node; node = node.next) {
+            if (node.value?.options?.id !== id) continue;
+            if (typeof node.value.doDrop !== "function" || typeof list.decr !== "function")
+              return false;
+            if (node.prev) node.prev.next = node.next;
+            else list._first = node.next;
+            if (node.next) node.next.prev = node.prev;
+            else list._last = node.prev;
+            list.length--;
+            list.decr();
+            return node.value.doDrop({ message: "rate-limit-queued-job-abandoned" }) === true;
+          }
+        }
+        return false;
+      })
+    )
+    .catch(() => false);
 }
 function scheduleQueueWaitOnly(limiter, fn, maxWaitMs, signal, label) {
   const id = `queue-only-${globalThis.crypto.randomUUID()}`;
@@ -607,9 +618,11 @@ function scheduleQueueWaitOnly(limiter, fn, maxWaitMs, signal, label) {
   let rejectWaiting;
   const clearWaiting = () => {
     clearTimeout(timer);
-    if (abortListener) signal.removeEventListener('abort', abortListener);
+    if (abortListener) signal.removeEventListener("abort", abortListener);
   };
-  const waitingFailure = new Promise((_, reject) => { rejectWaiting = reject; });
+  const waitingFailure = new Promise((_, reject) => {
+    rejectWaiting = reject;
+  });
   const cancel = (error) => {
     if (cancelled) return;
     cancelled = !started;
@@ -620,54 +633,106 @@ function scheduleQueueWaitOnly(limiter, fn, maxWaitMs, signal, label) {
   if (signal) {
     abortListener = () => {
       const reason = signal.reason;
-      const error = reason instanceof Error ? reason : new Error(typeof reason === 'string' ? reason : 'The operation was aborted');
-      if (!(reason instanceof Error)) error.name = 'AbortError';
+      const error =
+        reason instanceof Error
+          ? reason
+          : new Error(typeof reason === "string" ? reason : "The operation was aborted");
+      if (!(reason instanceof Error)) error.name = "AbortError";
       cancel(error);
     };
-    signal.addEventListener('abort', abortListener, { once: true });
+    signal.addEventListener("abort", abortListener, { once: true });
     if (signal.aborted) abortListener();
   }
-  if (maxWaitMs > 0 && !cancelled) timer = setTimeout(() => {
-    const error = new Error(`Request dropped after exceeding the local rate-limit queue budget maxWaitMs (${maxWaitMs}ms) for ${label}; the request was not dispatched.`);
-    Object.assign(error, { code: 'RATE_LIMIT_QUEUE_TIMEOUT' });
-    cancel(error);
-  }, maxWaitMs);
+  if (maxWaitMs > 0 && !cancelled)
+    timer = setTimeout(() => {
+      const error = new Error(
+        `Request dropped after exceeding the local rate-limit queue budget maxWaitMs (${maxWaitMs}ms) for ${label}; the request was not dispatched.`
+      );
+      Object.assign(error, { code: "RATE_LIMIT_QUEUE_TIMEOUT" });
+      cancel(error);
+    }, maxWaitMs);
   if (cancelled) return waitingFailure.finally(clearWaiting);
   // Cancellation may lose a race to registration; keep this dispatch guard too.
-  const scheduled = limiter.schedule({ id }, () => {
-    if (cancelled || signal?.aborted) {
-      clearWaiting();
-      return undefined;
-    }
-    started = true;
-    clearTimeout(timer);
-    return fn();
-  });
+  // The job must run in the CALLER's async context. Bottleneck starts a queued job from whatever
+  // released the slot (typically the previous job's completion), so without binding, a request
+  // queued behind another ran inside the previous request's AsyncLocalStorage stores, including
+  // its routing transport attempt: its upstream dispatch then counted as a second dispatch of the
+  // other request's attempt and both failed with routing_transport_replay_blocked (live
+  // 2026-11-26 20:33Z, three concurrent gemini requests on one account). Binding is a no-op for a
+  // job that starts immediately, which already runs in the caller's context.
+  const scheduled = limiter.schedule(
+    { id },
+    AsyncResource.bind(() => {
+      if (cancelled || signal?.aborted) {
+        clearWaiting();
+        return undefined;
+      }
+      started = true;
+      clearTimeout(timer);
+      return fn();
+    })
+  );
   return Promise.race([scheduled, waitingFailure]).finally(clearWaiting);
 }
 
-export async function withRateLimit(provider, connectionId, model, fn, signal = null, retryAfterWedge = true) {
-
+export async function withRateLimit(
+  provider,
+  connectionId,
+  model,
+  fn,
+  signal = null,
+  retryAfterWedge = true
+) {
   if (!enabledConnections.has(connectionId)) return fn();
-  if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : Object.assign(new Error("The operation was aborted"), { name: "AbortError" });
-  await awaitProviderDefaultSlot(provider, connectionId, signal, currentRequestQueueSettings.maxWaitMs);
+  if (signal?.aborted)
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : Object.assign(new Error("The operation was aborted"), { name: "AbortError" });
+  await awaitProviderDefaultSlot(
+    provider,
+    connectionId,
+    signal,
+    currentRequestQueueSettings.maxWaitMs
+  );
   const limiter = getLimiter(provider, connectionId, model);
   const label = model ? `${provider}/${model}` : provider;
-  const admissionError = checkQueueAdmission(limiter.counts().QUEUED, currentRequestQueueSettings.maxQueueDepth, label);
+  const admissionError = checkQueueAdmission(
+    limiter.counts().QUEUED,
+    currentRequestQueueSettings.maxQueueDepth,
+    label
+  );
   if (admissionError) {
-    logRateLimit(`🚧 [RATE-LIMIT] ${getLimiterKey(provider, connectionId, model)} — queue full, rejecting fast (maxQueueDepth=${currentRequestQueueSettings.maxQueueDepth})`);
+    logRateLimit(
+      `🚧 [RATE-LIMIT] ${getLimiterKey(provider, connectionId, model)} — queue full, rejecting fast (maxQueueDepth=${currentRequestQueueSettings.maxQueueDepth})`
+    );
     throw admissionError;
   }
   try {
-    return await scheduleQueueWaitOnly(limiter, fn, currentRequestQueueSettings.maxWaitMs, signal, label);
+    return await scheduleQueueWaitOnly(
+      limiter,
+      fn,
+      currentRequestQueueSettings.maxWaitMs,
+      signal,
+      label
+    );
   } catch (error) {
     if (error?.message?.includes("This job timed out")) {
-      const executionError = new Error(`Local execution timeout after dispatch for ${label}; this is not the queue-wait budget.`, { cause: error });
-      Object.assign(executionError, { code: "RATE_LIMIT_EXECUTION_TIMEOUT", name: "TimeoutError", status: 504 });
+      const executionError = new Error(
+        `Local execution timeout after dispatch for ${label}; this is not the queue-wait budget.`,
+        { cause: error }
+      );
+      Object.assign(executionError, {
+        code: "RATE_LIMIT_EXECUTION_TIMEOUT",
+        name: "TimeoutError",
+        status: 504,
+      });
       throw executionError;
     }
     if (error?.message === "rate-limit-watchdog-wedge-reset") {
-      const wedgeError = new Error(`Request dropped: the local rate-limit queue for ${label} was detected as wedged and force-reset.`, { cause: error });
+      const wedgeError = new Error(
+        `Request dropped: the local rate-limit queue for ${label} was detected as wedged and force-reset.`,
+        { cause: error }
+      );
       Object.assign(wedgeError, { code: "RATE_LIMIT_QUEUE_WEDGED" });
       throw wedgeError;
     }
