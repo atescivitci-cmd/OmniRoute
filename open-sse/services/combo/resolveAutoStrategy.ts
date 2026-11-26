@@ -119,6 +119,8 @@ export interface ResolveAutoStrategyDeps {
   resilienceSettings: ResilienceSettings;
   log: ComboLogger;
   buildAutoCandidates: BuildAutoCandidates;
+  /** ROUTING_QUALITY_BAND continuity: this conversation's previous model (provider/model). */
+  priorModel?: string | null;
   /** Live connection/model availability gate used again immediately before dispatch. */
   isModelAvailable?: IsModelAvailable;
   /** Test seam for the request-ordering contract; production uses the real catalog expansion. */
@@ -598,10 +600,14 @@ export async function resolveAutoStrategyOrder(
         configuredAccounts: captureConfiguredAccountPolicy().enabled,
         localFallbackPolicy: strictCentralPolicy.localFallbackPolicy,
         conversationKey: getConversationTieKey(body, { sessionId: relayOptions?.sessionId }),
+        priorModel: deps.priorModel ?? null,
       });
       // ROUTING_QUALITY_FIRST: the Pressed responsiveness and deadline-aware reorderings rank on
-      // 7-day call history, so neither runs; the order stays the quality order.
-      const qualityFirstRanking = fairSelectionSettings().qualityFirst;
+      // 7-day call history, so neither runs when the request was ranked on quality; the order stays
+      // the quality order. A request that fell back to the blended ranking (no measured candidate)
+      // keeps them, like any blended ranking.
+      const qualityFirstRanking =
+        fitFirstDecision.ranked[0]?.factors.rankingPolicy === "quality_first";
       if (!qualityFirstRanking && isPressedTextRequest(combo.name, body)) {
         await applyPressedResponsiveness(
           fitFirstDecision.ranked,

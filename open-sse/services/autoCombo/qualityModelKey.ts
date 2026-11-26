@@ -160,11 +160,24 @@ export function leaderboardRowKeys(
  * The provider routing the model (claude, github, groq ...) is never part of the key, so one
  * model reached through two providers gets one score.
  */
+/**
+ * Reduced-effort suffixes. A leaderboard row of a higher effort ("GPT-5.6 Sol (xHigh)") says
+ * nothing about the same model run at low effort, so an id ending in one of these is matched only
+ * by its exact key (the leaderboard listing that effort); otherwise it is unrated.
+ */
+const REDUCED_EFFORT_WORDS = ["low", "minimal", "none", "medium"];
+
 export function candidateQualityKeys(model: string): string[] {
   const raw = String(model ?? "").trim();
   if (!raw) return [];
   const lastSegment = raw.includes("/") ? raw.slice(raw.lastIndexOf("/") + 1) : raw;
-  const keys = [slugModelName(raw), slugModelName(lastSegment), canonicalQualityKey(lastSegment)];
+  const slug = slugModelName(lastSegment);
+  const reducedEffort = REDUCED_EFFORT_WORDS.some((word) => slug.endsWith(`-${word}`));
+  const keys = [
+    slugModelName(raw),
+    slug,
+    ...(reducedEffort ? [] : [canonicalQualityKey(lastSegment)]),
+  ];
   return [...new Set(keys.filter(Boolean))];
 }
 

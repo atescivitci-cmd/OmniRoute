@@ -9,7 +9,10 @@
  * Source (verified 2026-11-26 with keyless GET requests):
  *   https://datasets-server.huggingface.co/filter
  *     ?dataset=lmarena-ai/leaderboard-dataset&config=text&split=latest
- *     &where="category"='<category>'&orderby="rank"&offset=<n>&length=100
+ *     &where="category"='<category>'&offset=<n>&length=100
+ *   No orderby: rows come in the dataset's own row order (row_idx), which is fixed for a snapshot,
+ *   so pages cannot shuffle tied ranks between requests (a two-column orderby is rejected by the
+ *   API). The sync checks that row_idx strictly increases and that no model name repeats.
  *   Response: { features, rows: [{ row_idx, row, truncated_cells }], num_rows_total,
  *               num_rows_per_page, partial }
  *   row fields used: model_name (display name, e.g. "Claude Opus 4.7", "GPT-5.6 Sol (xHigh)"),
@@ -51,7 +54,9 @@ import {
 import { leaderboardRowKeys } from "../../open-sse/services/autoCombo/qualityModelKey.ts";
 import {
   getModelIntelligenceSourceSummary,
+  readQualitySyncState,
   replaceModelIntelligenceBySource,
+  writeQualitySyncState,
   type ModelIntelligenceEntry,
 } from "./db/modelIntelligence";
 
@@ -65,6 +70,13 @@ const MAX_PAGES_PER_CATEGORY = 20;
 const MIN_ROWS_PER_CATEGORY = 20;
 const FETCH_TIMEOUT_MS = 30_000;
 export { ageHours, QUALITY_STALE_AFTER_HOURS };
+
+/** A snapshot this much smaller than the stored table is refused (the old rows are kept). */
+export const MAX_SNAPSHOT_SHRINK = 0.3;
+/** Kept data older than this logs at error level on every sync attempt. */
+export const QUALITY_LOUD_STALE_HOURS = 72;
+/** Retry delays after a failed sync, then the daily interval. */
+export const QUALITY_RETRY_DELAYS_MS = [5 * 60_000, 15 * 60_000, 60 * 60_000];
 
 export const QUALITY_CATEGORY_PLAN: ReadonlyArray<{ category: string; tasks: string[] }> = [
   { category: "overall", tasks: ["default"] },
@@ -92,6 +104,8 @@ export interface LeaderboardRow {
   rank: number;
   category: string;
   publishDate: string;
+  /** Dataset row index (paging order check). */
+  rowIdx?: number;
 }
 
 export type LeaderboardSnapshot = Record<string, LeaderboardRow[]>;
@@ -139,8 +153,9 @@ export interface QualitySyncStatus {
 
 // ─── State ───────────────────────────────────────────────
 
-let syncTimer: ReturnType<typeof setInterval> | null = null;
+let syncTimer: ReturnType<typeof setTimeout> | null = null;
 let syncInProgress = false;
+let syncActive = false;
 let lastAttemptAt: string | null = null;
 let lastSuccessAt: string | null = null;
 let lastError: string | null = null;
@@ -151,6 +166,7 @@ let leaderboardPublishDate: string | null = null;
 export function _resetQualityScoreSyncState(): void {
   stopQualityScoreSync();
   syncInProgress = false;
+  persistedLoaded = true;
   lastAttemptAt = null;
   lastSuccessAt = null;
   lastError = null;
@@ -170,7 +186,6 @@ export function leaderboardPageUrl(category: string, offset: number): string {
     config: "text",
     split: "latest",
     where: `"category"='${category}'`,
-    orderby: `"rank"`,
     offset: String(offset),
     length: String(PAGE_SIZE),
   });
@@ -188,14 +203,18 @@ export function parseLeaderboardPage(
   if (!json || typeof json !== "object" || Array.isArray(json)) {
     throw new Error(`leaderboard page for "${category}" is not an object`);
   }
-  const page = json as { rows?: unknown; num_rows_total?: unknown };
+  const page = json as { rows?: unknown; num_rows_total?: unknown; partial?: unknown };
   if (!Array.isArray(page.rows)) throw new Error(`leaderboard page for "${category}" has no rows`);
+  if (page.partial === true) {
+    throw new Error(`leaderboard page for "${category}" is partial (server scanned a subset)`);
+  }
   const total = Number(page.num_rows_total);
   if (!Number.isSafeInteger(total) || total < 0) {
     throw new Error(`leaderboard page for "${category}" has no num_rows_total`);
   }
   const rows = page.rows.map((wrapper, index) => {
     const row = (wrapper as { row?: Record<string, unknown> } | null)?.row;
+    const rowIdx = Number((wrapper as { row_idx?: unknown } | null)?.row_idx);
     if (!row || typeof row !== "object") {
       throw new Error(`leaderboard row ${index} for "${category}" has no row object`);
     }
@@ -220,6 +239,7 @@ export function parseLeaderboardPage(
       rank,
       category,
       publishDate: String(row.leaderboard_publish_date ?? "").slice(0, 10),
+      ...(Number.isSafeInteger(rowIdx) && { rowIdx }),
     };
   });
   return { rows, total };
@@ -252,6 +272,20 @@ export async function fetchLeaderboardCategory(
     total = parsed.total;
     if (parsed.rows.length === 0) break;
     rows.push(...parsed.rows);
+  }
+  const names = new Set<string>();
+  let lastIdx = -1;
+  for (const row of rows) {
+    if (names.has(row.modelName)) {
+      throw new Error(`LMArena leaderboard "${category}" repeats "${row.modelName}" across pages`);
+    }
+    names.add(row.modelName);
+    if (row.rowIdx !== undefined) {
+      if (row.rowIdx <= lastIdx) {
+        throw new Error(`LMArena leaderboard "${category}" pages are out of row order`);
+      }
+      lastIdx = row.rowIdx;
+    }
   }
   if (rows.length !== total) {
     throw new Error(`LMArena leaderboard "${category}" returned ${rows.length} of ${total} rows`);
@@ -386,10 +420,18 @@ export async function syncQualityScores(
   }
   syncInProgress = true;
   lastAttemptAt = new Date().toISOString();
+  loadPersistedState();
+  logIfLoudStale();
   try {
     const snapshot = await fetchQualityLeaderboards(options.fetchImpl);
     const entries = transformQualitySnapshot(snapshot);
     if (entries.length === 0) throw new Error("LMArena snapshot produced no quality rows");
+    const current = getModelIntelligenceSourceSummary(QUALITY_SOURCE).rows;
+    if (current > 0 && entries.length < current * (1 - MAX_SNAPSHOT_SHRINK)) {
+      throw new Error(
+        `LMArena snapshot has ${entries.length} rows, more than ${MAX_SNAPSHOT_SHRINK * 100}% below the stored ${current}; refusing it`
+      );
+    }
     const publishDate = snapshot[QUALITY_CATEGORY_PLAN[0].category]?.[0]?.publishDate ?? null;
     const modelCount = new Set(entries.map((entry) => entry.model)).size;
     if (!options.dryRun) {
@@ -398,6 +440,7 @@ export async function syncQualityScores(
       lastError = null;
       consecutiveFailures = 0;
       leaderboardPublishDate = publishDate;
+      persistState();
     }
     console.log(
       `[QUALITY_SYNC] ${options.dryRun ? "would store" : "stored"} ${entries.length} quality rows for ${modelCount} model keys (LMArena leaderboard ${publishDate ?? "unknown date"})`
@@ -414,6 +457,7 @@ export async function syncQualityScores(
     if (!options.dryRun) {
       lastError = message;
       consecutiveFailures += 1;
+      persistState();
     }
     let kept = { rows: 0, newestSyncedAt: null as string | null };
     try {
@@ -441,6 +485,72 @@ export async function syncQualityScores(
   }
 }
 
+let persistedLoaded = false;
+/** Restore the failure count and times persisted by an earlier process (once per process). */
+function loadPersistedState(): void {
+  if (persistedLoaded) return;
+  persistedLoaded = true;
+  try {
+    const state = readQualitySyncState();
+    if (!state) return;
+    consecutiveFailures = Math.max(consecutiveFailures, state.consecutiveFailures);
+    lastError = lastError ?? state.lastError;
+    lastSuccessAt = lastSuccessAt ?? state.lastSuccessAt;
+  } catch (error) {
+    console.error(`[QUALITY_SYNC] could not read the persisted sync state: ${errorMessage(error)}`);
+  }
+}
+
+/** Test seam: let the next read restore the persisted state, as a fresh process would. */
+export function _reloadPersistedForTest(): void {
+  persistedLoaded = false;
+}
+
+function persistState(): void {
+  try {
+    writeQualitySyncState({ consecutiveFailures, lastError, lastAttemptAt, lastSuccessAt });
+  } catch (error) {
+    console.error(`[QUALITY_SYNC] could not persist the sync state: ${errorMessage(error)}`);
+  }
+}
+
+/** Every attempt while the kept data is older than QUALITY_LOUD_STALE_HOURS logs at error level. */
+function logIfLoudStale(now = Date.now()): void {
+  try {
+    const kept = getModelIntelligenceSourceSummary(QUALITY_SOURCE);
+    const age = ageHours(kept.newestSyncedAt, now);
+    if (kept.rows > 0 && age !== null && age > QUALITY_LOUD_STALE_HOURS) {
+      console.error(
+        `[QUALITY_SYNC] STALE: quality scores are ${age.toFixed(1)} h old (synced ${kept.newestSyncedAt}); routing ranks on stale data until a sync succeeds`
+      );
+    }
+  } catch (error) {
+    console.error(`[QUALITY_SYNC] could not check data age: ${errorMessage(error)}`);
+  }
+}
+
+export function isQualityScoreSyncInProgress(): boolean {
+  return syncInProgress;
+}
+
+/**
+ * Manual sync for POST /api/intelligence/sync: 409 while a sync (for example the boot sync) is
+ * running, 200 on success, 502 on failure. Independent of the Arena feed.
+ */
+export async function manualQualitySync(
+  options: { dryRun?: boolean; fetchImpl?: FetchLike } = {}
+): Promise<{ httpStatus: 200 | 409 | 502; result: QualitySyncResult | { inProgress: true } }> {
+  if (syncInProgress) return { httpStatus: 409, result: { inProgress: true } };
+  const result = await syncQualityScores(options);
+  return { httpStatus: result.success ? 200 : 502, result };
+}
+
+/** Delay before the next attempt: retry quickly after failures, else the daily interval. */
+export function nextQualitySyncDelayMs(failures = consecutiveFailures): number {
+  if (failures <= 0) return SYNC_INTERVAL_MS;
+  return QUALITY_RETRY_DELAYS_MS[failures - 1] ?? SYNC_INTERVAL_MS;
+}
+
 function syncEnabled(): boolean {
   try {
     return isArenaEloSyncEnabled();
@@ -453,6 +563,7 @@ function syncEnabled(): boolean {
 }
 
 export function getQualityScoreSyncStatus(now = Date.now()): QualitySyncStatus {
+  loadPersistedState();
   let summary = { rows: 0, newestSyncedAt: null as string | null };
   let summaryError: string | null = null;
   try {
@@ -487,7 +598,7 @@ export function getQualityScoreSyncStatus(now = Date.now()): QualitySyncStatus {
     intervalMs: SYNC_INTERVAL_MS,
     nextSync:
       syncTimer && lastAttemptAt
-        ? new Date(Date.parse(lastAttemptAt) + SYNC_INTERVAL_MS).toISOString()
+        ? new Date(Date.parse(lastAttemptAt) + nextQualitySyncDelayMs()).toISOString()
         : null,
   };
 }
@@ -495,8 +606,9 @@ export function getQualityScoreSyncStatus(now = Date.now()): QualitySyncStatus {
 // ─── Periodic sync ───────────────────────────────────────
 
 export function stopQualityScoreSync(): void {
+  syncActive = false;
   if (syncTimer) {
-    clearInterval(syncTimer);
+    clearTimeout(syncTimer);
     syncTimer = null;
   }
 }
@@ -511,13 +623,21 @@ export async function initQualityScoreSync(): Promise<boolean> {
     return false;
   }
   if (syncTimer) return true;
+  // Self-rescheduling: after a failure retry in 5 min, 15 min, 60 min, then daily; after a
+  // success, daily. The failure count survives restarts (key_value qualityScoreSync/state).
   const run = () => {
-    syncQualityScores().catch((error) => {
-      console.error(`[QUALITY_SYNC] sync threw: ${errorMessage(error)}`);
-    });
+    syncQualityScores()
+      .catch((error) => {
+        console.error(`[QUALITY_SYNC] sync threw: ${errorMessage(error)}`);
+      })
+      .finally(() => {
+        if (!syncActive) return;
+        syncTimer = setTimeout(run, nextQualitySyncDelayMs());
+        (syncTimer as { unref?: () => void }).unref?.();
+      });
   };
-  run();
-  syncTimer = setInterval(run, SYNC_INTERVAL_MS);
+  syncActive = true;
+  syncTimer = setTimeout(run, 0);
   (syncTimer as { unref?: () => void }).unref?.();
   return true;
 }

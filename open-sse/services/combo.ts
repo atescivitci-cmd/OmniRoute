@@ -343,6 +343,21 @@ function getBootstrapLatencyMs(modelId: string): number {
   return DEFAULT_MODEL_P95_MS[normalized] ?? 1500;
 }
 
+/** The conversation's previous model, read only when quality-first with a band is active. */
+function qualityBandPriorModel(
+  combo: { name: string; context_cache_protection?: unknown },
+  effectiveSessionId: string | null | undefined
+): string | null {
+  const fair = fairSelectionSettings();
+  if (!fair.qualityFirst || !(fair.qualityBand > 0)) return null;
+  if (!combo.context_cache_protection || !effectiveSessionId) return null;
+  try {
+    return getLastSessionModel(effectiveSessionId, combo.name);
+  } catch {
+    return null;
+  }
+}
+
 export async function buildAutoCandidates(
   targets: ResolvedComboTarget[],
   comboName: string,
@@ -1039,6 +1054,9 @@ async function handleComboChatRemote({
     isModelAvailable,
     handleSingleModelWithTimeout,
     buildAutoCandidates,
+    // ROUTING_QUALITY_BAND continuity: the model this conversation used last, from the existing
+    // context-cache session history. Read only while a quality band is active.
+    priorModel: qualityBandPriorModel(combo, effectiveSessionId),
   });
   if ("earlyResponse" in targetResolution) return targetResolution.earlyResponse;
   const { stickyWeightedLimit, getWeightedStepKeyForTarget, preScreenMap } = targetResolution;

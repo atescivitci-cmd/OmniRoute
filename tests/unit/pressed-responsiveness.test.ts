@@ -607,3 +607,28 @@ test("detail reads stop at eight even when the stored summary looks successful",
   await observe(model, 200, 3500, 0, { pipelinePayloads: null, responseBody: providerBody });
   assert.deepEqual((await resolve()).order, [slow, model, baseline.order[1]]);
 });
+
+test("ROUTING_QUALITY_FIRST: a quality-ranked request skips the Pressed reorder; a blended fallback keeps it", async () => {
+  const { setUserFitnessOverride, clearUserFitnessOverride } =
+    await import("../../open-sse/services/autoCombo/taskFitness.ts");
+  for (const daysAgo of [3, 3, 3, 3, 3, 3, 2, 2, 2, 0]) await observe(slow, 504, 302000, daysAgo);
+  process.env.ROUTING_QUALITY_FIRST = "1";
+  try {
+    // Every candidate unrated: quality-first falls back to the blended ranking, Pressed applies.
+    const fallback = await resolve();
+    assert.equal(fallback.factors.winner.qualityFallback, "no_measured_candidates");
+    assert.equal(fallback.order.at(-1), slow, "the reorder demotes the slow model");
+    // Measured: the request is ranked on quality and the history reorder is skipped.
+    setUserFitnessOverride(`${provider}/${slow}`, "default", 0.95);
+    for (const model of alternatives)
+      setUserFitnessOverride(`${provider}/${model}`, "default", 0.8);
+    const ranked = await resolve();
+    assert.equal(ranked.factors.winner.rankingPolicy, "quality_first");
+    assert.equal(ranked.order[0], slow, "quality order kept despite the deadline misses");
+    assert.equal(ranked.factors.winner.responsiveness, undefined);
+  } finally {
+    delete process.env.ROUTING_QUALITY_FIRST;
+    clearUserFitnessOverride(`${provider}/${slow}`, "default");
+    for (const model of alternatives) clearUserFitnessOverride(`${provider}/${model}`, "default");
+  }
+});
