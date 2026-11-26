@@ -8,6 +8,7 @@
  * Can be toggled per provider connection via dashboard.
  */
 
+import { AsyncResource } from "node:async_hooks";
 import Bottleneck from "bottleneck";
 import { parseRetryAfterFromBody } from "./accountFallback.ts";
 import { getAntigravityQuotaFamily } from "./antigravityQuotaFamily.ts";
@@ -652,15 +653,25 @@ function scheduleQueueWaitOnly(limiter, fn, maxWaitMs, signal, label) {
     }, maxWaitMs);
   if (cancelled) return waitingFailure.finally(clearWaiting);
   // Cancellation may lose a race to registration; keep this dispatch guard too.
-  const scheduled = limiter.schedule({ id }, () => {
-    if (cancelled || signal?.aborted) {
-      clearWaiting();
-      return undefined;
-    }
-    started = true;
-    clearTimeout(timer);
-    return fn();
-  });
+  // The job must run in the CALLER's async context. Bottleneck starts a queued job from whatever
+  // released the slot (typically the previous job's completion), so without binding, a request
+  // queued behind another ran inside the previous request's AsyncLocalStorage stores, including
+  // its routing transport attempt: its upstream dispatch then counted as a second dispatch of the
+  // other request's attempt and both failed with routing_transport_replay_blocked (live
+  // 2026-11-26 20:33Z, three concurrent gemini requests on one account). Binding is a no-op for a
+  // job that starts immediately, which already runs in the caller's context.
+  const scheduled = limiter.schedule(
+    { id },
+    AsyncResource.bind(() => {
+      if (cancelled || signal?.aborted) {
+        clearWaiting();
+        return undefined;
+      }
+      started = true;
+      clearTimeout(timer);
+      return fn();
+    })
+  );
   return Promise.race([scheduled, waitingFailure]).finally(clearWaiting);
 }
 

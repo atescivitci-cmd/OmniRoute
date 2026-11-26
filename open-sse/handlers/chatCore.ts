@@ -5566,6 +5566,18 @@ async function handleChatCoreRequest({
         ? markStallReplayCandidate(createUpstreamStalledResponse(stallMessage))
         : createUpstreamStalledResponse(stallMessage),
     };
+  } else if (
+    streamReadiness.ok === false &&
+    streamReadiness.code === "STREAM_READINESS_TIMEOUT" &&
+    upstreamStall.enabled &&
+    isStallFailoverEnabled()
+  ) {
+    // ROUTING_STALL_FAILOVER: stream readiness was the binding bound (its adaptive window is
+    // longer than what was left of the stall deadline) and it ran out with no non-ping event.
+    // That is the same thing as upstream_stalled: our own abort, no model output reached the
+    // gateway, nothing sent to the client. It becomes a stall-failover candidate under exactly
+    // the same guard conditions. The row keeps its own code (504 STREAM_READINESS_TIMEOUT).
+    markStallReplayCandidate(streamReadiness.response);
   }
   if (streamReadiness.ok === true) {
     const firstEventMs = upstreamStall.markFirstEvent();
