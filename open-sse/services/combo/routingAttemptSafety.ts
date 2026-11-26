@@ -416,6 +416,8 @@ export function createRoutingAttemptGuard(options: {
   let attempts = 0;
   let stopped: Response | null = null;
   let inFlight = false;
+  // OVERLOAD_FAILOVER: a refusal of the current attempt, emitted only when the attempt stops.
+  let pendingOverloadRefusal: { reason: string; status: number } | null = null;
   let compositeOpen = false;
   let eventCount = 0;
   const retryNotBefore = new Map<string, number>();
@@ -466,7 +468,9 @@ export function createRoutingAttemptGuard(options: {
         targetSignal?.aborted === true,
     });
     if (refusal) {
-      emit({ event: "overload_failover_refused", reason: refusal, status: result.status });
+      // Reported only if this attempt then STOPS the request (see stop()): when the old rules
+      // still let the combo move on (e.g. a request without tools), nothing was refused.
+      pendingOverloadRefusal = { reason: refusal, status: result.status };
       return false;
     }
     return true;
@@ -540,6 +544,10 @@ export function createRoutingAttemptGuard(options: {
   };
   const stop = (response: Response, reason: string) => {
     if (stopped) return stopped;
+    if (pendingOverloadRefusal) {
+      emit({ event: "overload_failover_refused", ...pendingOverloadRefusal });
+      pendingOverloadRefusal = null;
+    }
     stopped = markRoutingTerminal(response);
     if (!stopReasons.has(stopped)) stopReasons.set(stopped, reason);
     emit({ event: "stop", reason, attempts });
@@ -995,6 +1003,7 @@ export function createRoutingAttemptGuard(options: {
           return stop(routingFailure("execution_uncertain"), "execution_uncertain");
         } finally {
           inFlight = false;
+          pendingOverloadRefusal = null;
         }
       };
       owners.set(wrapped, guard);

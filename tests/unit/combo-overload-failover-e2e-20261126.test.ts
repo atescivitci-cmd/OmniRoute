@@ -377,3 +377,73 @@ for (const flag of [false, true]) {
     }
   });
 }
+
+// A history bound to the overloaded provider (reasoning with a signature) moves on only through the
+// combo's sanitized switch (same-terminal continuity + an explicit session), and the replacement
+// must receive the sanitized body. OpenAI chat format: its passthrough carries the message-level
+// signature to the upstream, so the test sees what the second target actually received.
+function signedChatRequest(comboName: string, session: string | null) {
+  return new Request("http://localhost/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(session ? { "x-omniroute-session": session } : {}),
+    },
+    body: JSON.stringify({
+      model: comboName,
+      stream: true,
+      max_tokens: 64,
+      tools: [
+        {
+          type: "function",
+          function: { name: "read_file", parameters: { type: "object", properties: {} } },
+        },
+      ],
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "hello", reasoning_content: "PLANTEXT", signature: "SIG123" },
+        { role: "user", content: "continue" },
+      ],
+    }),
+  });
+}
+
+test("flag on, signed history + sanitized switch: the replacement receives a sanitized body", async () => {
+  setFlag(true);
+  const { comboName, calls, bodies, stop } = await setup(
+    { "gpt-4o": "overloaded", "gpt-4o-mini": "answer" },
+    { same_terminal_continuity: true, context_cache_protection: true }
+  );
+  try {
+    const response = await postChat(signedChatRequest(comboName, "terminal-overload-1"));
+    const text = await readAll(response);
+    assert.equal(response.status, 200, text.slice(0, 300));
+    assert.match(text, /answered by gpt-4o-mini/);
+    assert.deepEqual(calls, ["gpt-4o", "gpt-4o-mini"]);
+    assert.ok(bodies[0].includes("SIG123"), "the overloaded first target saw the original body");
+    assert.ok(!bodies[1].includes("SIG123"), "the replacement must not receive the signature");
+    assert.ok(!bodies[1].includes("PLANTEXT"), "nor the provider-bound reasoning");
+    assert.ok(bodies[1].includes("hello") && bodies[1].includes("continue"));
+  } finally {
+    setFlag(false);
+    await stop();
+  }
+});
+
+test("flag on, signed history WITHOUT the sanitized switch: the overload failover is refused", async () => {
+  setFlag(true);
+  const { comboName, calls, stop } = await setup({
+    "gpt-4.1": "overloaded",
+    "gpt-4.1-mini": "answer",
+  });
+  try {
+    const response = await postChat(signedChatRequest(comboName, null));
+    const text = await readAll(response);
+    assert.doesNotMatch(text, /answered by/);
+    assert.match(text, /high demand/);
+    assert.deepEqual(calls, ["gpt-4.1"], "provider_bound_unsanitized: no replay");
+  } finally {
+    setFlag(false);
+    await stop();
+  }
+});
