@@ -33,6 +33,10 @@ export async function GET(request) {
       activeLimitUsd: summary.activeLimitUsd,
       nextResetAt: summary.nextResetAt,
       periodStartAt: summary.periodStartAt,
+      costBasis: summary.costBasis,
+      cashCostToday: summary.cashCostToday,
+      cashCostMonth: summary.cashCostMonth,
+      cashCostPeriod: summary.cashCostPeriod,
     });
   } catch (error) {
     console.error("Error fetching budget summary:", error);
@@ -72,6 +76,7 @@ export async function POST(request) {
       warningThreshold,
       resetInterval,
       resetTime,
+      costBasis,
     } = validation.data;
 
     const budget = setBudget(apiKeyId, {
@@ -81,6 +86,7 @@ export async function POST(request) {
       warningThreshold,
       resetInterval,
       resetTime,
+      costBasis,
     });
     return NextResponse.json({ success: true, apiKeyId, budget });
   } catch (error) {

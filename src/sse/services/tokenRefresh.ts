@@ -276,7 +276,10 @@ export async function refreshGitHubAndCopilotTokens(credentials: any) {
     if (copilotToken) {
       return {
         ...newGitHubCredentials,
+        // Keep the rest of the connection data (cashClass and others); the result replaces the
+        // stored providerSpecificData wholesale.
         providerSpecificData: {
+          ...(credentials?.providerSpecificData || {}),
           copilotToken: copilotToken.token,
           copilotTokenExpiresAt: copilotToken.expiresAt,
         },

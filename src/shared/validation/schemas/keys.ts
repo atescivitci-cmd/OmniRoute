@@ -49,6 +49,9 @@ export const setBudgetSchema = z.object({
     .trim()
     .regex(/^\d{2}:\d{2}$/, "resetTime must be in HH:MM format")
     .optional(),
+  // "list" counts list-price estimates (default); "cash" counts only money actually spent, using
+  // each provider connection's providerSpecificData.cashClass. Omitted keeps the current basis.
+  costBasis: z.enum(["list", "cash"]).optional(),
 });
 
 export const setTokenLimitSchema = z

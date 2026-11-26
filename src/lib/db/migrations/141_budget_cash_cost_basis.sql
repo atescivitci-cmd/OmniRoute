@@ -1,0 +1,14 @@
+-- Migration 141: cash cost per cost entry and cost basis per budget
+-- domain_cost_history.cash_cost: money actually spent on the request. 0 for connections whose
+--   operator-set providerSpecificData.cashClass is subscription, free or local; equal to the
+--   list-price estimate for metered (or unset) connections. NULL = recorded before this column
+--   existed; such rows count at list price under the cash basis (over-count, never under-count).
+-- domain_budgets.cost_basis: 'list' (default, previous behaviour) or 'cash'.
+-- Both nullable/defaulted and idempotent. See src/lib/usage/cashCost.ts.
+--
+-- NOTE: the runner applies this migration in code (applyBudgetCashCostMigration in
+-- migrationRunner.ts) so a column that already exists is not an error. This file is the readable
+-- record of the change and is not executed as-is.
+--   ALTER TABLE domain_cost_history ADD COLUMN cash_cost REAL DEFAULT NULL;
+--   ALTER TABLE domain_budgets ADD COLUMN cost_basis TEXT DEFAULT 'list';
+SELECT 1;

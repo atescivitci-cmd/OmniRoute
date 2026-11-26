@@ -284,9 +284,9 @@ export function runJsonMigration(
     if (data.domainCostHistory && data.domainCostHistory.length > 0) {
       const insertCostHistory = db.prepare(`
         INSERT OR REPLACE INTO domain_cost_history (
-          id, api_key_id, cost, timestamp
+          id, api_key_id, cost, timestamp, cash_cost
         ) VALUES (
-          @id, @api_key_id, @cost, @timestamp
+          @id, @api_key_id, @cost, @timestamp, @cash_cost
         )
       `);
       for (const row of data.domainCostHistory) {
@@ -295,6 +295,7 @@ export function runJsonMigration(
           api_key_id: row.api_key_id,
           cost: row.cost,
           timestamp: row.timestamp,
+          cash_cost: row.cash_cost ?? null,
         });
       }
     }
@@ -304,11 +305,11 @@ export function runJsonMigration(
         INSERT OR REPLACE INTO domain_budgets (
           api_key_id, daily_limit_usd, weekly_limit_usd, monthly_limit_usd,
           warning_threshold, reset_interval, reset_time, budget_reset_at,
-          last_budget_reset_at, warning_emitted_at, warning_period_start
+          last_budget_reset_at, warning_emitted_at, warning_period_start, cost_basis
         ) VALUES (
           @api_key_id, @daily_limit_usd, @weekly_limit_usd, @monthly_limit_usd,
           @warning_threshold, @reset_interval, @reset_time, @budget_reset_at,
-          @last_budget_reset_at, @warning_emitted_at, @warning_period_start
+          @last_budget_reset_at, @warning_emitted_at, @warning_period_start, @cost_basis
         )
       `);
       for (const row of data.domainBudgets) {
@@ -323,6 +324,7 @@ export function runJsonMigration(
           budget_reset_at: row.budget_reset_at ?? null,
           last_budget_reset_at: row.last_budget_reset_at ?? null,
           warning_emitted_at: row.warning_emitted_at ?? null,
+          cost_basis: row.cost_basis === "cash" ? "cash" : "list",
           warning_period_start: row.warning_period_start ?? null,
         });
       }

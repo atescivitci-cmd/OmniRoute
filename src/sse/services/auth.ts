@@ -91,6 +91,7 @@ import { getNoAuthHydrationProviderIds } from "./noAuthProviderSiblings";
 import { getResource404Bypass } from "./requestResourceHealth";
 import * as log from "../utils/logger";
 import { fisherYatesShuffle, getNextFromDeckSync } from "@/shared/utils/shuffleDeck";
+import { isCashClass } from "@/lib/usage/cashCost";
 
 type JsonRecord = Record<string, unknown>;
 interface RecoverableConnectionState {
@@ -774,8 +775,8 @@ function buildSyntheticNoAuthCredentials(providerSpecificData: JsonRecord = {}):
   };
 }
 
-/** Merge one connection's fingerprints/accountProxies into `hydrated`, first-wins. */
-function mergeNoAuthProviderSpecificData(
+/** Merge one connection's fingerprints/accountProxies/cashClass into `hydrated`, first-wins. */
+export function mergeNoAuthProviderSpecificData(
   hydrated: JsonRecord,
   conn: { providerSpecificData?: unknown }
 ): void {
@@ -787,6 +788,10 @@ function mergeNoAuthProviderSpecificData(
   }
   if (Array.isArray(record.accountProxies) && !Array.isArray(hydrated.accountProxies)) {
     hydrated.accountProxies = record.accountProxies;
+  }
+  // Operator cash class (src/lib/usage/cashCost.ts), first valid value wins.
+  if (isCashClass(record.cashClass) && !isCashClass(hydrated.cashClass)) {
+    hydrated.cashClass = record.cashClass;
   }
 }
 

@@ -418,6 +418,11 @@ function isSchemaAlreadyApplied(
       return hasColumn(db, "usage_history", "source") && hasColumn(db, "call_logs", "source");
     case "139":
       return hasColumn(db, "usage_history", "request_class");
+    case "141":
+      return (
+        hasColumn(db, "domain_cost_history", "cash_cost") &&
+        hasColumn(db, "domain_budgets", "cost_basis")
+      );
     case "062":
       return hasColumn(db, "usage_history", "combo_strategy");
     case "070":
@@ -514,6 +519,23 @@ function applyRequestClassMigration(db: SqliteAdapter): void {
     "usage_history",
     "request_class",
     "ALTER TABLE usage_history ADD COLUMN request_class TEXT DEFAULT NULL"
+  );
+}
+
+// Migration 141: cash cost per cost entry and cost basis per budget
+// (see 141_budget_cash_cost_basis.sql and src/lib/usage/cashCost.ts).
+function applyBudgetCashCostMigration(db: SqliteAdapter): void {
+  ensureColumn(
+    db,
+    "domain_cost_history",
+    "cash_cost",
+    "ALTER TABLE domain_cost_history ADD COLUMN cash_cost REAL DEFAULT NULL"
+  );
+  ensureColumn(
+    db,
+    "domain_budgets",
+    "cost_basis",
+    "ALTER TABLE domain_budgets ADD COLUMN cost_basis TEXT DEFAULT 'list'"
   );
 }
 
@@ -1012,6 +1034,8 @@ export function runMigrations(db: SqliteAdapter, options?: { isNewDb?: boolean }
         applyUsageSourceMigration(db);
       } else if (migration.version === "139" && migration.name === "usage_history_request_class") {
         applyRequestClassMigration(db);
+      } else if (migration.version === "141" && migration.name === "budget_cash_cost_basis") {
+        applyBudgetCashCostMigration(db);
       } else if (migration.version === "041" && migration.name === "compression_receipts") {
         applyCompressionReceiptsMigration(db);
       } else if (migration.version === "042") {

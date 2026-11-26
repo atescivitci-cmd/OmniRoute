@@ -406,7 +406,10 @@ export class GithubExecutor extends BaseExecutor {
             ...githubTokens,
             copilotToken: copilotResult.token,
             copilotTokenExpiresAt: copilotResult.expiresAt,
+            // Keep the rest of the connection data (cashClass and others): the refresh result
+            // replaces the stored providerSpecificData column wholesale.
             providerSpecificData: {
+              ...(credentials.providerSpecificData || {}),
               copilotToken: copilotResult.token,
               copilotTokenExpiresAt: copilotResult.expiresAt,
             },
@@ -423,6 +426,7 @@ export class GithubExecutor extends BaseExecutor {
         copilotToken: copilotResult.token,
         copilotTokenExpiresAt: copilotResult.expiresAt,
         providerSpecificData: {
+          ...(credentials.providerSpecificData || {}),
           copilotToken: copilotResult.token,
           copilotTokenExpiresAt: copilotResult.expiresAt,
         },
