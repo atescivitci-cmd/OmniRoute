@@ -308,3 +308,33 @@ test("guard, flag on: at most two overload failovers per REQUEST, shared with fo
     );
   });
 });
+
+test("guard: overload_failover_refused is emitted only when the refusal stops the request", async () => {
+  await withFlag(true, async () => {
+    const plainBody = { model: "combo", messages: [{ role: "user", content: "hi" }] };
+    for (const [label, body, expectStop] of [
+      ["no-tool request (old rules still move on)", plainBody, false],
+      ["tool request (the old tool stop applies)", TOOL_BODY, true],
+    ] as const) {
+      const events: Array<Record<string, unknown>> = [];
+      const parent = createRoutingAttemptGuard({
+        body,
+        limit: 30,
+        emit: (event) => events.push(event),
+      });
+      // Spend the per-request budget, then a third overload is refused with overload_failover_budget.
+      for (const model of ["gemini/m1", "gemini/m2"]) {
+        await parent.fork(body, 5).wrap(overloaded())(body, model, {} as never);
+      }
+      const third = await parent.fork(body, 5).wrap(overloaded())(body, "gemini/m3", {} as never);
+      const refused = events.filter((e) => e.event === "overload_failover_refused");
+      assert.equal(isRoutingTerminal(third), expectStop, label);
+      if (expectStop) {
+        assert.equal(refused.length, 1, `${label}: ${JSON.stringify(events)}`);
+        assert.equal(refused[0].reason, "overload_failover_budget");
+      } else {
+        assert.equal(refused.length, 0, `${label}: ${JSON.stringify(refused)}`);
+      }
+    }
+  });
+});

@@ -13,9 +13,12 @@
  * call was generated, and tools run on the client in this deployment, so nothing can have
  * executed. The only cost of trying another target is the one refused request.
  *
- * The classification is deliberately tight (classifyOverloadRefusal). A generic 503 with no
- * overload signal is NOT an overload: it can be a proxy or a crashed backend that may have done
- * work. 502 and 504 are gateway and timeout statuses that can follow partial execution, so they
+ * The classification is deliberately tight (classifyOverloadRefusal). A 503 with no overload signal
+ * is NOT an overload: it can be a proxy or a crashed backend that may have done work. Note that a
+ * Google RPC status of UNAVAILABLE IS treated as an overload signal, and Google APIs (Gemini) put
+ * that status on essentially every 503, so in practice every Gemini 503 qualifies. That is
+ * accepted: the other conditions (an error status before any output, nothing sent to the client,
+ * no provider-executed tools) still hold for it. 502 and 504 are gateway and timeout statuses that can follow partial execution, so they
  * qualify only with an explicit overload code or phrase, never on a retry hint or "try again
  * later" alone. 529 is Anthropic's dedicated overloaded status and qualifies by itself.
  */
@@ -44,7 +47,9 @@ const OVERLOAD_STRUCTURED = new Set([
   "engine_overloaded", // OpenAI (legacy)
   "model_overloaded",
   "capacity_exceeded",
-  "unavailable", // Google RPC status UNAVAILABLE (503)
+  // Google RPC status UNAVAILABLE: present on essentially every Google/Gemini 503, so every such
+  // 503 counts as an overload refusal (see the module comment).
+  "unavailable",
   "resource_exhausted", // Google RPC status RESOURCE_EXHAUSTED
 ]);
 // Phrases that name overload / capacity explicitly.
