@@ -137,9 +137,28 @@ export type HistoricalLatencyStatsEntry = {
   avgTokensPerSecond?: number;
 };
 
+/**
+ * What ROUTING_DURABLE_EVIDENCE did for one candidate assembly (autoCombo/durableEvidence.ts).
+ * "active": the evidence was the 7-day decayed, family-gated evidence; "unavailable:<why>": the
+ * read failed and the 24 h evidence was used; "light_tier_24h": a light request (c0*), which keeps
+ * the 24 h evidence by design. Absent while the setting is off or the request has no
+ * class. Copied into the ranking factors so the routing decision shows which evidence ranked it.
+ */
+export type DurableEvidenceNote = {
+  status: string;
+  windowHours?: number;
+  halfLifeHours?: number;
+  classFamily?: "tools" | "chat";
+  /** Classified rows from a smaller size bucket than this are not evidence for the request. */
+  minSizeBucket?: number;
+  rowsUsed?: number;
+  rowsExcluded?: number;
+};
+
 export type AutoProviderCandidate = ProviderCandidate & {
   provenance?: CandidateProvenance;
-  latencySampleSource?: "successful_usage_24h" | "unqualified";
+  latencySampleSource?: "successful_usage_24h" | "successful_usage_durable" | "unqualified";
+  durableEvidence?: DurableEvidenceNote;
   successfulLatencySampleCount?: number;
   stepId: string;
   executionKey: string;

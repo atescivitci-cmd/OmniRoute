@@ -2,6 +2,7 @@ import { getDbInstance } from "@/lib/db/core";
 import type { ProviderLimitsCacheEntry } from "@/lib/db/providerLimits";
 import { getProviderQuotaWindowStartIso } from "@/lib/db/quotaResetEvents";
 import { calculateCost } from "./costCalculator";
+import { BILLED_USAGE_ROW_SQL } from "@/shared/constants/usageSource";
 import { buildErrorBody, sanitizeErrorMessage } from "@omniroute/open-sse/utils/error.ts";
 
 const FORTALEZA_UTC_OFFSET_MS = 3 * 60 * 60 * 1000;
@@ -391,7 +392,7 @@ async function getApiKeyUsdSpendSince(apiKeyId: string, sinceIso: string): Promi
       FROM usage_history
       WHERE api_key_id = @apiKeyId
         AND timestamp >= @sinceIso
-        AND success = 1
+        AND ${BILLED_USAGE_ROW_SQL}
       GROUP BY LOWER(provider), LOWER(model), serviceTier
     `
     )

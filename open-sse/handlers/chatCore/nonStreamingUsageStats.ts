@@ -28,6 +28,17 @@ export type RecordNonStreamingUsageStatsContext = {
   isCombo: boolean;
   comboStrategy: string | null | undefined;
   endpoint?: string | null | undefined;
+  /**
+   * When the provider's answer arrived. The usage row is timed from it, so a row written after the
+   * response was translated and validated still records the provider latency. Default: now.
+   */
+  endTime?: number;
+  /**
+   * Skip the usage row here: the caller writes it with persistNonStreamingUsageRow once the
+   * response is known to be usable, or writes the failure row instead (2026-11-26: a 200 that
+   * translated into no usable output was recorded as a success AND as a failure).
+   */
+  deferUsageRow?: boolean;
 };
 
 function logUsageTrace(
@@ -41,16 +52,17 @@ function logUsageTrace(
 
 function persistUsageRow(usage: object, ctx: RecordNonStreamingUsageStatsContext): void {
   const { provider, connectionId, model, startTime, apiKeyInfo, effectiveServiceTier } = ctx;
+  const endTime = ctx.endTime ?? Date.now();
   saveRequestUsage({
     provider: provider || "unknown",
     model: model || "unknown",
     tokens: usage,
     status: "200",
     success: true,
-    latencyMs: Date.now() - startTime,
-    timeToFirstTokenMs: Date.now() - startTime,
+    latencyMs: endTime - startTime,
+    timeToFirstTokenMs: endTime - startTime,
     errorCode: null,
-    timestamp: new Date().toISOString(),
+    timestamp: new Date(endTime).toISOString(),
     connectionId: connectionId || undefined,
     apiKeyId: apiKeyInfo?.id || undefined,
     apiKeyName: apiKeyInfo?.name || undefined,
@@ -85,6 +97,15 @@ export function recordNonStreamingUsageStats(
   if (!usage || typeof usage !== "object") return;
 
   if (ctx.traceEnabled) logUsageTrace(usage, ctx.provider, ctx.connectionId);
-  persistUsageRow(usage, ctx);
+  if (!ctx.deferUsageRow) persistUsageRow(usage, ctx);
   recordBillableTokens(usage, ctx.apiKeyInfo, ctx.provider, ctx.model);
+}
+
+/** Write the deferred success row (see `deferUsageRow`). Same guard and fields as before. */
+export function persistNonStreamingUsageRow(
+  usage: unknown,
+  ctx: RecordNonStreamingUsageStatsContext
+): void {
+  if (!usage || typeof usage !== "object") return;
+  persistUsageRow(usage, ctx);
 }

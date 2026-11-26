@@ -20,6 +20,9 @@
  *  ROUTING_TIE_BAND             0..0.02  scores within this band tie (0 = only exact ties tie)
  *  ROUTING_LEARNED_CONTEXT_CAP  off|learn|enforce  learn a model's real context limit from its
  *                                     own rejections; enforce also excludes models above it
+ *  ROUTING_DURABLE_EVIDENCE     1|0   auto-combo reliability/latency evidence reads 7 days with a
+ *                                     24 h half-life, and only rows of the request's class family
+ *                                     (tools vs chat); see autoCombo/durableEvidence.ts
  */
 
 export const FLAG_CLIENT_ABANDON_NEUTRAL = "ROUTING_CLIENT_ABANDON_NEUTRAL";
@@ -29,6 +32,7 @@ export const FLAG_OUTCOME_QUALITY = "ROUTING_OUTCOME_QUALITY";
 export const FLAG_SPREAD_TIEBREAK = "ROUTING_SPREAD_TIEBREAK";
 export const FLAG_TIE_BAND = "ROUTING_TIE_BAND";
 export const FLAG_LEARNED_CONTEXT_CAP = "ROUTING_LEARNED_CONTEXT_CAP";
+export const FLAG_DURABLE_EVIDENCE = "ROUTING_DURABLE_EVIDENCE";
 
 /** Hard ceiling: a mistyped value cannot turn banding into the main behaviour. */
 export const MAX_TIE_BAND = 0.02;
@@ -43,6 +47,7 @@ export interface FairSelectionSettings {
   spreadTieBreak: boolean;
   tieBand: number;
   learnedContextCap: LearnedContextCapMode;
+  durableEvidence: boolean;
 }
 
 function flag(env: NodeJS.ProcessEnv, name: string): boolean {
@@ -72,5 +77,6 @@ export function fairSelectionSettings(env: NodeJS.ProcessEnv = process.env): Fai
     spreadTieBreak: flag(env, FLAG_SPREAD_TIEBREAK),
     tieBand: bounded(env, FLAG_TIE_BAND, MAX_TIE_BAND),
     learnedContextCap: cap === "enforce" ? "enforce" : cap === "learn" ? "learn" : "off",
+    durableEvidence: flag(env, FLAG_DURABLE_EVIDENCE),
   };
 }

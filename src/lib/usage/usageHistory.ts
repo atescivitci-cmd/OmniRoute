@@ -1021,6 +1021,58 @@ export async function getModelOutcomeRows(
   }));
 }
 
+/**
+ * Raw rows for the durable ranking evidence (ROUTING_DURABLE_EVIDENCE,
+ * open-sse/services/autoCombo/durableEvidence.ts): the outcome, timing, class, source and
+ * timestamp of every row in a bounded window. Read-only. A database without the request_class
+ * column reads every row as unclassified. It THROWS on a read failure, so the caller can record
+ * the failure and keep the 24 h evidence instead of ranking on an empty list.
+ */
+export async function getModelEvidenceRows(
+  options: { windowHours?: number; maxRows?: number } = {}
+): Promise<
+  Array<{
+    provider: string;
+    model: string;
+    success: boolean;
+    latencyMs: number | null;
+    ttftMs: number | null;
+    tokensOutput: number | null;
+    errorCode: string | null;
+    source: string | null;
+    requestClass: string | null;
+    timestamp: string;
+  }>
+> {
+  const windowHours = resolvePositiveOption(options.windowHours, 168);
+  const maxRows = resolvePositiveOption(options.maxRows, 20000);
+  const sinceIso = new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString();
+  const db = getDbInstance();
+  const classColumn = hasRequestClassColumn(db) ? "request_class" : "NULL AS request_class";
+  const rows = db
+    .prepare(
+      `SELECT provider, model, success, latency_ms, ttft_ms, tokens_output, error_code, source,
+              ${classColumn}, timestamp
+       FROM usage_history
+       WHERE timestamp >= @sinceIso AND provider IS NOT NULL AND model IS NOT NULL
+       ORDER BY timestamp DESC
+       LIMIT ${Math.floor(maxRows)}`
+    )
+    .all({ sinceIso }) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    provider: String(row.provider),
+    model: String(row.model),
+    success: Number(row.success) !== 0,
+    latencyMs: row.latency_ms == null ? null : Number(row.latency_ms),
+    ttftMs: row.ttft_ms == null ? null : Number(row.ttft_ms),
+    tokensOutput: row.tokens_output == null ? null : Number(row.tokens_output),
+    errorCode: toStringOrNull(row.error_code),
+    source: toStringOrNull(row.source),
+    requestClass: toStringOrNull(row.request_class),
+    timestamp: String(row.timestamp),
+  }));
+}
+
 export async function appendRequestLog({
   model: _model,
   provider: _provider,

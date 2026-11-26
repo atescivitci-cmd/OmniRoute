@@ -14,7 +14,7 @@ import { getAccountDisplayName } from "@/lib/display/names";
 import { calculateCost } from "./costCalculator";
 import { getRawDataCutoffDate, isAggregationEnabled } from "./aggregateHistory";
 import { toNumber } from "@/shared/utils/numeric";
-import { EXCLUDE_ROUTING_CANARY_SQL } from "@/shared/constants/usageSource";
+import { BILLED_USAGE_ROW_SQL, EXCLUDE_ROUTING_CANARY_SQL } from "@/shared/constants/usageSource";
 
 type JsonRecord = Record<string, unknown>;
 type UsageBucket = {
@@ -219,7 +219,8 @@ export function getMonthlyProviderTokensForConnection(
  *
  * Sums per-model token usage from `usage_history` for the connection and prices each model via the
  * backend pricing table (`calculateCost`). Scoped to the given `provider` and to **successful**
- * requests (`success = 1`) so failed/errored calls and any cross-provider rows can't inflate the
+ * requests (`success = 1`, plus a malformed 200, which the provider billed: BILLED_USAGE_ROW_SQL)
+ * so failed/errored calls and any cross-provider rows can't inflate the
  * total. Only reflects traffic that went THROUGH OmniRoute, not the provider's own dashboard. Used
  * to surface a "$X used since added" figure for providers that expose no native usage/quota API
  * (e.g. Vertex AI).
@@ -239,9 +240,9 @@ export async function getConnectionSpendUsdSinceAdded(
           COALESCE(SUM(tokens_cache_read), 0) AS cacheRead,
           COALESCE(SUM(tokens_cache_creation), 0) AS cacheCreation,
           COALESCE(SUM(tokens_reasoning), 0) AS reasoning,
-          COUNT(*) AS requests
+          SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS requests
        FROM usage_history
-       WHERE connection_id = ? AND provider = ? AND success = 1
+       WHERE connection_id = ? AND provider = ? AND ${BILLED_USAGE_ROW_SQL}
        GROUP BY model`
     )
     .all(connectionId, provider) as Array<{
