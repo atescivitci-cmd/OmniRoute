@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { isUpstreamStalledError } from "../handlers/chatCore/upstreamStall.ts";
 
 // Created only by trusted routing code. A body/header cannot manufacture a token.
 const brand: unique symbol = Symbol("routing-transport-attempt");
@@ -115,6 +116,12 @@ type State = {
   cancelled: boolean;
   blocked: boolean;
   transportFailure?: TransportFailureDiagnostic;
+  /**
+   * The FIRST transport failure of this attempt was the gateway's own stall abort (identity of
+   * the trusted error from upstreamStall.ts). It does not lift `uncertain`; it only lets the
+   * narrow stall-failover exception (combo/stallFailover.ts) tell our own abort apart.
+   */
+  stallAborted?: boolean;
 };
 const states = new WeakMap<RoutingTransportAttempt, State>();
 const attempts = new AsyncLocalStorage<RoutingTransportAttempt>();
@@ -190,6 +197,8 @@ export function getRoutingTransportOutcome(token: RoutingTransportAttempt) {
     uncertain: state.uncertain,
     cancelled: state.cancelled || state.signal?.aborted === true,
     blocked: state.blocked,
+    // Present only when set, so the outcome shape is unchanged for every other attempt.
+    ...(state.stallAborted === true && { stallAborted: true as const }),
     ...(state.transportFailure && {
       transportFailure: Object.freeze({ ...state.transportFailure }),
     }),
@@ -282,6 +291,14 @@ export async function runWithRoutingTransportWire<T>(fn: () => T | Promise<T>): 
     } catch (error) {
       // Fetch was invoked. Abort/error does not prove remote non-execution.
       if (!(error instanceof RoutingTransportSafetyError)) {
+        const current = currentState();
+        if (
+          current &&
+          !current.transportFailure &&
+          !current.uncertain &&
+          isUpstreamStalledError(error)
+        )
+          current.stallAborted = true;
         recordTransportFailure(error);
         stopRoutingTransportAttempt("execution_uncertain");
       }
