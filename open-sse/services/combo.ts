@@ -1,6 +1,7 @@
 import {
   createRoutingAttemptGuard,
   isKeyLimitRefusal,
+  isStallReplayCandidate,
   routingGuardFor,
   isRoutingTerminal,
   routingFailure,
@@ -1094,6 +1095,10 @@ async function handleComboChatRemote({
   // any dispatch that follows a key-limit refusal, so the routing guard may let a
   // signature-bound history move on from that refusal (and only that). See keyLimitFallThrough.ts.
   let keyLimitRefused = false;
+  // STALL_FAILOVER (combo/stallFailover.ts): after the guard let a stalled attempt move on, a
+  // provider-bound history is sanitized before the next dispatch exactly as after a key-limit
+  // refusal. The guard allows a provider-bound stall replay only when this sanitization is on.
+  let stallFailedOver = false;
   const keyLimitSwitchSanitizes =
     continuitySessionId !== null &&
     universalHandoffConfig.enabled &&
@@ -1650,7 +1655,7 @@ async function handleComboChatRemote({
             }
           }
 
-          if (keyLimitRefused && keyLimitSwitchSanitizes) {
+          if ((keyLimitRefused || stallFailedOver) && keyLimitSwitchSanitizes) {
             attemptBody = sanitizeBodyAfterKeyLimit(
               attemptBody as Record<string, unknown>
             ) as typeof attemptBody;
@@ -1689,6 +1694,7 @@ async function handleComboChatRemote({
 
           if (!result.ok && isKeyLimitRefusal(result)) keyLimitRefused = true;
           if (!result.ok && isRoutingTerminal(result)) return { ok: false, response: result };
+          if (!result.ok && isStallReplayCandidate(result)) stallFailedOver = true;
           signal?.throwIfAborted();
           // Success — validate response contract before returning. HTTP success is not answer quality.
           if (result.ok) {

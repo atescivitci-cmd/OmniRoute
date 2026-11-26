@@ -18,7 +18,9 @@ import { getExecutor as getAccountNativeExecutor } from "../executors/index.ts";
 import {
   markKnownNonDispatch,
   markDefiniteRejection,
+  markStallReplayCandidate,
 } from "../services/combo/routingAttemptSafety.ts";
+import { isStallFailoverEnabled } from "../services/combo/stallFailover.ts";
 import {
   accountModelRevision,
   getAccountModelNegative,
@@ -3826,7 +3828,11 @@ async function handleChatCoreRequest({
         error: stallMessage,
         errorType: "stream_timeout",
         errorCode: UPSTREAM_STALLED_CODE,
-        response: createUpstreamStalledResponse(stallMessage),
+        // ROUTING_STALL_FAILOVER: headers-phase stall, no response headers arrived and nothing
+        // reached the client. The guard decides whether the combo may move on.
+        response: isStallFailoverEnabled()
+          ? markStallReplayCandidate(createUpstreamStalledResponse(stallMessage))
+          : createUpstreamStalledResponse(stallMessage),
       };
     }
     if (isSemaphoreCapacityError(error)) {
@@ -5527,7 +5533,11 @@ async function handleChatCoreRequest({
       reason: stallMessage,
       code: UPSTREAM_STALLED_CODE,
       type: "stream_timeout",
-      response: createUpstreamStalledResponse(stallMessage),
+      // ROUTING_STALL_FAILOVER: first-event-phase stall, headers but no non-ping event arrived
+      // (readiness confirmed none) and nothing reached the client.
+      response: isStallFailoverEnabled()
+        ? markStallReplayCandidate(createUpstreamStalledResponse(stallMessage))
+        : createUpstreamStalledResponse(stallMessage),
     };
   }
   if (streamReadiness.ok === true) {

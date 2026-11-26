@@ -9,7 +9,15 @@ import {
   createRoutingTransportAttempt,
   runWithRoutingTransportAttempt,
   assertRoutingTransportOutcome,
+  getRoutingTransportOutcome,
+  RoutingTransportSafetyError,
+  type RoutingTransportAttempt,
 } from "../routingTransportContext.ts";
+import {
+  hasProviderExecutedTools,
+  isStallFailoverEnabled,
+  stallFailoverRefusal,
+} from "./stallFailover.ts";
 
 // These capabilities are process-local. Wire headers/body fields cannot grant
 // replay permission or claim that an attempted provider operation did not run.
@@ -19,6 +27,10 @@ const definiteRejection = new WeakSet<Response>();
 // A target refused BEFORE dispatch because the API key is over its USD limit. No provider saw
 // the request, so a sanitized body may move on to another target (see sanitizedSwitch below).
 const keyLimitRefusal = new WeakSet<Response>();
+// Set ONLY by chatCore on the response of an attempt its own stall deadline cut before any model
+// output arrived (see combo/stallFailover.ts). It makes the attempt a candidate for the narrow
+// stall-failover exception; it grants nothing on its own.
+const stallReplayCandidates = new WeakSet<Response>();
 const responseReplacements = new WeakMap<Response, Response>();
 const stopReasons = new WeakMap<Response, string>();
 export function markDefiniteRejection<T extends Response>(response: T): T {
@@ -34,6 +46,13 @@ export function markKeyLimitRefusal<T extends Response>(response: T): T {
 }
 export function isKeyLimitRefusal(response: Response): boolean {
   return keyLimitRefusal.has(response);
+}
+export function markStallReplayCandidate<T extends Response>(response: T): T {
+  stallReplayCandidates.add(response);
+  return response;
+}
+export function isStallReplayCandidate(response: Response): boolean {
+  return stallReplayCandidates.has(response);
 }
 export function markKnownNonDispatch<T extends Response>(response: T): T {
   nonDispatch.add(response);
@@ -58,6 +77,7 @@ function copyRoutingResponseState<T extends Response>(source: Response, target: 
   if (definiteRejection.has(source)) definiteRejection.add(target);
   if (terminal.has(source)) terminal.add(target);
   if (keyLimitRefusal.has(source)) keyLimitRefusal.add(target);
+  if (stallReplayCandidates.has(source)) stallReplayCandidates.add(target);
   const reason = stopReasons.get(source);
   if (reason) stopReasons.set(target, reason);
   return target;
@@ -150,7 +170,7 @@ export function inspectReplayInput(body: Record<string, unknown>): ReplayInput {
 // items), Anthropic (tools incl. server tools, mcp_servers, tool_use / server_tool_use /
 // mcp_tool_use / *_tool_result blocks) and Gemini (tools, tool_config / toolConfig,
 // functionCall / functionResponse parts).
-const REPLAY_UNSAFE_TOP_LEVEL_KEYS = [
+export const REPLAY_UNSAFE_TOP_LEVEL_KEYS = [
   "tool_choice",
   "function_call",
   "mcp_servers",
@@ -338,6 +358,8 @@ export function inheritRoutingGuard(wrapper: HandleSingleModel, original: Handle
 type AttemptBudget = {
   startedAt: number;
   attempts: number;
+  /** Stall failovers spent by this request (combo/stallFailover.ts), shared with every fork. */
+  stallFailovers?: number;
   limit: number;
   deadlineMs?: number;
   signal?: AbortSignal | null;
@@ -392,6 +414,52 @@ export function createRoutingAttemptGuard(options: {
   // quality failover rejects the model on every connection for the rest of the request.
   const rejectedModels = new Set<string>();
   let withheldQuality: QualityRejection | null = null;
+  // Stall failover (combo/stallFailover.ts): replays spent on this request. Fixed at creation so a
+  // mid-request env change cannot widen the exception.
+  const stallFailoverEnabled = isStallFailoverEnabled();
+  const providerExecutedTools = stallFailoverEnabled && hasProviderExecutedTools(options.body);
+
+  /**
+   * The narrow exception: may this failed attempt advance to the next target? `transportStopped`
+   * is the transport error the attempt ended with, when it ended with one.
+   */
+  const stallFailoverAllowed = (
+    result: Response,
+    transport: RoutingTransportAttempt,
+    transportStopped: unknown,
+    targetSignal: AbortSignal | null | undefined
+  ): boolean => {
+    if (!stallFailoverEnabled || !stallReplayCandidates.has(result)) return false;
+    const outcome = getRoutingTransportOutcome(transport);
+    const transportClean = transportStopped
+      ? transportStopped instanceof RoutingTransportSafetyError &&
+        outcome.stallAborted === true &&
+        !outcome.cancelled &&
+        !outcome.blocked
+      : !outcome.cancelled &&
+        !outcome.blocked &&
+        (!outcome.uncertain || outcome.stallAborted === true);
+    const refusal = stallFailoverRefusal({
+      enabled: stallFailoverEnabled,
+      stallMarked: true,
+      transportClean,
+      responseCommitted: stopped !== null,
+      providerExecutedTools,
+      hardBound: input.hardBound,
+      providerBound: input.providerBound,
+      sanitizedSwitch,
+      failoversUsed: budget.stallFailovers ?? 0,
+      callerAborted:
+        options.signal?.aborted === true ||
+        budget.signal?.aborted === true ||
+        targetSignal?.aborted === true,
+    });
+    if (refusal) {
+      emit({ event: "stall_failover_refused", reason: refusal });
+      return false;
+    }
+    return true;
+  };
   const emit = (event: Record<string, unknown>) => {
     if (eventCount++ >= 256) return;
     const clean: Record<string, unknown> = { requestId: safeId(options.requestId) };
@@ -648,10 +716,11 @@ export function createRoutingAttemptGuard(options: {
           connectionId: safeId(typed?.connectionId),
         });
         let received: Response | null = null;
+        const transport = createRoutingTransportAttempt({
+          signal: target?.modelAbortSignal ?? options.signal,
+        });
+        const transportForCatch = transport;
         try {
-          const transport = createRoutingTransportAttempt({
-            signal: target?.modelAbortSignal ?? options.signal,
-          });
           const result = await runWithRoutingTransportAttempt(transport, async () => {
             received = await dispatch(body, model, {
               ...target,
@@ -706,6 +775,15 @@ export function createRoutingAttemptGuard(options: {
           // Cost/scope admission is a request policy refusal, never evidence that
           // a different target may execute. Keep this separate from eligibility.
           if (LOCAL_COST_ERROR_CODES.has(code ?? "")) return stop(result, "local_cost_admission");
+          // STALL_FAILOVER: our own stall abort before any model output (combo/stallFailover.ts).
+          // Placed before the provider-bound, nvidia and tool stops it is the exception to.
+          if (stallFailoverAllowed(result, transport, null, target?.modelAbortSignal)) {
+            budget.stallFailovers = (budget.stallFailovers ?? 0) + 1;
+            rejectedModels.add(model);
+            emit({ event: "stall_failover", model: safeId(model), status: result.status });
+            priorFailure = result;
+            return result;
+          }
           if (input.providerBound) {
             const keyLimitAdvance =
               sanitizedSwitch &&
@@ -788,6 +866,41 @@ export function createRoutingAttemptGuard(options: {
           }
           return stop(result, "no_safe_fallback");
         } catch (error) {
+          // STALL_FAILOVER: the transport stopped on our own stall abort and nothing else, and
+          // chatCore returned its marked stall response. Every other thrown outcome is unchanged.
+          if (
+            received &&
+            !(
+              options.signal?.aborted ||
+              budget.signal?.aborted ||
+              target?.modelAbortSignal?.aborted ||
+              (error as Error)?.name === "AbortError"
+            ) &&
+            stallFailoverAllowed(received, transportForCatch, error, target?.modelAbortSignal)
+          ) {
+            budget.stallFailovers = (budget.stallFailovers ?? 0) + 1;
+            rejectedModels.add(model);
+            // Same outcome record as the normal path, so both attempts show in the chain. The
+            // fetch was aborted by our own stall deadline: execution outcome is uncertain.
+            emit({
+              event: "outcome",
+              attempt: attempts,
+              provider: safeId(typed?.provider),
+              model: safeId(model),
+              status: (received as Response).status,
+              code: "upstream_stalled",
+              reason: null,
+              durationMs: Date.now() - start,
+              execution: "uncertain",
+            });
+            emit({
+              event: "stall_failover",
+              model: safeId(model),
+              status: (received as Response).status,
+            });
+            priorFailure = received;
+            return received;
+          }
           if (received) void cancelRoutingResponse(received);
           if (
             options.signal?.aborted ||

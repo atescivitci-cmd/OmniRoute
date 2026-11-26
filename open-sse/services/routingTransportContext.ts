@@ -1,39 +1,109 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { isUpstreamStalledError } from "../handlers/chatCore/upstreamStall.ts";
 
 // Created only by trusted routing code. A body/header cannot manufacture a token.
 const brand: unique symbol = Symbol("routing-transport-attempt");
 export type TransportFailureDiagnostic = Readonly<{
-  name?: string; code?: string; errno?: number; syscall?: string;
-  causeName?: string; causeCode?: string; causeErrno?: number; causeSyscall?: string;
+  name?: string;
+  code?: string;
+  errno?: number;
+  syscall?: string;
+  causeName?: string;
+  causeCode?: string;
+  causeErrno?: number;
+  causeSyscall?: string;
 }>;
-const safeNames = new Set(["Error", "TypeError", "RangeError", "AbortError", "TimeoutError", "FetchError", "SystemError"]);
-const safeCodes = new Set(["ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "EPIPE", "ABORT_ERR", "ERR_TLS_CERT_ALTNAME_INVALID", "CERT_HAS_EXPIRED", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "DEPTH_ZERO_SELF_SIGNED_CERT", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_SOCKET", "UND_ERR_ABORTED", "UND_ERR_CONNECT", "ERR_STREAM_PREMATURE_CLOSE"]);
-const safeSyscalls = new Set(["connect", "read", "write", "getaddrinfo", "getnameinfo", "recv", "send", "accept", "socket", "tls"]);
+const safeNames = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "AbortError",
+  "TimeoutError",
+  "FetchError",
+  "SystemError",
+]);
+const safeCodes = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ECONNABORTED",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "EPIPE",
+  "ABORT_ERR",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "CERT_HAS_EXPIRED",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET",
+  "UND_ERR_ABORTED",
+  "UND_ERR_CONNECT",
+  "ERR_STREAM_PREMATURE_CLOSE",
+]);
+const safeSyscalls = new Set([
+  "connect",
+  "read",
+  "write",
+  "getaddrinfo",
+  "getnameinfo",
+  "recv",
+  "send",
+  "accept",
+  "socket",
+  "tls",
+]);
 function ownData(value: unknown, key: string): unknown {
   if (!value || (typeof value !== "object" && typeof value !== "function")) return undefined;
-  try { const d = Object.getOwnPropertyDescriptor(value, key); return d && "value" in d ? d.value : undefined; } catch { return undefined; }
+  try {
+    const d = Object.getOwnPropertyDescriptor(value, key);
+    return d && "value" in d ? d.value : undefined;
+  } catch {
+    return undefined;
+  }
 }
-function safeFields(value: unknown): { name?: string; code?: string; errno?: number; syscall?: string } {
+function safeFields(value: unknown): {
+  name?: string;
+  code?: string;
+  errno?: number;
+  syscall?: string;
+} {
   const out: { name?: string; code?: string; errno?: number; syscall?: string } = {};
   try {
     let name = ownData(value, "name");
     if (name === undefined) {
-      if (value instanceof DOMException) name = Object.getOwnPropertyDescriptor(DOMException.prototype, "name")?.get?.call(value);
+      if (value instanceof DOMException)
+        name = Object.getOwnPropertyDescriptor(DOMException.prototype, "name")?.get?.call(value);
       else if (value instanceof TypeError) name = "TypeError";
       else if (value instanceof RangeError) name = "RangeError";
       else if (value instanceof Error) name = "Error";
     }
     if (typeof name === "string" && safeNames.has(name)) out.name = name;
-  } catch { /* Hostile accessors/proxies remain unknown. */ }
-  const code = ownData(value, "code"), errno = ownData(value, "errno"), syscall = ownData(value, "syscall");
+  } catch {
+    /* Hostile accessors/proxies remain unknown. */
+  }
+  const code = ownData(value, "code"),
+    errno = ownData(value, "errno"),
+    syscall = ownData(value, "syscall");
   if (typeof code === "string" && safeCodes.has(code)) out.code = code;
-  if (typeof errno === "number" && Number.isSafeInteger(errno) && errno >= -2147483648 && errno <= 2147483647) out.errno = errno;
+  if (
+    typeof errno === "number" &&
+    Number.isSafeInteger(errno) &&
+    errno >= -2147483648 &&
+    errno <= 2147483647
+  )
+    out.errno = errno;
   if (typeof syscall === "string" && safeSyscalls.has(syscall)) out.syscall = syscall;
   return out;
 }
 function diagnostic(error: unknown): TransportFailureDiagnostic {
   const result: Record<string, string | number> = { ...safeFields(error) };
-  for (const [key, value] of Object.entries(safeFields(ownData(error, "cause")))) result["cause" + key[0].toUpperCase() + key.slice(1)] = value;
+  for (const [key, value] of Object.entries(safeFields(ownData(error, "cause"))))
+    result["cause" + key[0].toUpperCase() + key.slice(1)] = value;
   return Object.freeze(result);
 }
 
@@ -46,6 +116,12 @@ type State = {
   cancelled: boolean;
   blocked: boolean;
   transportFailure?: TransportFailureDiagnostic;
+  /**
+   * The FIRST transport failure of this attempt was the gateway's own stall abort (identity of
+   * the trusted error from upstreamStall.ts). It does not lift `uncertain`; it only lets the
+   * narrow stall-failover exception (combo/stallFailover.ts) tell our own abort apart.
+   */
+  stallAborted?: boolean;
 };
 const states = new WeakMap<RoutingTransportAttempt, State>();
 const attempts = new AsyncLocalStorage<RoutingTransportAttempt>();
@@ -58,7 +134,8 @@ export class RoutingTransportSafetyError extends Error {
   readonly transportFailure?: TransportFailureDiagnostic;
   constructor(state: State) {
     super("Routing transport attempt stopped; no automatic transport replay is permitted.");
-    if (state.transportFailure) this.transportFailure = Object.freeze({ ...state.transportFailure });
+    if (state.transportFailure)
+      this.transportFailure = Object.freeze({ ...state.transportFailure });
     this.name = state.cancelled ? "AbortError" : "RoutingTransportSafetyError";
     this.status = state.cancelled ? 499 : 503;
     this.code = state.uncertain
@@ -120,7 +197,11 @@ export function getRoutingTransportOutcome(token: RoutingTransportAttempt) {
     uncertain: state.uncertain,
     cancelled: state.cancelled || state.signal?.aborted === true,
     blocked: state.blocked,
-    ...(state.transportFailure && { transportFailure: Object.freeze({ ...state.transportFailure }) }),
+    // Present only when set, so the outcome shape is unchanged for every other attempt.
+    ...(state.stallAborted === true && { stallAborted: true as const }),
+    ...(state.transportFailure && {
+      transportFailure: Object.freeze({ ...state.transportFailure }),
+    }),
   });
 }
 
@@ -210,6 +291,14 @@ export async function runWithRoutingTransportWire<T>(fn: () => T | Promise<T>): 
     } catch (error) {
       // Fetch was invoked. Abort/error does not prove remote non-execution.
       if (!(error instanceof RoutingTransportSafetyError)) {
+        const current = currentState();
+        if (
+          current &&
+          !current.transportFailure &&
+          !current.uncertain &&
+          isUpstreamStalledError(error)
+        )
+          current.stallAborted = true;
         recordTransportFailure(error);
         stopRoutingTransportAttempt("execution_uncertain");
       }
